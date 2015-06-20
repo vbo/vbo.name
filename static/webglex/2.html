@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script type="text/javascript" src="common.js"></script>
+</head>
+<body>
+    <canvas id="webgl-canvas" width="2400" height="1356" style="width: 1200px; height: 678px"></canvas>
+    <script type="x-shader/x-vertex" id="vertex_shader">
+        uniform mat4 transformation;
+
+        attribute vec4 position;
+        attribute vec2 tex_coord;
+
+        varying mediump vec2 _tex_coord;
+
+        void main(void) {
+            gl_Position = transformation * position;
+            _tex_coord = tex_coord;
+        }
+    </script>
+    <script type="x-shader/x-fragment" id="fragment_shader">
+        uniform sampler2D sampler;
+
+        varying mediump vec2 _tex_coord;
+
+        void main(void) {
+            mediump vec4 color = texture2D(sampler, _tex_coord);
+            if (color.a < 0.01) discard;
+            gl_FragColor = color;
+        }
+    </script>
+    <script type="text/javascript">
+        (function () {
+            "use strict";
+
+            var canvas = document.getElementById("webgl-canvas");
+            var gl = glutils.createContext(canvas);
+
+            glutils.loadResource("2.atlas.png", "image", function (err, img) {
+                // load shaders
+                var vertexShader = glutils.createShaderFromScript(gl, "vertex_shader");
+                var fragmentShader = glutils.createShaderFromScript(gl, "fragment_shader");
+                var program = glutils.createProgram(gl, [vertexShader, fragmentShader]);
+                var positionAttrLocation = gl.getAttribLocation(program, "position");
+                var texCoordAttrLocation = gl.getAttribLocation(program, "tex_coord");
+                var transformationUniformLocation = gl.getUniformLocation(program, "transformation");
+                var samplerUniformLocation = gl.getUniformLocation(program, "sampler");
+                // prepare vertex data
+                var px = 0.0, py = 0.0;
+                var vertexData = new Float32Array([
+                  // X          Y         Z    W    S      TEX_W  T      TEX_H
+                     px + 0.0,  py + 0.0, 1.0, 1.0, 2.0  / 512.0, 34.0 / 512.0,
+                     px + 0.0,  py + 1.0, 1.0, 1.0, 2.0  / 512.0, 2.0  / 512.0,
+                     px + 1.0,  py + 0.0, 1.0, 1.0, 34.0 / 512.0, 34.0 / 512.0,
+                     px + 1.0,  py + 0.0, 1.0, 1.0, 34.0 / 512.0, 34.0 / 512.0,
+                     px + 0.0,  py + 1.0, 1.0, 1.0, 2.0  / 512.0, 2.0  / 512.0,
+                     px + 1.0,  py + 1.0, 1.0, 1.0, 34.0 / 512.0, 2.0  / 512.0
+                ]);
+                // create vertex buffer
+                var vertexBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, vertexData, gl.STATIC_DRAW);
+                gl.bindBuffer(gl.ARRAY_BUFFER, null);
+                // init texture
+                var texture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.bindTexture(gl.TEXTURE_2D, null);
+                // init OpenGL state
+                gl.clearColor(0, 0, 0, 1);
+                gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+                // prepare matrices
+                var projection = glm.mat4.allocate();
+                glm.mat4.ortho(projection, 20, 100, 20, 100, -100, 1);
+                //glm.mat4.identity(projection);
+                var view = glm.mat4.allocate();
+                var zoom = 63.58361420929433;
+                glm.mat4.identity(view);
+                view[0] = zoom;
+                view[5] = zoom;
+                var transform = glm.mat4.allocate();
+                var pressed = 0;
+
+                function draw() {
+                    if (pressed == 74) {
+                        view[0] += 0.01;
+                        view[5] += 0.01;
+                    }
+                    if (pressed == 75) {
+                        view[0] -= 0.01;
+                        view[5] -= 0.01;
+                    }
+                    glm.mat4.multiply(transform, projection, view);
+                    // render
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.useProgram(program);
+                    gl.uniformMatrix4fv(transformationUniformLocation, false, transform);
+                    gl.activeTexture(gl.TEXTURE0 + 0);
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.uniform1i(samplerUniformLocation, 0);
+
+                    gl.enableVertexAttribArray(positionAttrLocation);
+                    gl.enableVertexAttribArray(texCoordAttrLocation);
+                    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                    gl.vertexAttribPointer(positionAttrLocation, 4, gl.FLOAT, false, 6 * Float32Array.BYTES_PER_ELEMENT, 0);
+                    gl.vertexAttribPointer(texCoordAttrLocation, 2, gl.FLOAT, false, 6 * Float32Array.BYTES_PER_ELEMENT, 4 * Float32Array.BYTES_PER_ELEMENT);
+                    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+                    gl.drawArrays(gl.TRIANGLES, 0, 6);
+                    gl.useProgram(null);
+                }
+                setInterval(draw, 30);
+
+                document.addEventListener("keydown", function (e) {
+                    pressed = e.keyCode;
+                });
+                document.addEventListener("keyup", function (e) {
+                    if (e.keyCode == pressed) pressed = 0;
+                });
+            });
+        })();
+    </script>
+</body>
+</html>
