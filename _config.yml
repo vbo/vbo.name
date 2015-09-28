@@ -9,8 +9,6 @@ description:
 author: Vadim Borodin
 email: vbo@vbo.name
 language:
-exclude_generators:
-- index
 
 # URL
 ## If your site is put in a subdirectory, set url as 'http://yoursite.com/child' and root as '/child/'
