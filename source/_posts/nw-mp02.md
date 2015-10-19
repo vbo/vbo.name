@@ -27,7 +27,7 @@ As you probably know WebGL (as any other OpenGL) knows nothing about coordinate 
 
 <img src="default_coordinate_system.png"/>
 
-For example check out my "Hello Triangle" implementation [here](https://github.com/vbo/node-webkit-mp-game-template/blob/372bf1f78b697b217a54ca5c7b7967c82325f8b3/client/render.js). On line 27 I am specifying positions of three vertices of my triangle. Like so:
+For example check out my "Hello Triangle" implementation [here](https://github.com/vbo/node-webkit-mp-game-template/blob/minimal_toolset/client/render.js). On line 27 I am specifying positions of three vertices of my triangle. Like so:
 
 ``` javascript
 var vertices = [
