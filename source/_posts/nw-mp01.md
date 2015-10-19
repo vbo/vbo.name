@@ -127,7 +127,7 @@ To launch the server we can use something like `bin/node server`. It's just a pl
 Now our `client/index.js` can be coded a lot cleaner:
 
 ``` javascript
-var frame = require("./frame");
+var frame = require("./frame.js");
 var $ = frame.$;
 
 $("body").text("Press X to start");
@@ -193,7 +193,7 @@ requirejs.config({
 requirejs(["jquery", "jquery.hotkeys", "storage"], function ($, _, storage) {
     var config = require("../config");
     var gui = require("nw.gui");
-    require("../frame").init(gui, window, $, storage);
+    require("../frame.js").init(gui, window, $, storage);
     $('#preloader').hide();
     require("../");
 });
@@ -266,7 +266,7 @@ exports.sound = {
 Sources of the initial version of `client/frame/sound.js` can be found [on github](https://github.com/vbo/node-webkit-mp-game-template/blob/edfd9b734fd3f15e49ee0a95f1078f7308c5d667/client/frame/sound.js) (thats a bit too much code to include in the blog post). Here is a usage example:
 
 ```
-var sound = require("./frame").sound;
+var sound = require("./frame.js").sound;
 
 sound.setMusicMood("menu");       // smoothly change music to the one of "menu" mood
 sound.setMusicMood("menu", true); // force to switch track keeping the same mood
@@ -362,7 +362,7 @@ requirejs([
         function (clb) { sound.init(config.sound, clb); },
         function (clb) { graphics.init(config.graphics, clb); }
     ], function () {
-        require("../frame").init(gui, window, $, storage, resource, sound, graphics);
+        require("../frame.js").init(gui, window, $, storage, resource, sound, graphics);
         $('#preloader').hide();
         require("../index");
     });
@@ -372,7 +372,7 @@ requirejs([
 With this minimalistic graphics foundation library we can start to draw something on screen. For this project I think it's ok to stick with exactly one fullscreen canvas, created on first use. We want to be able to hide and show this canvas using a bit of CSS and also have an ability to put some DOM elements in front of it (like game HUD, dialogue boxes etc). To operate this canvas and draw things on it we'll be using our first project-specific module: `client/render.js`:
 
 ``` javascript client/render.js
-var frame = require("./frame");
+var frame = require("./frame.js");
 var $ = frame.$;
 var graphics = frame.graphics;
 
@@ -416,7 +416,7 @@ exports.show = function () {
 };
 ```
 
-Actual source code for this part of tutorial available [on github](https://github.com/vbo/node-webkit-mp-game-template/tree/372bf1f78b697b217a54ca5c7b7967c82325f8b3). I have just implemented a "Hello Triangle" graphics but we'll make a real render later on this tutorial. Stay in tune! UPD: part two is [online](/building-multiplayer-game-nodejs-node-webkit-tiles-sprites/).
+Actual source code for this part of tutorial available [on github](https://github.com/vbo/node-webkit-mp-game-template/tree/minimal_toolset). I have just implemented a "Hello Triangle" graphics but we'll make a real render later on this tutorial. Stay in tune! UPD: part two is [online](/building-multiplayer-game-nodejs-node-webkit-tiles-sprites/).
 
 Here is a screenshot of what we have right now. I can't show this on screenshot, but we also have a nice background music, nice and simple sound effects API, ability to subsribe to keyboard events and use jQuery-powered DOM to easily make any GUI we need.
 
