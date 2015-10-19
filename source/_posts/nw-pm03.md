@@ -217,5 +217,5 @@ for (var k in exports) {
 }
 ```
 
-All of this `instanceof`ing is a bit ugly and message type code looks too verbose for such simple thing but we'll improve it later. For now just [study the source code](https://github.com/vbo/node-webkit-mp-game-template/tree/2c46bb9442c4588a4373c5bdd8a4e0610509d826/networking) and let's start thinking about our application-specific message types. BTW this is actually my first attempt at implementing this protocol. I suspect lots of bugs here and there so I appreciate if you let me know of any issues you encounter.
+All of this `instanceof`ing is a bit ugly and message type code looks too verbose for such simple thing but we'll improve it later. For now just [study the source code](https://github.com/vbo/node-webkit-mp-game-template/tree/networking_1/networking) and let's start thinking about our application-specific message types. BTW this is actually my first attempt at implementing this protocol. I suspect lots of bugs here and there so I appreciate if you let me know of any issues you encounter.
 
