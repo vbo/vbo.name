@@ -6,9 +6,10 @@
     "version": "8.1.1"
   },
   "scripts": {
-    "build": "hexo generate && node -e \"require('fs').cpSync('static-raw','public',{recursive:true})\"",
+    "build": "hexo generate && node tools/rewrite-relative-links.js && node -e \"require('fs').cpSync('static-raw','public',{recursive:true})\"",
     "clean": "hexo clean",
-    "server": "hexo server"
+    "server": "hexo server",
+    "validate": "node tools/validate.js"
   },
   "dependencies": {
     "hexo": "^8.0.0",

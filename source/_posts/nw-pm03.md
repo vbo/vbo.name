@@ -4,7 +4,7 @@ tags:
 permalink: building-multiplayer-game-nodejs-node-webkit-networking-general
 ---
 
-In the [first part](../building-multiplayer-game-nodejs-node-webkit/) of this tutorial we've made a set of tools allowing us to implement client-side features in a simple and flexible way. This includes WebGL-based graphics, sound with Web Audio API, simple resource management and local storage support. In the [second part](../building-multiplayer-game-nodejs-node-webkit-tiles-sprites/) we've implemented a simple framework to work with sprite-based graphics. The next step is to start thinking about our game from the networked multiplayer perspective.
+In the [first part](__ROOT__building-multiplayer-game-nodejs-node-webkit/) of this tutorial we've made a set of tools allowing us to implement client-side features in a simple and flexible way. This includes WebGL-based graphics, sound with Web Audio API, simple resource management and local storage support. In the [second part](__ROOT__building-multiplayer-game-nodejs-node-webkit-tiles-sprites/) we've implemented a simple framework to work with sprite-based graphics. The next step is to start thinking about our game from the networked multiplayer perspective.
 
 I've already decided to use UDP-based networking for this project but I think I should elaborate a bit about other options we have.
 
