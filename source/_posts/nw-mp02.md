@@ -4,7 +4,7 @@ tags:
 permalink: building-multiplayer-game-nodejs-node-webkit-tiles-sprites
 ---
 
-In the [first part](/vbo.name/building-multiplayer-game-nodejs-node-webkit/) of this tutorial we have prepared a project structure and implemented all the tools we need to start making a client part of the game: graphics, controls and sound are all in place with ready to use resource management and local storage for temporary session-bound data. The next step is to implement our gameplay ideas using this simple tools.
+In the [first part](../building-multiplayer-game-nodejs-node-webkit/) of this tutorial we have prepared a project structure and implemented all the tools we need to start making a client part of the game: graphics, controls and sound are all in place with ready to use resource management and local storage for temporary session-bound data. The next step is to implement our gameplay ideas using this simple tools.
 
 As I said before I want to make something top-down, with tile-based levels and keyboard+mouse controls. I don't want to make it too real-time and fast-paces because it takes too much effort to properly implement things like client-side prediction, lag compensation and such. This concepts deserve a (huge) separated article on its' own. To make a game without digging into this concepts we need to make all controls a bit indirect. For example our movement mechanics can't be WASD-based and should instead be more like RTS-style point-and-click "tactical" experience. With such controls it's OK for player to wait several milliseconds while his command make it to the server and server respond with feedback events. We'll talk more about such things in the next part of the tutorial.
 
@@ -303,7 +303,7 @@ For a sprite-based 2D game we also need to define a kind of standard of setting 
 
 Using such a standard it is quite easy to keep everything in order. Don't forget to `gl.enable(gl.DEPTH_TEST)` or OpenGL will just ignore your Z values entirely.
 
-Check out the [full source code](https://github.com/vbo/node-webkit-mp-game-template/tree/tiles_and_sprites) for this part of tutorial. In the next part we'll dive into networking and make our game actually respond to player controls. Stay in tune! UPD: part three is [online](/vbo.name/building-multiplayer-game-nodejs-node-webkit-networking-general/).
+Check out the [full source code](https://github.com/vbo/node-webkit-mp-game-template/tree/tiles_and_sprites) for this part of tutorial. In the next part we'll dive into networking and make our game actually respond to player controls. Stay in tune! UPD: part three is [online](../building-multiplayer-game-nodejs-node-webkit-networking-general/).
 
 BTW if you want to learn more about OpenGL and graphics programming in general I suggest you to read [Learning Modern 3D Graphics Programming](http://www.arcsynthesis.org/gltut/) - a free ebook by Jason L. McKesson. It uses C and plain old desktop OpenGL but you'll get used to it. On the other hand if you don't want to dig into this concepts too much right now you can try to use a higher level library like [pixi.js](http://www.pixijs.com/) instead.
 

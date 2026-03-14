@@ -416,7 +416,7 @@ exports.show = function () {
 };
 ```
 
-Actual source code for this part of tutorial available [on github](https://github.com/vbo/node-webkit-mp-game-template/tree/minimal_toolset). I have just implemented a "Hello Triangle" graphics but we'll make a real render later on this tutorial. Stay in tune! UPD: part two is [online](/vbo.name/building-multiplayer-game-nodejs-node-webkit-tiles-sprites/).
+Actual source code for this part of tutorial available [on github](https://github.com/vbo/node-webkit-mp-game-template/tree/minimal_toolset). I have just implemented a "Hello Triangle" graphics but we'll make a real render later on this tutorial. Stay in tune! UPD: part two is [online](../building-multiplayer-game-nodejs-node-webkit-tiles-sprites/).
 
 Here is a screenshot of what we have right now. I can't show this on screenshot, but we also have a nice background music, nice and simple sound effects API, ability to subsribe to keyboard events and use jQuery-powered DOM to easily make any GUI we need.
 
