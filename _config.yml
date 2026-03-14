@@ -12,8 +12,8 @@ language:
 
 # URL
 ## If your site is put in a subdirectory, set url as 'http://yoursite.com/child' and root as '/child/'
-url: https://vbo.name/
-root: /
+url: https://vbo.github.io/vbo.name
+root: /vbo.name/
 permalink: :title/
 tag_dir: tags
 archive_dir: archives
