@@ -3,7 +3,7 @@ date: 2018-06-27
 comments: false
 ---
 ## About Me
-Name's Vadim Borodin. I'm a professional programmer and software enthusiast currently based in Seattle, WA. I've been programming since 2008, working mostly for startup companies. In 2015 I've accepted a position at Microsoft to work on Bing geocoding services. Before that I've mostly been doing web programming and system integration stuff on a daily basis but on my spare time I've been exploring other areas (like game development), learning different programming languages and experimenting with modern (and old-school) technologies. Below is a list of some interesting things I worked on over the years.
+Name's Vadim Borodin. I'm a professional programmer and software enthusiast currently based in Seattle, WA. I've been programming since 2008, working mostly for startup companies. In 2015 I've accepted a position at Microsoft to work on Bing geocoding services. Before that I've mostly been doing web programming and system integration stuff on a daily basis but in my spare time I've been exploring other areas (like game development), learning different programming languages and experimenting with modern (and old-school) technologies. Below is a list of some interesting things I worked on over the years.
 
 Contact me via [email](mailto:vbo@vbo.name), follow me on [github](https://github.com/vbo) and [twitter](https://twitter.com/borodinvadim) or check out my writings on this site. My professional profile is available on [linkedin](https://ru.linkedin.com/in/borodinvadim).
 
