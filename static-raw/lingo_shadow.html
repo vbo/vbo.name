@@ -1,0 +1,403 @@
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linguist Shadow - Audio Comparison</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/wavesurfer.js@7"></script>
+    <style>
+        .waveform-container {
+            background: #f9fafb;
+            border-radius: 0.75rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border: 1px solid #e5e7eb;
+        }
+        .btn-active {
+            background-color: #ef4444 !important;
+        }
+        #mic-visualizer {
+            height: 40px;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+        .bar {
+            flex: 1;
+            background: #3b82f6;
+            min-height: 2px;
+            transition: height 0.05s ease;
+        }
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { 
+            -webkit-appearance: none; 
+            margin: 0; 
+        }
+        /* Custom range slider styling for better visibility */
+        input[type=range] {
+            accent-color: #2563eb;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen font-sans text-slate-900">
+
+    <div class="max-w-4xl mx-auto px-4 py-8">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-slate-800">Linguist Shadow</h1>
+            <p class="text-slate-600">Type Start/End times to generate a high-detail snippet for comparison.</p>
+        </header>
+
+        <!-- Upload Section -->
+        <div id="upload-zone" class="bg-white p-8 rounded-2xl shadow-sm border-2 border-dashed border-slate-300 text-center mb-8 cursor-pointer hover:border-blue-400 transition-colors">
+            <input type="file" id="audio-upload" accept="audio/*" class="hidden">
+            <div class="flex flex-col items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-slate-400 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" />
+                </svg>
+                <p class="text-lg font-medium">Click to upload or drag & drop audio track</p>
+            </div>
+        </div>
+
+        <div id="app-interface" class="hidden space-y-6">
+            <!-- Reference Audio -->
+            <section class="bg-white p-6 rounded-2xl shadow-md border border-slate-100">
+                <div class="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-4">
+                    <h2 class="text-xl font-semibold flex items-center">
+                        <span class="bg-blue-100 text-blue-600 p-1.5 rounded-lg mr-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.983 5.983 0 01-1.414 4.243 1 1 0 11-1.415-1.415A3.983 3.983 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clip-rule="evenodd" />
+                            </svg>
+                        </span>
+                        Reference Snippet
+                    </h2>
+                    
+                    <div class="flex items-center gap-4 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
+                        <div class="flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                            </svg>
+                            <input type="range" id="ref-volume" min="0" max="1" step="0.05" value="1" class="w-24 md:w-32 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer">
+                            <span id="volume-val" class="text-xs font-mono text-slate-500 w-8">100%</span>
+                        </div>
+                        <div class="h-6 w-px bg-slate-300"></div>
+                        <button id="play-ref" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors text-sm">Play Snippet</button>
+                    </div>
+                </div>
+                
+                <div id="waveform-snippet" class="waveform-container"></div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm bg-slate-50 p-4 rounded-xl border border-slate-200">
+                    <div class="flex flex-col gap-1">
+                        <label class="text-slate-500 font-medium">Start (sec)</label>
+                        <input type="number" id="input-start" step="0.01" min="0" value="0.00" class="border border-slate-300 rounded px-2 py-1 font-mono focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                    <div class="flex flex-col gap-1">
+                        <label class="text-slate-500 font-medium">End (sec)</label>
+                        <input type="number" id="input-end" step="0.01" min="0" value="1.00" class="border border-slate-300 rounded px-2 py-1 font-mono focus:ring-2 focus:ring-blue-500 outline-none">
+                    </div>
+                    <div class="flex flex-col gap-1">
+                        <label class="text-slate-500 font-medium">Duration</label>
+                        <div id="duration-display" class="py-1 font-mono font-bold text-blue-600">0.00s</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- User Recording -->
+            <section class="bg-white p-6 rounded-2xl shadow-md border border-slate-100">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold flex items-center">
+                        <span class="bg-red-100 text-red-600 p-1.5 rounded-lg mr-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+                            </svg>
+                        </span>
+                        Shadowing Recording
+                    </h2>
+                    <div class="flex gap-2 items-center">
+                        <div id="mic-visualizer" class="w-24 mr-4"></div>
+                        <button id="record-btn" class="bg-slate-800 hover:bg-slate-900 text-white px-6 py-2 rounded-lg font-medium transition-all flex items-center gap-2">
+                            <div id="record-dot" class="w-3 h-3 bg-red-500 rounded-full"></div>
+                            <span id="record-text">Start Shadowing</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div id="waveform-user" class="waveform-container">
+                    <div class="h-32 flex items-center justify-center text-slate-400 italic">
+                        Record yourself to compare waves
+                    </div>
+                </div>
+
+                <div class="flex justify-center mt-4 hidden" id="user-controls">
+                    <button id="play-user" class="bg-slate-200 hover:bg-slate-300 px-4 py-2 rounded-lg mr-2 transition-colors">Play Your Recording</button>
+                    <button id="play-both" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium transition-colors">Play Sync'd Comparison</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        let wavesurferSnippet, wavesurferUser;
+        let originalBuffer;
+        let snippetUrl = null;
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        let animationFrame;
+        let audioContext, analyser, dataArray;
+        let currentRefVolume = 1;
+
+        const uploadZone = document.getElementById('upload-zone');
+        const audioInput = document.getElementById('audio-upload');
+        const recordBtn = document.getElementById('record-btn');
+        const playRefBtn = document.getElementById('play-ref');
+        const playUserBtn = document.getElementById('play-user');
+        const playBothBtn = document.getElementById('play-both');
+        const inputStart = document.getElementById('input-start');
+        const inputEnd = document.getElementById('input-end');
+        const durationDisplay = document.getElementById('duration-display');
+        const refVolumeSlider = document.getElementById('ref-volume');
+        const volumeValDisplay = document.getElementById('volume-val');
+
+        // Helper to convert AudioBuffer to WAV Blob
+        function audioBufferToWav(buffer) {
+            const numChannels = buffer.numberOfChannels;
+            const sampleRate = buffer.sampleRate;
+            const format = 1; // PCM
+            const bitDepth = 16;
+            const bytesPerSample = bitDepth / 8;
+            const blockAlign = numChannels * bytesPerSample;
+            const bufferLength = buffer.length;
+            const byteLength = bufferLength * blockAlign;
+            const headerSize = 44;
+            const wavBuffer = new ArrayBuffer(headerSize + byteLength);
+            const view = new DataView(wavBuffer);
+            const writeString = (v, offset, str) => {
+                for (let i = 0; i < str.length; i++) v.setUint8(offset + i, str.charCodeAt(i));
+            };
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + byteLength, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, format, true);
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * blockAlign, true);
+            view.setUint16(32, blockAlign, true);
+            view.setUint16(34, bitDepth, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, byteLength, true);
+
+            const offset = 44;
+            for (let i = 0; i < bufferLength; i++) {
+                for (let channel = 0; channel < numChannels; channel++) {
+                    let sample = buffer.getChannelData(channel)[i];
+                    sample = Math.max(-1, Math.min(1, sample));
+                    view.setInt16(offset + (i * blockAlign) + (channel * bytesPerSample), sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                }
+            }
+            return new Blob([wavBuffer], { type: 'audio/wav' });
+        }
+
+        // Helper to slice an AudioBuffer
+        function sliceAudioBuffer(buffer, startSec, endSec) {
+            const sampleRate = buffer.sampleRate;
+            const startOffset = Math.floor(startSec * sampleRate);
+            const endOffset = Math.floor(endSec * sampleRate);
+            const frameCount = endOffset - startOffset;
+
+            if (frameCount <= 0) return null;
+
+            const newBuffer = new AudioContext().createBuffer(
+                buffer.numberOfChannels,
+                frameCount,
+                sampleRate
+            );
+
+            for (let i = 0; i < buffer.numberOfChannels; i++) {
+                const channelData = buffer.getChannelData(i);
+                const slicedData = channelData.subarray(startOffset, endOffset);
+                newBuffer.copyToChannel(slicedData, i);
+            }
+            return newBuffer;
+        }
+
+        // Initialize Audio Engine
+        async function initApp(url) {
+            const response = await fetch(url);
+            const arrayBuffer = await response.arrayBuffer();
+            const ctx = new AudioContext();
+            originalBuffer = await ctx.decodeAudioData(arrayBuffer);
+
+            const duration = originalBuffer.duration;
+            inputEnd.max = duration;
+            inputEnd.value = Math.min(3, duration).toFixed(2);
+            
+            updateSnippetView();
+        }
+
+        function updateSnippetView() {
+            if (!originalBuffer) return;
+            
+            let start = parseFloat(inputStart.value) || 0;
+            let end = parseFloat(inputEnd.value) || 0;
+
+            if (start < 0) start = 0;
+            if (end > originalBuffer.duration) end = originalBuffer.duration;
+            if (start >= end) end = start + 0.1;
+
+            durationDisplay.textContent = (end - start).toFixed(2) + 's';
+
+            const slicedBuffer = sliceAudioBuffer(originalBuffer, start, end);
+            if (!slicedBuffer) return;
+
+            if (wavesurferSnippet) {
+                wavesurferSnippet.destroy();
+            }
+            if (snippetUrl) {
+                URL.revokeObjectURL(snippetUrl);
+            }
+
+            const wavBlob = audioBufferToWav(slicedBuffer);
+            snippetUrl = URL.createObjectURL(wavBlob);
+
+            wavesurferSnippet = WaveSurfer.create({
+                container: '#waveform-snippet',
+                waveColor: '#93c5fd',
+                progressColor: '#2563eb',
+                cursorColor: '#1e40af',
+                barWidth: 2,
+                height: 120,
+                responsive: true,
+                normalize: true,
+                fillParent: true
+            });
+
+            wavesurferSnippet.on('ready', () => {
+                wavesurferSnippet.setVolume(currentRefVolume);
+            });
+
+            wavesurferSnippet.load(snippetUrl);
+        }
+
+        // Volume Logic
+        refVolumeSlider.addEventListener('input', (e) => {
+            currentRefVolume = parseFloat(e.target.value);
+            volumeValDisplay.textContent = Math.round(currentRefVolume * 100) + '%';
+            if (wavesurferSnippet) {
+                wavesurferSnippet.setVolume(currentRefVolume);
+            }
+        });
+
+        inputStart.addEventListener('change', updateSnippetView);
+        inputEnd.addEventListener('change', updateSnippetView);
+
+        // Upload Logic
+        uploadZone.onclick = () => audioInput.click();
+        audioInput.onchange = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                initApp(url);
+                uploadZone.classList.add('hidden');
+                document.getElementById('app-interface').classList.remove('hidden');
+            }
+        };
+
+        // Mic Visualizer
+        function setupVisualizer(stream) {
+            const visualizer = document.getElementById('mic-visualizer');
+            visualizer.innerHTML = '';
+            const barCount = 12;
+            const bars = [];
+            for (let i = 0; i < barCount; i++) {
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+                visualizer.appendChild(bar);
+                bars.push(bar);
+            }
+            audioContext = new AudioContext();
+            analyser = audioContext.createAnalyser();
+            const source = audioContext.createMediaStreamSource(stream);
+            source.connect(analyser);
+            analyser.fftSize = 64;
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            function draw() {
+                if (!isRecording) return;
+                animationFrame = requestAnimationFrame(draw);
+                analyser.getByteFrequencyData(dataArray);
+                for (let i = 0; i < barCount; i++) {
+                    const value = dataArray[i];
+                    const percent = (value / 255) * 100;
+                    bars[i].style.height = `${Math.max(2, percent)}%`;
+                }
+            }
+            draw();
+        }
+
+        recordBtn.onclick = async () => {
+            if (!isRecording) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    setupVisualizer(stream);
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+                    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+                    mediaRecorder.onstop = () => {
+                        const blob = new Blob(audioChunks, { type: 'audio/wav' });
+                        initUserWaveform(blob);
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+                    mediaRecorder.start();
+                    isRecording = true;
+                    recordBtn.classList.add('btn-active');
+                    document.getElementById('record-text').textContent = 'Stop Recording';
+                } catch (err) {
+                    console.error(err);
+                }
+            } else {
+                if (mediaRecorder) mediaRecorder.stop();
+                isRecording = false;
+                recordBtn.classList.remove('btn-active');
+                document.getElementById('record-text').textContent = 'Start Shadowing';
+                cancelAnimationFrame(animationFrame);
+                if (audioContext) audioContext.close();
+            }
+        };
+
+        function initUserWaveform(blob) {
+            const url = URL.createObjectURL(blob);
+            if (wavesurferUser) wavesurferUser.destroy();
+            document.getElementById('waveform-user').innerHTML = '';
+            
+            wavesurferUser = WaveSurfer.create({
+                container: '#waveform-user',
+                waveColor: '#fca5a5',
+                progressColor: '#dc2626',
+                cursorColor: '#991b1b',
+                barWidth: 2,
+                height: 120,
+                responsive: true,
+                normalize: true,
+            });
+
+            wavesurferUser.load(url);
+            document.getElementById('user-controls').classList.remove('hidden');
+        }
+
+        playRefBtn.onclick = () => wavesurferSnippet?.playPause();
+        playUserBtn.onclick = () => wavesurferUser?.playPause();
+        playBothBtn.onclick = () => {
+            if (wavesurferSnippet && wavesurferUser) {
+                wavesurferSnippet.setTime(0);
+                wavesurferUser.setTime(0);
+                wavesurferSnippet.play();
+                wavesurferUser.play();
+            }
+        };
+    </script>
+</body>
+</html>

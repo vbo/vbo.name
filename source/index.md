@@ -1,4 +1,6 @@
 layout: page
+date: 2018-06-27
+comments: true
 ---
 ## About Me
 Name's Vadim Borodin. I'm a professional programmer and software enthusiast currently based in Seattle, WA. I've been programming since 2008, working mostly for startup companies. In 2015 I've accepted a position at Microsoft to work on Bing geocoding services. Before that I've mostly been doing web programming and system integration stuff on a daily basis but on my spare time I've been exploring other areas (like game development), learning different programming languages and experimenting with modern (and old-school) technologies. Below is a list of some interesting things I worked on over the years.
@@ -30,11 +32,12 @@ While I was playing with [LLVM](http://llvm.org/) I ended up with three ways to 
 An (unfinished) series of articles where I am describing a process of creating a desktop multiplayer game in Node.js using node-webkit, WebGL, Web Audio API and UDP. The source code of the game is available [here](https://github.com/vbo/node-webkit-mp-game-template). Most of technology specific things are outdated now, but I believe some ideas are still valid.
 
 List of articles:
- - [Toolset](/building-multiplayer-game-nodejs-node-webkit/)
-   Where we are setting up node-webkit and implementing a "low-level" platform layer (basically just convenient access from Node.js to DOM, sound, WebGL etc).
- - [Tiles and Sprites](/building-multiplayer-game-nodejs-node-webkit-tiles-sprites/)
-   Where we are thinking about game coordinate system, tiles and sprites rendering implementation and such.
- - [Networking in General](/building-multiplayer-game-nodejs-node-webkit-networking-general/)
-   Where I am talking about ways to make our game multiplayer, implementing a game server and client/server messaging protocol.
- - Next part will be about actual game-specific networking and I am still in the process of writing it =)
+
+* [Toolset](/building-multiplayer-game-nodejs-node-webkit/)
+  Where we are setting up node-webkit and implementing a "low-level" platform layer (basically just convenient access from Node.js to DOM, sound, WebGL etc).
+* [Tiles and Sprites](/building-multiplayer-game-nodejs-node-webkit-tiles-sprites/)
+  Where we are thinking about game coordinate system, tiles and sprites rendering implementation and such.
+* [Networking in General](/building-multiplayer-game-nodejs-node-webkit-networking-general/)
+  Where I am talking about ways to make our game multiplayer, implementing a game server and client/server messaging protocol.
+* Next part will be about actual game-specific networking and I am still in the process of writing it =)
 

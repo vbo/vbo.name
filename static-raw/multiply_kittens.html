@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Math & Kittens - Multiplication Hero</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React and Babel for running JSX in the browser -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @keyframes coin-fly {
+            0% {
+                transform: translate(-50%, 0) scale(1) rotate(0deg);
+                opacity: 1;
+            }
+            20% {
+                transform: translate(-50%, -60px) scale(1.5) rotate(20deg);
+            }
+            100% {
+                transform: translate(calc(var(--target-x) - 50%), var(--target-y)) scale(0.3) rotate(360deg);
+                opacity: 0;
+            }
+        }
+        .animate-coin-fly {
+            animation: coin-fly 1s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+        .animate-spin-slow {
+            animation: spin 3s linear infinite;
+        }
+        .shake {
+            animation: shake 0.4s ease-in-out;
+        }
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20% { transform: translateX(-15px); }
+            40% { transform: translateX(15px); }
+            60% { transform: translateX(-15px); }
+            80% { transform: translateX(15px); }
+        }
+    </style>
+</head>
+<body class="antialiased">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useRef } = React;
+        
+        // Improved Lucide Icon Component for the standalone HTML version
+        const Icon = ({ name, className = "", size = 24 }) => {
+            const ref = useRef(null);
+            
+            useEffect(() => {
+                if (ref.current && window.lucide) {
+                    const iconName = name.charAt(0).toLowerCase() + name.slice(1).replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+                    ref.current.setAttribute('data-lucide', iconName);
+                    lucide.createIcons();
+                }
+            }, [name]);
+
+            return <i ref={ref} className={className} style={{ width: size, height: size }}></i>;
+        };
+
+        const REWARD_COST = 15;
+        const REWARD_DURATION = 15;
+
+        const App = () => {
+            const [coins, setCoins] = useState(0);
+            const [inputValue, setInputValue] = useState('');
+            const [currentProblem, setCurrentProblem] = useState(null);
+            const [feedback, setFeedback] = useState(null); // null | 'correct' | 'wrong'
+            const [queue, setQueue] = useState([]);
+            const [showReward, setShowReward] = useState(false);
+            const [animatingCoins, setAnimatingCoins] = useState([]);
+            const [catUrl, setCatUrl] = useState('');
+            const [isCatLoading, setIsCatLoading] = useState(false);
+            const [timeLeft, setTimeLeft] = useState(0);
+            
+            const walletRef = useRef(null);
+            const inputRef = useRef(null);
+
+            const fetchNewCat = async () => {
+                setIsCatLoading(true);
+                const newUrl = `https://cataas.com/cat/gif?timestamp=${Date.now()}`;
+                setCatUrl(newUrl);
+            };
+
+            const handleCatLoad = () => {
+                setIsCatLoading(false);
+            };
+
+            useEffect(() => {
+                let interval;
+                if (showReward && timeLeft > 0 && !isCatLoading) {
+                    interval = setInterval(() => {
+                        setTimeLeft((prev) => prev - 1);
+                    }, 1000);
+                } else if (timeLeft === 0 && showReward) {
+                    closeReward();
+                }
+                return () => clearInterval(interval);
+            }, [showReward, timeLeft, isCatLoading]);
+
+            const calculateReward = (a, b) => {
+                const sum = a + b;
+                if (sum <= 8) return 1; 
+                if (sum <= 15) return 2;
+                if (sum <= 20) return 3;
+                return 5; 
+            };
+
+            const generateProblem = useCallback(() => {
+                const a = Math.floor(Math.random() * 12) + 1;
+                const b = Math.floor(Math.random() * 12) + 1;
+                return {
+                    id: Math.random().toString(36).substr(2, 9),
+                    a,
+                    b,
+                    answer: a * b,
+                    reward: calculateReward(a, b)
+                };
+            }, []);
+
+            useEffect(() => {
+                const initialQueue = Array.from({ length: 5 }, () => generateProblem());
+                setQueue(initialQueue);
+                setCurrentProblem(initialQueue[0]);
+            }, [generateProblem]);
+
+            const triggerCoinAnimation = (count) => {
+                const rect = inputRef.current?.getBoundingClientRect();
+                const walletRect = walletRef.current?.getBoundingClientRect();
+                
+                if (!rect || !walletRect) return;
+
+                const newCoins = Array.from({ length: Math.min(count, 5) }).map((_, i) => ({
+                    id: Date.now() + i + Math.random(),
+                    startLeft: rect.left + rect.width / 2,
+                    startTop: rect.top,
+                    targetX: walletRect.left - (rect.left + rect.width / 2) + (walletRect.width / 2),
+                    targetY: walletRect.top - rect.top + (walletRect.height / 2)
+                }));
+                
+                setAnimatingCoins(prev => [...prev, ...newCoins]);
+                
+                setTimeout(() => {
+                    setAnimatingCoins(prev => prev.filter(c => !newCoins.find(nc => nc.id === c.id)));
+                }, 1100);
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!inputValue) return;
+
+                const userVal = parseInt(inputValue);
+                const isCorrect = userVal === currentProblem.answer;
+
+                if (isCorrect) {
+                    if (feedback === 'wrong') {
+                        // User typed the correction
+                        setFeedback(null);
+                        setInputValue('');
+                        // Move current problem to the end of the queue (since they got it wrong first)
+                        const rotatedQueue = [...queue.slice(1), currentProblem];
+                        setQueue(rotatedQueue);
+                        setCurrentProblem(rotatedQueue[0]);
+                    } else {
+                        // Got it right first try!
+                        setFeedback('correct');
+                        triggerCoinAnimation(currentProblem.reward);
+                        
+                        setTimeout(() => {
+                            setCoins(prev => prev + currentProblem.reward);
+                            const newQueue = queue.slice(1);
+                            if (newQueue.length < 3) newQueue.push(generateProblem());
+                            
+                            setQueue(newQueue);
+                            setCurrentProblem(newQueue[0]);
+                            setFeedback(null);
+                            setInputValue('');
+                        }, 1000);
+                    }
+                } else {
+                    // Still wrong or wrong first time
+                    setFeedback('wrong');
+                    setInputValue(''); // Clear for them to type correction
+                }
+            };
+
+            const handleIDontKnow = () => {
+                setFeedback('wrong');
+                setInputValue('');
+                inputRef.current?.focus();
+            };
+
+            const openReward = () => {
+                if (coins >= REWARD_COST) {
+                    setCoins(prev => prev - REWARD_COST);
+                    setTimeLeft(REWARD_DURATION);
+                    fetchNewCat();
+                    setShowReward(true);
+                }
+            };
+
+            const closeReward = () => {
+                setShowReward(false);
+                setCatUrl('');
+                setTimeLeft(0);
+                setIsCatLoading(false);
+            };
+
+            if (!currentProblem) return null;
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-100 p-4 md:p-8 font-sans text-slate-800">
+                    <div className="max-w-4xl mx-auto flex justify-between items-center mb-8 bg-white p-4 rounded-3xl shadow-sm border border-purple-200">
+                        <div className="flex items-center gap-2">
+                            <div className="bg-indigo-100 p-2 rounded-xl flex items-center justify-center">
+                                <Icon name="Trophy" className="text-indigo-600" />
+                            </div>
+                            <div>
+                                <h1 className="font-bold text-lg leading-tight">Math & Kittens</h1>
+                                <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">Reward Zone</p>
+                            </div>
+                        </div>
+
+                        <div ref={walletRef} className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md transform transition-transform hover:scale-105">
+                            <Icon name="Wallet" className="text-yellow-900" />
+                            <span className="font-black text-2xl text-yellow-900">{coins}</span>
+                            <Icon name="Coins" className="text-yellow-700 animate-bounce" />
+                        </div>
+                    </div>
+
+                    <main className="max-w-xl mx-auto">
+                        <div className="mb-8 text-center">
+                            <div className="flex justify-between items-end mb-2 px-2">
+                                <span className="text-slate-500 font-bold text-sm uppercase tracking-tight">Kitten Progress</span>
+                                <span className="text-indigo-600 font-black text-xl">{Math.min(coins, REWARD_COST)}/{REWARD_COST}</span>
+                            </div>
+                            <div className="h-5 bg-white rounded-full border-2 border-indigo-100 overflow-hidden p-1 shadow-inner relative">
+                                <div 
+                                    className="h-full bg-gradient-to-r from-indigo-400 to-purple-500 rounded-full transition-all duration-700 ease-out"
+                                    style={{ width: `${Math.min((coins / REWARD_COST) * 100, 100)}%` }}
+                                />
+                            </div>
+                            
+                            {coins >= REWARD_COST && !showReward && (
+                                <button 
+                                    onClick={openReward}
+                                    className="mt-6 w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white py-4 rounded-2xl font-black text-lg flex items-center justify-center gap-3 shadow-xl animate-pulse transition-all active:scale-95"
+                                >
+                                    <Icon name="Cat" />
+                                    REDEEM CAT REWARD! ({REWARD_COST} Coins)
+                                </button>
+                            )}
+                        </div>
+
+                        <div className={`bg-white rounded-[2.5rem] shadow-2xl p-8 md:p-12 border-b-[12px] border-slate-200 transition-all duration-300 relative overflow-hidden ${feedback === 'correct' ? 'scale-105 border-green-400' : feedback === 'wrong' ? 'shake border-red-400' : ''}`}>
+                            <div className="absolute top-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-yellow-100 text-yellow-700 px-4 py-1 rounded-full text-xs font-black uppercase tracking-tighter">
+                                <Icon name="Coins" size={16} className="mt-[-2px]" /> Worth {currentProblem.reward} {currentProblem.reward === 1 ? 'Coin' : 'Coins'}
+                            </div>
+
+                            <div className="text-7xl md:text-9xl font-black text-slate-700 my-8 flex items-center justify-center gap-4">
+                                <span>{currentProblem.a}</span>
+                                <span className="text-indigo-500 text-5xl md:text-7xl">×</span>
+                                <span>{currentProblem.b}</span>
+                            </div>
+
+                            {feedback === 'wrong' && (
+                                <div className="mb-6 p-4 bg-red-50 rounded-2xl border-2 border-red-200 animate-pulse">
+                                    <p className="text-red-600 font-bold text-lg">
+                                        The answer is <span className="text-2xl font-black underline">{currentProblem.answer}</span>
+                                    </p>
+                                    <p className="text-red-400 text-sm font-medium">Please type it in to continue!</p>
+                                </div>
+                            )}
+
+                            <form onSubmit={handleSubmit} className="relative z-10">
+                                <input
+                                    ref={inputRef}
+                                    type="number"
+                                    value={inputValue}
+                                    onChange={(e) => setInputValue(e.target.value)}
+                                    placeholder={feedback === 'wrong' ? currentProblem.answer : "?"}
+                                    autoFocus
+                                    autoComplete="off"
+                                    className={`w-full text-center text-6xl font-black p-6 rounded-3xl bg-slate-50 border-4 outline-none transition-all ${
+                                        feedback === 'correct' ? 'border-green-500 bg-green-50 text-green-600' : 
+                                        feedback === 'wrong' ? 'border-red-500 bg-red-50 text-red-600' : 
+                                        'border-slate-100 focus:border-indigo-400 text-slate-700'
+                                    }`}
+                                />
+                                
+                                <div className="mt-6 flex gap-3">
+                                    <button 
+                                        type="submit"
+                                        disabled={!inputValue || (feedback === 'correct')}
+                                        className="flex-[2] bg-slate-800 hover:bg-slate-900 disabled:bg-slate-200 text-white text-2xl font-black py-5 rounded-3xl shadow-lg transition-all active:translate-y-1"
+                                    >
+                                        {feedback === 'wrong' ? 'CONTINUE' : 'GO!'}
+                                    </button>
+                                    
+                                    {!feedback && (
+                                        <button 
+                                            type="button"
+                                            onClick={handleIDontKnow}
+                                            className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold py-5 rounded-3xl transition-all flex items-center justify-center gap-2"
+                                        >
+                                            <Icon name="HelpCircle" size={18} />
+                                            IDK
+                                        </button>
+                                    )}
+                                </div>
+
+                                <div className="absolute -top-12 -right-4">
+                                    {feedback === 'correct' && (
+                                        <div className="bg-green-500 text-white p-5 rounded-full shadow-xl animate-bounce">
+                                            <Icon name="CheckCircle2" size={48} />
+                                        </div>
+                                    )}
+                                    {feedback === 'wrong' && (
+                                        <div className="bg-red-500 text-white p-5 rounded-full shadow-xl">
+                                            <Icon name="RotateCcw" size={48} className="animate-spin-slow" />
+                                        </div>
+                                    )}
+                                </div>
+                            </form>
+                        </div>
+                    </main>
+
+                    {showReward && (
+                        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-300">
+                            <div className="bg-white rounded-[2rem] overflow-hidden w-full max-w-md relative shadow-2xl flex flex-col">
+                                <div className={`transition-colors duration-300 p-3 flex items-center justify-center gap-2 font-black text-white ${isCatLoading ? 'bg-slate-600' : 'bg-indigo-600'}`}>
+                                    {isCatLoading ? (
+                                        <>
+                                            <Icon name="PauseCircle" />
+                                            <span>TIMER PAUSED (LOADING...)</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Icon name="Timer" className="animate-pulse" />
+                                            <span>KITTEN TIME LEFT: {timeLeft}s</span>
+                                        </>
+                                    )}
+                                </div>
+
+                                <div className="aspect-square w-full bg-slate-100 relative flex items-center justify-center overflow-hidden">
+                                    {isCatLoading && (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 gap-3">
+                                            <Icon name="Loader2" className="animate-spin" />
+                                            <p className="font-bold text-sm tracking-tight text-slate-500">Hunting for fuzzy friends...</p>
+                                        </div>
+                                    )}
+                                    <img 
+                                        src={catUrl} 
+                                        alt="Random Cat" 
+                                        onLoad={handleCatLoad}
+                                        className={`w-full h-full object-cover transition-opacity duration-500 ${isCatLoading ? 'opacity-0' : 'opacity-100'}`}
+                                    />
+                                </div>
+
+                                <div className="p-6 bg-white flex flex-col gap-4">
+                                    <div className="flex gap-3">
+                                        <button 
+                                            onClick={fetchNewCat}
+                                            disabled={isCatLoading}
+                                            className="flex-1 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 text-indigo-700 py-4 rounded-2xl font-black flex items-center justify-center gap-2 transition-all border-2 border-indigo-100"
+                                        >
+                                            <Icon name="SkipForward" />
+                                            NEXT KITTEN
+                                        </button>
+                                        <button 
+                                            onClick={closeReward}
+                                            className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-4 rounded-2xl font-black transition-all"
+                                        >
+                                            DONE
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Animated Coins */}
+                    {animatingCoins.map(coin => (
+                        <div
+                            key={coin.id}
+                            className="fixed pointer-events-none z-[100] animate-coin-fly"
+                            style={{
+                                left: coin.startLeft,
+                                top: coin.startTop,
+                                '--target-x': `${coin.targetX}px`,
+                                '--target-y': `${coin.targetY}px`,
+                            }}
+                        >
+                            <svg className="w-10 h-10 drop-shadow-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="8" cy="8" r="6" fill="#fbbf24" stroke="#d97706"/>
+                                <path d="M8 5v6M5 8h6" stroke="#d97706" />
+                            </svg>
+                        </div>
+                    ))}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
