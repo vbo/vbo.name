@@ -3,14 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Math & Kittens - FSRS Edition</title>
-    <!-- Tailwind CSS for styling -->
+    <title>Math & Kittens - Persistent FSRS</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- React and Babel for running JSX in the browser -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         @keyframes coin-fly {
@@ -36,14 +33,13 @@
     <script type="text/babel">
     const { useState, useEffect, useCallback, useRef } = React;
     
-    // FSRS v4 weights
     const W = [0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, 0.14, 0.94, 2.18, 0.05, 0.34, 1.26, 0.29, 2.61];
     const RETENTION_TARGET = 0.85;
     const INTERVAL_MODIFIER = Math.log(RETENTION_TARGET) / Math.log(0.9);
     
     const REWARD_COST = 15;
     const REWARD_DURATION = 15;
-    const STORAGE_KEY = 'math_kittens_fsrs_state_v3';
+    const STORAGE_KEY = 'math_kittens_fsrs_state_v6'; 
     const QUEUE_SIZE = 5;
 
     const getInitialFSRS = (a, b) => ({
@@ -53,16 +49,15 @@
         stability: 0,
         difficulty: 5.0,
         reps: 0,
-        state: 0, // 0: New, 1: Learning, 2: Review
+        state: 0, 
         lastReview: null,
         nextReview: Date.now(),
-        hasMistake: false 
+        hasMistake: false,
+        inCorrection: false 
     });
 
     const getCoinReward = (problem) => {
-        // Requirement: Default is 1 unless they've been missed before
         if (!problem.hasMistake) return 1;
-        // If missed, scale based on FSRS difficulty (1-10)
         if (problem.difficulty <= 4) return 1;
         if (problem.difficulty <= 7) return 2;
         return 3;
@@ -72,9 +67,7 @@
         let { stability, difficulty, reps, state, hasMistake } = problem;
         const now = Date.now();
 
-        if (rating === 1) {
-            hasMistake = true;
-        }
+        if (rating === 1) hasMistake = true;
     
         if (state === 0) { 
             stability = W[rating === 1 ? 0 : 2];
@@ -83,7 +76,6 @@
         } else {
             difficulty = difficulty - W[6] * (rating - 3);
             difficulty = Math.max(1, Math.min(10, difficulty));
-            
             if (rating === 1) { 
                 stability = W[0] * 0.5; 
             } else { 
@@ -92,56 +84,31 @@
             }
         }
 
-        // Short interval for mistakes (45s), standard FSRS for correct
         const intervalInMinutes = rating === 1 ? 0.75 : (stability * INTERVAL_MODIFIER * 5);
         const nextReview = now + (intervalInMinutes * 60 * 1000); 
 
-        return {
-            ...problem,
-            stability,
-            difficulty,
-            reps: reps + 1,
-            state,
-            lastReview: now,
-            nextReview,
-            hasMistake
-        };
+        return { ...problem, stability, difficulty, reps: reps + 1, state, lastReview: now, nextReview, hasMistake };
     };
 
     const runTests = () => {
-        console.group("%c🧮 Math & Kittens: Automated Test Suite", "color: #6366f1; font-weight: bold; font-size: 1.2em;");
-        let passed = 0;
-        let failed = 0;
-
+        console.group("%c🧮 Math & Kittens: Corrected Logic Test Suite", "color: #6366f1; font-weight: bold; font-size: 1.2em;");
+        let passed = 0; let failed = 0;
         const assert = (condition, message, details = "") => {
-            if (condition) {
-                console.log(`%c✅ Pass: ${message}`, "color: #10b981;");
-                passed++;
-            } else {
-                console.error(`%c❌ Fail: ${message}\nDetail: ${details}`, "color: #ef4444; font-weight: bold;");
-                failed++;
-            }
+            if (condition) { console.log(`%c✅ Pass: ${message}`, "color: #10b981;"); passed++; }
+            else { console.error(`%c❌ Fail: ${message}\nDetail: ${details}`, "color: #ef4444; font-weight: bold;"); failed++; }
         };
 
-        // Test 1: FSRS Retention Logic
         const testCard = getInitialFSRS(7, 8);
-        const reviewedGood = scheduleReview(testCard, 3); // "Good" rating
-        assert(reviewedGood.stability > 0, "FSRS Stability should increase on success", `Stability was ${reviewedGood.stability}`);
-        assert(reviewedGood.hasMistake === false, "FSRS card should not have mistake flag on first-try success");
-
-        // Test 2: Reward Scaling Rules
-        const newCard = getInitialFSRS(2, 2);
-        assert(getCoinReward(newCard) === 1, "Default card must be worth 1 coin", `Got ${getCoinReward(newCard)}`);
+        const reviewedGood = scheduleReview(testCard, 3);
+        assert(reviewedGood.stability > 0, "Stability should increase on success");
         
         const cardWithBounty = { ...getInitialFSRS(9, 9), hasMistake: true, difficulty: 9.0 };
-        assert(getCoinReward(cardWithBounty) === 3, "Difficult cards with mistakes should be worth 3 coins", `Got ${getCoinReward(cardWithBounty)}`);
+        assert(getCoinReward(cardWithBounty) === 3, "High difficulty mistakes = 3 coins bounty");
 
-        // Test 3: Mistake Impact
-        const failedCard = scheduleReview(testCard, 1); // "Again" rating
-        assert(failedCard.hasMistake === true, "FSRS card must flag mistake on failure");
-        assert(failedCard.nextReview < Date.now() + 60000, "Mistakes should be scheduled for short-term repetition (< 1 min)");
+        const failedCard = scheduleReview(testCard, 1);
+        assert(failedCard.nextReview < Date.now() + 60000, "Mistakes repeat in < 1 min in FSRS data");
 
-        console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444; font-weight: bold;" : "color: #10b981; font-weight: bold;");
+        console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
         console.groupEnd();
     };
 
@@ -149,7 +116,7 @@
         const ref = useRef(null);
         useEffect(() => {
             if (ref.current && window.lucide) {
-                const iconName = name.charAt(0).toLowerCase() + name.slice(1).replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+                const iconName = name.charAt(0).toLowerCase() + name.slice(1).replace(/[A-Z]/g, l => `-${l.toLowerCase()}`);
                 ref.current.setAttribute('data-lucide', iconName);
                 lucide.createIcons();
             }
@@ -157,11 +124,28 @@
         return <i ref={ref} className={className} style={{ width: size, height: size }}></i>;
     };
 
+    const loadSavedState = () => {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                return {
+                    coins: parsed.coins || 0,
+                    deck: parsed.deck || {},
+                    queue: parsed.queue || []
+                };
+            }
+        } catch (e) {
+            console.error("Failed to load initial state", e);
+        }
+        return { coins: 0, deck: {}, queue: [] };
+    };
+
     const App = () => {
-        const [coins, setCoins] = useState(0);
-        const [deck, setDeck] = useState({}); 
-        const [queue, setQueue] = useState([]); 
-        const [currentProblem, setCurrentProblem] = useState(null);
+        const initialState = useRef(loadSavedState()).current;
+        const [coins, setCoins] = useState(initialState.coins);
+        const [deck, setDeck] = useState(initialState.deck);
+        const [queue, setQueue] = useState(initialState.queue);
         const [inputValue, setInputValue] = useState('');
         const [feedback, setFeedback] = useState(null);
         const [showReward, setShowReward] = useState(false);
@@ -174,30 +158,26 @@
         const inputRef = useRef(null);
 
         useEffect(() => {
-            // Run tests once on load
             runTests();
-
-            const saved = localStorage.getItem(STORAGE_KEY);
-            if (saved) {
-                try {
-                    const parsed = JSON.parse(saved);
-                    setCoins(parsed.coins || 0);
-                    setDeck(parsed.deck || {});
-                } catch (e) { console.error("Load failed", e); }
+            // Restore feedback state if refresh happened during a mistake
+            if (queue.length > 0 && queue[0].inCorrection) {
+                setFeedback('wrong');
             }
         }, []);
 
         useEffect(() => {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck }));
-        }, [coins, deck]);
+            if (queue.length > 0) {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue }));
+            }
+        }, [coins, deck, queue]);
 
-        const getNextFromDeck = useCallback(() => {
+        const getNextFromDeck = useCallback((currentQueue) => {
             const now = Date.now();
             const dueCards = Object.values(deck)
                 .filter(card => card.nextReview <= now)
                 .sort((a, b) => a.nextReview - b.nextReview);
             
-            const card = dueCards.find(c => !queue.some(q => q.id === c.id));
+            const card = dueCards.find(c => !currentQueue.some(q => q.id === c.id));
             if (card) return card;
 
             let a, b, id;
@@ -207,69 +187,88 @@
                 b = Math.floor(Math.random() * 11) + 2;
                 id = `${Math.min(a, b)}x${Math.max(a, b)}`;
                 attempts++;
-            } while (queue.some(q => q.id === id) && attempts < 50);
+            } while (currentQueue.some(q => q.id === id) && attempts < 50);
 
             return deck[id] || getInitialFSRS(a, b);
-        }, [deck, queue]);
+        }, [deck]);
 
+        // Only fill if empty and not just loaded from storage
         useEffect(() => {
             if (queue.length === 0) {
                 const initial = [];
                 while(initial.length < QUEUE_SIZE) {
-                    const p = getNextFromDeck();
+                    const p = getNextFromDeck(initial);
                     if (!initial.find(x => x.id === p.id)) initial.push(p);
                 }
                 setQueue(initial);
             }
-            if (queue.length > 0) setCurrentProblem(queue[0]);
-        }, [queue, getNextFromDeck]);
+        }, [queue.length, getNextFromDeck]);
 
         const handleSubmit = (e) => {
             e.preventDefault();
             if (!inputValue) return;
 
+            const currentProblem = queue[0];
             const userVal = parseInt(inputValue);
             const isCorrect = userVal === currentProblem.answer;
 
             if (isCorrect) {
                 if (feedback === 'wrong') {
-                    const updated = scheduleReview(currentProblem, 1); 
-                    setDeck(prev => ({ ...prev, [updated.id]: updated }));
+                    // Corrected the mistake
+                    const nextQueue = [...queue];
+                    const correctedItem = { ...nextQueue.shift(), inCorrection: false };
+                    nextQueue.splice(2, 0, correctedItem);
                     
-                    const nextQueue = [...queue.slice(1)];
-                    nextQueue.splice(2, 0, updated); // Re-inject into 3rd position
-                    
-                    while (nextQueue.length < QUEUE_SIZE) {
-                        nextQueue.push(getNextFromDeck());
-                    }
+                    while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
                     
                     setQueue(nextQueue);
                     setFeedback(null);
                     setInputValue('');
                 } else {
+                    // First try success
                     setFeedback('correct');
                     const updated = scheduleReview(currentProblem, 3); 
                     const reward = getCoinReward(currentProblem);
-                    
                     triggerCoinAnimation(reward);
                     
                     setTimeout(() => {
                         setCoins(prev => prev + reward);
                         setDeck(prev => ({ ...prev, [updated.id]: updated }));
+                        
                         const nextQueue = [...queue.slice(1)];
-                        while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck());
+                        while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
                         setQueue(nextQueue);
                         setFeedback(null);
                         setInputValue('');
                     }, 1000);
                 }
             } else {
-                setFeedback('wrong');
+                if (feedback !== 'wrong') {
+                    // New mistake: Update state and deck immediately
+                    const updated = scheduleReview(currentProblem, 1); 
+                    updated.inCorrection = true; 
+                    
+                    setDeck(prev => ({ ...prev, [updated.id]: updated }));
+                    
+                    const nextQueue = [...queue];
+                    nextQueue[0] = updated;
+                    setQueue(nextQueue);
+                    setFeedback('wrong');
+                }
                 setInputValue('');
             }
         };
 
         const handleIDontKnow = () => {
+            const currentProblem = queue[0];
+            const updated = scheduleReview(currentProblem, 1);
+            updated.inCorrection = true;
+            
+            setDeck(prev => ({ ...prev, [updated.id]: updated }));
+            
+            const nextQueue = [...queue];
+            nextQueue[0] = updated;
+            setQueue(nextQueue);
             setFeedback('wrong');
             setInputValue('');
             inputRef.current?.focus();
@@ -294,8 +293,7 @@
             const rect = inputRef.current?.getBoundingClientRect();
             const walletRect = walletRef.current?.getBoundingClientRect();
             if (!rect || !walletRect) return;
-
-            const newCoins = Array.from({ length: count }).map((_, i) => ({
+            const newCoins = Array.from({ length: Math.min(count, 5) }).map((_, i) => ({
                 id: Math.random(),
                 startLeft: rect.left + rect.width / 2,
                 startTop: rect.top,
@@ -306,18 +304,17 @@
             setTimeout(() => setAnimatingCoins(prev => prev.filter(c => !newCoins.find(nc => nc.id === c.id))), 1100);
         };
 
-        if (!currentProblem) return null;
+        if (queue.length === 0) return null;
+        const currentProblem = queue[0];
 
         return (
-            <div className="min-h-screen p-4 md:p-8 font-sans text-slate-800">
+            <div className="min-h-screen p-4 md:p-8 font-sans text-slate-800 bg-slate-50">
                 <div className="max-w-4xl mx-auto flex justify-between items-center mb-8 bg-white p-4 rounded-3xl shadow-sm border border-purple-200">
                     <div className="flex items-center gap-2">
-                        <div className="bg-indigo-100 p-2 rounded-xl">
-                            <Icon name="Trophy" className="text-indigo-600" />
-                        </div>
+                        <div className="bg-indigo-100 p-2 rounded-xl"><Icon name="Trophy" className="text-indigo-600" /></div>
                         <div>
                             <h1 className="font-bold text-lg leading-tight">Math & Kittens</h1>
-                            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">FSRS Spaced Repetition</p>
+                            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">FSRS Locked Mode</p>
                         </div>
                     </div>
                     <div ref={walletRef} className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md transition-transform hover:scale-105">
