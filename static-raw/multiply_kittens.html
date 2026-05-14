@@ -37,22 +37,50 @@
     const RETENTION_TARGET = 0.85;
     const INTERVAL_MODIFIER = Math.log(RETENTION_TARGET) / Math.log(0.9);
     
-    const STORAGE_KEY = 'math_kittens_fsrs_state_v6';
+    const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
+    const LEGACY_STORAGE_KEYS = ['math_kittens_fsrs_state_v6'];
     const QUEUE_SIZE = 5;
 
-    const getInitialFSRS = (a, b) => ({
-        id: `${Math.min(a, b)}x${Math.max(a, b)}`, 
-        a, b,
-        answer: a * b,
-        stability: 0,
-        difficulty: 5.0,
-        reps: 0,
-        state: 0, 
-        lastReview: null,
-        nextReview: Date.now(),
-        hasMistake: false,
-        inCorrection: false 
-    });
+    // Op registry — each handler knows how to generate fresh operands, derive a
+    // stable id, compute the answer, build a typed breakdown, and render the
+    // prompt. Adding division or carry-addition later means adding an entry
+    // here, not touching the engine.
+    const OPS = {
+        mul: {
+            generate: () => ({
+                a: Math.floor(Math.random() * 11) + 2,
+                b: Math.floor(Math.random() * 11) + 2,
+            }),
+            idOf: (a, b) => `mul:${Math.min(a, b)}x${Math.max(a, b)}`,
+            compute: (a, b) => a * b,
+            strategy: (a, b) => getMultiplicationStrategy(a, b),
+            renderPrompt: ({ a, b }) => (
+                <>
+                    <span>{a}</span>
+                    <span className="text-indigo-500 text-3xl">×</span>
+                    <span>{b}</span>
+                </>
+            ),
+        },
+    };
+
+    const makeCard = (op, a, b) => {
+        const handler = OPS[op];
+        return {
+            id: handler.idOf(a, b),
+            op,
+            a, b,
+            answer: handler.compute(a, b),
+            stability: 0,
+            difficulty: 5.0,
+            reps: 0,
+            state: 0,
+            lastReview: null,
+            nextReview: Date.now(),
+            hasMistake: false,
+            inCorrection: false,
+        };
+    };
 
     const getCoinReward = (problem) => {
         if (!problem.hasMistake) return 1;
@@ -169,15 +197,20 @@
             else { console.error(`%c❌ Fail: ${message}\nDetail: ${details}`, "color: #ef4444; font-weight: bold;"); failed++; }
         };
 
-        const testCard = getInitialFSRS(7, 8);
+        const testCard = makeCard('mul', 7, 8);
         const reviewedGood = scheduleReview(testCard, 3);
         assert(reviewedGood.stability > 0, "Stability should increase on success");
-        
-        const cardWithBounty = { ...getInitialFSRS(9, 9), hasMistake: true, difficulty: 9.0 };
+
+        const cardWithBounty = { ...makeCard('mul', 9, 9), hasMistake: true, difficulty: 9.0 };
         assert(getCoinReward(cardWithBounty) === 3, "High difficulty mistakes = 3 coins bounty");
 
         const failedCard = scheduleReview(testCard, 1);
         assert(failedCard.nextReview < Date.now() + 60000, "Mistakes repeat in < 1 min in FSRS data");
+
+        // Op registry sanity: ids are namespaced and commutative for mul.
+        assert(makeCard('mul', 4, 6).id === 'mul:4x6', "mul ids are prefixed and lo×hi-ordered");
+        assert(makeCard('mul', 6, 4).id === makeCard('mul', 4, 6).id, "mul ids are commutative");
+        assert(makeCard('mul', 7, 8).op === 'mul', "card carries its op tag");
 
         // Strategy library: every problem in 2..12 must end with the correct final answer and use positive integers.
         let strategyBad = 0;
@@ -208,6 +241,13 @@
         return <i ref={ref} className={className} style={{ width: size, height: size }}></i>;
     };
 
+    // Re-stamp a legacy card (pre-op-axis) as a mul card with a namespaced id.
+    const migrateLegacyCard = (card) => {
+        const op = 'mul';
+        const id = OPS.mul.idOf(card.a, card.b);
+        return { ...card, op, id };
+    };
+
     const loadSavedState = () => {
         try {
             const saved = localStorage.getItem(STORAGE_KEY);
@@ -218,6 +258,20 @@
                     deck: parsed.deck || {},
                     queue: parsed.queue || []
                 };
+            }
+            // No current-version state — try to migrate from any legacy key.
+            for (const legacyKey of LEGACY_STORAGE_KEYS) {
+                const legacy = localStorage.getItem(legacyKey);
+                if (!legacy) continue;
+                const parsed = JSON.parse(legacy);
+                const newDeck = {};
+                for (const k of Object.keys(parsed.deck || {})) {
+                    const migrated = migrateLegacyCard(parsed.deck[k]);
+                    newDeck[migrated.id] = migrated;
+                }
+                const newQueue = (parsed.queue || []).map(migrateLegacyCard);
+                console.log(`Migrated FSRS state from ${legacyKey} → ${STORAGE_KEY}`);
+                return { coins: parsed.coins || 0, deck: newDeck, queue: newQueue };
             }
         } catch (e) {
             console.error("Failed to load initial state", e);
@@ -246,14 +300,12 @@
             if (queue.length > 0 && queue[0].inCorrection) {
                 setFeedback('wrong');
                 const p = queue[0];
-                setBreakdown({ steps: getMultiplicationStrategy(p.a, p.b), idx: 0, reveal: false });
+                setBreakdown({ steps: OPS[p.op].strategy(p.a, p.b), idx: 0, reveal: false });
             }
         }, []);
 
         useEffect(() => {
-            if (queue.length > 0) {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue }));
-            }
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue }));
         }, [coins, deck, queue]);
 
         const getNextFromDeck = useCallback((currentQueue) => {
@@ -261,20 +313,26 @@
             const dueCards = Object.values(deck)
                 .filter(card => card.nextReview <= now)
                 .sort((a, b) => a.nextReview - b.nextReview);
-            
+
             const card = dueCards.find(c => !currentQueue.some(q => q.id === c.id));
             if (card) return card;
 
-            let a, b, id;
-            let attempts = 0;
-            do {
-                a = Math.floor(Math.random() * 11) + 2; 
-                b = Math.floor(Math.random() * 11) + 2;
-                id = `${Math.min(a, b)}x${Math.max(a, b)}`;
-                attempts++;
-            } while (currentQueue.some(q => q.id === id) && attempts < 50);
-
-            return deck[id] || getInitialFSRS(a, b);
+            // No due card — generate a fresh one. With only `mul` registered
+            // today this always picks mul; adding `div`/`add` will mix them in.
+            const ops = Object.keys(OPS);
+            for (let attempts = 0; attempts < 50; attempts++) {
+                const op = ops[Math.floor(Math.random() * ops.length)];
+                const handler = OPS[op];
+                const { a, b } = handler.generate();
+                const id = handler.idOf(a, b);
+                if (!currentQueue.some(q => q.id === id)) {
+                    return deck[id] || makeCard(op, a, b);
+                }
+            }
+            // Last-resort fallback if every attempt collided with the queue.
+            const op = ops[0];
+            const { a, b } = OPS[op].generate();
+            return makeCard(op, a, b);
         }, [deck]);
 
         // Only fill if empty and not just loaded from storage
@@ -302,7 +360,7 @@
             nextQueue[0] = updated;
             setQueue(nextQueue);
             setFeedback('wrong');
-            setBreakdown({ steps: getMultiplicationStrategy(updated.a, updated.b), idx: 0, reveal: false });
+            setBreakdown({ steps: OPS[updated.op].strategy(updated.a, updated.b), idx: 0, reveal: false });
             setInputValue('');
         };
 
@@ -413,9 +471,7 @@
                         </div>
 
                         <div className={`font-black text-slate-700 flex items-center justify-center gap-4 ${breakdown ? 'text-4xl my-4' : 'text-7xl md:text-9xl my-8'}`}>
-                            <span>{currentProblem.a}</span>
-                            <span className="text-indigo-500 text-3xl">×</span>
-                            <span>{currentProblem.b}</span>
+                            {OPS[currentProblem.op].renderPrompt(currentProblem)}
                             {breakdown && <span className="text-slate-400">= ?</span>}
                         </div>
 
