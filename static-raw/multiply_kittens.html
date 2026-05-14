@@ -40,7 +40,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.03';
+    const VERSION = '1.04';
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -271,14 +271,29 @@
         ];
     };
 
-    // Division-as-multiplication breakdown: single step framed as a × ? = product.
+    // The hint is borrowed from the matching multiplication strategy (squares,
+    // mnemonics, ×9 chain, …) so 7 × ? = 56 gets "5, 6, 7, 8 → 56 = 7 × 8" — the
+    // same anchor she's already using for 7 × 8 in mul mode. When the mul
+    // strategy has no catchy hint (e.g. ×2 doubling) we fall back to spelling
+    // out the chain of sub-steps; she can read the missing factor off it.
     // `inline: true` tells the breakdown UI the prompt already contains its own
     // '?' placeholder, so it should substitute the answer in place rather than
     // appending '= answer' at the end.
     const getDivisionStrategy = (a, b) => {
         const product = a * b;
+        const mulSteps = getMultiplicationStrategy(a, b);
+        const anchors = mulSteps.map(s => s.hint).filter(Boolean);
+        const pieces = [...anchors];
+        // Show the chain when there's no anchor at all, or when the mul strategy
+        // is genuinely multi-step (anchor alone wouldn't show how product builds).
+        if (anchors.length === 0 || mulSteps.length > 1) {
+            pieces.push(mulSteps.map(s => `${s.prompt} = ${s.answer}`).join('; '));
+        }
+        const hint = pieces.length
+            ? pieces.join(' ')
+            : `Think: ${a} times what number equals ${product}?`;
         return [{
-            hint: `Think: ${a} times what number equals ${product}? Walk the ${a}× table.`,
+            hint,
             prompt: `${a} × ? = ${product}`,
             answer: b,
             inline: true,
@@ -420,6 +435,16 @@
         const divSteps = getDivisionStrategy(4, 6);
         assert(divSteps.length === 1 && divSteps[0].answer === 6 && divSteps[0].inline === true,
             "div strategy is a single inline step with answer=b");
+
+        // Div hint inherits the matching mul anchor.
+        assert(getDivisionStrategy(7, 8)[0].hint.includes("5, 6, 7, 8"),
+            "7 × ? = 56 inherits the consecutive-digit mnemonic");
+        assert(getDivisionStrategy(7, 7)[0].hint.includes("square"),
+            "7 × ? = 49 inherits the square anchor");
+        assert(getDivisionStrategy(7, 9)[0].hint.includes("7 × 10 = 70"),
+            "7 × ? = 63 spells out the ×9 chain");
+        assert(getDivisionStrategy(2, 3)[0].hint.includes("3 + 3 = 6"),
+            "2 × ? = 6 spells out the doubling chain since stepDouble has no anchor");
 
         console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
         console.groupEnd();
