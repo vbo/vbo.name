@@ -52,6 +52,7 @@
             }),
             idOf: (a, b) => `mul:${Math.min(a, b)}x${Math.max(a, b)}`,
             compute: (a, b) => a * b,
+            label: (a, b) => `${a} × ${b}`,
             strategy: (a, b) => getMultiplicationStrategy(a, b),
             renderPrompt: ({ a, b }) => (
                 <>
@@ -456,7 +457,8 @@
                         {breakdown && (
                             <div className="mb-6 p-4 bg-indigo-50 rounded-2xl border-2 border-indigo-200">
                                 <p className="text-indigo-500 text-xs font-black uppercase tracking-widest mb-2">
-                                    {breakdown.steps.length > 1 ? `Break it down — step ${breakdown.idx + 1} of ${breakdown.steps.length}` : 'Break it down'}
+                                    {`Solving ${OPS[currentProblem.op].label(currentProblem.a, currentProblem.b)}`}
+                                    {breakdown.steps.length > 1 && ` — step ${breakdown.idx + 1} of ${breakdown.steps.length}`}
                                 </p>
                                 {breakdown.steps.slice(0, breakdown.idx).map((s, i) => (
                                     <p key={i} className="text-slate-400 text-base font-bold">{s.prompt} = {s.answer} ✓</p>
