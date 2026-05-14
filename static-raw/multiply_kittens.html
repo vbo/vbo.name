@@ -271,12 +271,14 @@
         ];
     };
 
-    // Division-as-multiplication breakdown: single step framed as a × ? = product.
     // The hint is borrowed from the matching multiplication strategy (squares,
     // mnemonics, ×9 chain, …) so 7 × ? = 56 gets "5, 6, 7, 8 → 56 = 7 × 8" — the
     // same anchor she's already using for 7 × 8 in mul mode. When the mul
     // strategy has no catchy hint (e.g. ×2 doubling) we fall back to spelling
     // out the chain of sub-steps; she can read the missing factor off it.
+    // `inline: true` tells the breakdown UI the prompt already contains its own
+    // '?' placeholder, so it should substitute the answer in place rather than
+    // appending '= answer' at the end.
     const getDivisionStrategy = (a, b) => {
         const product = a * b;
         const mulSteps = getMultiplicationStrategy(a, b);
