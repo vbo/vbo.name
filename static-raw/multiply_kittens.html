@@ -40,7 +40,11 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.10';
+    const VERSION = '1.11';
+    // Pace metric: keep the last N answer events ({coins, ms}); skip any
+    // answer that took longer than DISTRACTION_MS (likely interrupted).
+    const PACE_WINDOW = 100;
+    const DISTRACTION_MS = 60_000;
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -472,6 +476,11 @@
             && ninesSteps[0].hint.includes("63"),
             "7 × ? = 63 → single skip-count step listing multiples of 7 up to 63");
 
+        // Pace: 3 coins in 30s + 2 coins in 30s = 5 coins per minute.
+        assert(computePace([{ coins: 3, ms: 30_000 }, { coins: 2, ms: 30_000 }]) === 5,
+            "pace: 5 coins in 60s ⇒ 5.0 c/min");
+        assert(computePace([]) === null, "pace: no events ⇒ null");
+
         const foursSteps = getDivisionStrategy(4, 6);
         assert(foursSteps.length === 1
             && foursSteps[0].inline === true && foursSteps[0].answer === 6
@@ -503,13 +512,24 @@
                 return {
                     coins: parsed.coins || 0,
                     deck: parsed.deck || {},
-                    queue: parsed.queue || []
+                    queue: parsed.queue || [],
+                    paceEvents: parsed.paceEvents || []
                 };
             }
         } catch (e) {
             console.error("Failed to load initial state", e);
         }
-        return { coins: 0, deck: {}, queue: [] };
+        return { coins: 0, deck: {}, queue: [], paceEvents: [] };
+    };
+
+    // Average answering pace in coins/minute. Returns null when there's
+    // nothing useful to display yet.
+    const computePace = (events) => {
+        if (!events.length) return null;
+        const totalCoins = events.reduce((s, e) => s + e.coins, 0);
+        const totalMs = events.reduce((s, e) => s + e.ms, 0);
+        if (totalMs <= 0) return null;
+        return (totalCoins / totalMs) * 60_000;
     };
 
     const App = () => {
@@ -523,9 +543,14 @@
         // breakdown = { steps:[{prompt,answer}], idx, reveal } | null
         const [breakdown, setBreakdown] = useState(null);
         const [stepError, setStepError] = useState(false);
+        // Rolling buffer of recent answer events used for the coins/min badge.
+        const [paceEvents, setPaceEvents] = useState(initialState.paceEvents);
 
         const walletRef = useRef(null);
         const inputRef = useRef(null);
+        // Wall-clock when the current card was first shown. Reset whenever the
+        // top of the queue changes (a new problem, or the corrected card pops out).
+        const cardStartRef = useRef(Date.now());
 
         useEffect(() => {
             runTests();
@@ -538,8 +563,19 @@
         }, []);
 
         useEffect(() => {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue }));
-        }, [coins, deck, queue]);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents }));
+        }, [coins, deck, queue, paceEvents]);
+
+        // Restart the card timer whenever the visible problem changes.
+        useEffect(() => {
+            cardStartRef.current = Date.now();
+        }, [queue[0]?.id]);
+
+        const recordAnswer = (coinsEarned) => {
+            const ms = Date.now() - cardStartRef.current;
+            if (ms > DISTRACTION_MS) return; // probably a distraction — skip this event
+            setPaceEvents(prev => [...prev.slice(-(PACE_WINDOW - 1)), { coins: coinsEarned, ms }]);
+        };
 
         const getNextFromDeck = useCallback((currentQueue) => {
             const now = Date.now();
@@ -617,6 +653,10 @@
         };
 
         const completeCorrection = () => {
+            // Correction earns no coins this round (the card resets to its
+            // worth-N badge for next time), but it's still an "answer" — log
+            // it so the pace metric reflects time-cost of mistakes.
+            recordAnswer(0);
             const nextQueue = [...queue];
             const correctedItem = { ...nextQueue.shift(), inCorrection: false };
             // Reinsert "a couple cards later" so the unaided retest happens soon.
@@ -664,6 +704,7 @@
                 if (updated.op === 'div') {
                     updated.reward = Math.max(DIV_REWARD_MIN, (currentProblem.reward ?? DIV_REWARD_INITIAL) - 1);
                 }
+                recordAnswer(reward);
                 triggerCoinAnimation(reward);
                 setTimeout(() => {
                     setCoins(prev => prev + reward);
@@ -712,10 +753,21 @@
                             <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">v{VERSION}</p>
                         </div>
                     </div>
-                    <div ref={walletRef} className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md transition-transform hover:scale-105">
-                        <Icon name="Wallet" className="text-yellow-900" />
-                        <span className="font-black text-2xl text-yellow-900">{coins}</span>
-                        <Icon name="Coins" className="text-yellow-700 animate-bounce" />
+                    <div className="flex items-center gap-2">
+                        {(() => {
+                            const pace = computePace(paceEvents);
+                            return (
+                                <div className="flex flex-col items-end bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-xl font-bold text-sm leading-tight border border-indigo-100">
+                                    <span className="text-base font-black">{pace === null ? '—' : pace.toFixed(1)}</span>
+                                    <span className="text-[10px] text-indigo-400 uppercase tracking-widest font-bold">c/min</span>
+                                </div>
+                            );
+                        })()}
+                        <div ref={walletRef} className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md transition-transform hover:scale-105">
+                            <Icon name="Wallet" className="text-yellow-900" />
+                            <span className="font-black text-2xl text-yellow-900">{coins}</span>
+                            <Icon name="Coins" className="text-yellow-700 animate-bounce" />
+                        </div>
                     </div>
                 </div>
 
