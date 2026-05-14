@@ -40,7 +40,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.08';
+    const VERSION = '1.09';
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -179,7 +179,11 @@
     const stepOnes = (x) => [{ hint: "Anything × 1 is just itself!", prompt: `${x} × 1`, answer: x }];
     const stepTens = (x) => [{ hint: "× 10 — just add a zero", prompt: `${x} × 10`, answer: x * 10 }];
     const stepElevenDigit = (x) => [{ hint: "× 11 trick — write the digit twice (22, 33, …, 99)", prompt: `${x} × 11`, answer: x * 11 }];
-    const stepSquare = (n) => [{ hint: `It's a square — ${n}²`, prompt: `${n} × ${n}`, answer: n * n }];
+    // No hint here on purpose: an 8-year-old doesn't know "square" / "N²" notation,
+    // and the ×10 bridge ("9 × 10 = 90 — too much, try 9") would just leak the
+    // answer. Div correction falls through to skip-count, mul mode shows no
+    // hint and the kid recalls or misses.
+    const stepSquare = (n) => [{ prompt: `${n} × ${n}`, answer: n * n }];
     const stepHitchhiker = () => [{ hint: "Remember: the answer is forty-two!", prompt: "6 × 7", answer: 42 }];
     const stepConsecutive = () => [{ hint: "5, 6, 7, 8 → 56 = 7 × 8", prompt: "7 × 8", answer: 56 }];
     const stepElevenSquare = () => [{ hint: "11 × 11 = 121 — memorize it!", prompt: "11 × 11", answer: 121 }];
@@ -292,10 +296,11 @@
         const product = a * b;
         const mulSteps = getMultiplicationStrategy(a, b);
 
-        if (mulSteps.length === 1) {
-            const lone = mulSteps[0];
+        // Single-step mul WITH an anchor hint (squares are intentionally hintless,
+        // and they fall through to the skip-count path below).
+        if (mulSteps.length === 1 && mulSteps[0].hint) {
             return [{
-                hint: lone.hint || `Skip-count ${a}s up to ${product}.`,
+                hint: mulSteps[0].hint,
                 prompt: `${a} × ? = ${product}`,
                 answer: b,
                 inline: true,
@@ -450,8 +455,9 @@
             && consecutiveSteps[0].inline === true
             && consecutiveSteps[0].hint.includes("5, 6, 7, 8"),
             "7 × ? = 56 → single inline step with the consecutive-digit mnemonic");
-        assert(getDivisionStrategy(7, 7)[0].hint.includes("square"),
-            "7 × ? = 49 → square anchor");
+        assert(getDivisionStrategy(7, 7)[0].hint.includes("7, 14")
+            && getDivisionStrategy(7, 7)[0].hint.includes("49"),
+            "7 × ? = 49 → skip-count (squares are hintless; no jargon for 8-year-olds)");
         assert(getDivisionStrategy(2, 3)[0].hint === "Doubling!",
             "2 × ? = 6 → single inline step with the stepDouble 'Doubling!' anchor");
 
