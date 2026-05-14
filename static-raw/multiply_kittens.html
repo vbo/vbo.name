@@ -40,7 +40,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.01';
+    const VERSION = '1.02';
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -83,6 +83,31 @@
                 <>
                     <span>{a}</span>
                     <span className="text-indigo-500 text-3xl">+</span>
+                    <span>{b}</span>
+                </>
+            ),
+        },
+        sub: {
+            // 2-digit − 1-digit with a borrow: ones digit of a is in [1, b-1] so
+            // subtracting b crosses a ten. Excluding ones=0 keeps the
+            // "step back to the round number" breakdown a clean two-step.
+            generate: () => {
+                for (let i = 0; i < 100; i++) {
+                    const a = 12 + Math.floor(Math.random() * 88); // 12..99
+                    const b = 2 + Math.floor(Math.random() * 8);   // 2..9
+                    const ones = a % 10;
+                    if (ones >= 1 && ones < b) return { a, b };
+                }
+                return { a: 75, b: 6 };
+            },
+            idOf: (a, b) => `sub:${a}-${b}`,
+            compute: (a, b) => a - b,
+            label: (a, b) => `${a} − ${b}`,
+            strategy: (a, b) => getSubtractionStrategy(a, b),
+            renderPrompt: ({ a, b }) => (
+                <>
+                    <span>{a}</span>
+                    <span className="text-indigo-500 text-3xl">−</span>
                     <span>{b}</span>
                 </>
             ),
@@ -200,6 +225,18 @@
         ];
     };
 
+    // "Step back to ten" breakdown for 2-digit − 1-digit with a borrow.
+    // 75 − 6 → split 6 into (5 + 1): step down to 70 first, then subtract the leftover 1.
+    const getSubtractionStrategy = (a, b) => {
+        const ones = a % 10;
+        const tens = a - ones;
+        const leftover = b - ones;
+        return [
+            { hint: `Step back to ${tens}! ${a} − ${ones} = ${tens}.`, prompt: `${a} − ${ones}`, answer: tens },
+            { prompt: `${tens} − ${leftover}`, answer: a - b },
+        ];
+    };
+
     const scheduleReview = (problem, rating) => {
         let { stability, difficulty, reps, state, hasMistake } = problem;
         const now = Date.now();
@@ -292,6 +329,36 @@
             if (!((a % 10) + b > 10) || a + b > 100 || a < 11 || a > 91 || b < 2 || b > 9) genBad++;
         }
         assert(genBad === 0, "add generator: 2-digit + 1-digit, forces carry, sum ≤ 100");
+
+        // Subtraction op
+        assert(makeCard('sub', 75, 6).id === 'sub:75-6', "sub ids are prefixed with a-b");
+        assert(OPS.sub.compute(75, 6) === 69, "sub compute is plain a-b");
+
+        // step-back-to-ten strategy: step1 hits the lower multiple of 10, step2 = a-b.
+        let subBad = 0;
+        for (let a = 12; a <= 99; a++) {
+            for (let b = 2; b <= 9; b++) {
+                const ones = a % 10;
+                if (!(ones >= 1 && ones < b)) continue;
+                const steps = getSubtractionStrategy(a, b);
+                const tens = a - ones;
+                if (steps.length !== 2) subBad++;
+                if (steps[0].answer !== tens) subBad++;
+                if (steps[steps.length - 1].answer !== a - b) subBad++;
+                for (const s of steps) {
+                    if (!Number.isInteger(s.answer) || s.answer < 0) subBad++;
+                }
+            }
+        }
+        assert(subBad === 0, "step-back-to-ten strategy: step1 hits prev 10, step2 = a-b, all non-negative integers");
+
+        let subGenBad = 0;
+        for (let i = 0; i < 200; i++) {
+            const { a, b } = OPS.sub.generate();
+            const ones = a % 10;
+            if (a < 12 || a > 99 || b < 2 || b > 9 || ones < 1 || ones >= b) subGenBad++;
+        }
+        assert(subGenBad === 0, "sub generator: 2-digit − 1-digit, forces borrow, ones in [1, b-1]");
 
         console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
         console.groupEnd();
