@@ -61,6 +61,54 @@
         return 3;
     };
 
+    // Decompose a × b into typed sub-steps the kid can solve, ending with the original answer.
+    // Each step is { prompt: string, answer: number }.
+    const getMultiplicationStrategy = (a, b) => {
+        // Choose x = "the number we multiply", y = "the multiplier with the trick" if any.
+        const SPECIAL = [1, 2, 5, 9, 10, 11, 12];
+        let x, y;
+        if (SPECIAL.includes(b) && !SPECIAL.includes(a)) { x = a; y = b; }
+        else if (SPECIAL.includes(a) && !SPECIAL.includes(b)) { x = b; y = a; }
+        else { x = Math.max(a, b); y = Math.min(a, b); }
+
+        if (y === 1) return [{ prompt: `${x} × 1`, answer: x }];
+        if (y === 10) return [{ prompt: `${x} × 10`, answer: x * 10 }];
+        if (y === 2) return [{ prompt: `${x} + ${x}`, answer: x * 2 }];
+        if (y === 5) return [
+            { prompt: `${x} × 10`, answer: x * 10 },
+            { prompt: `Half of ${x * 10}`, answer: x * 5 },
+        ];
+        if (y === 9) return [
+            { prompt: `${x} × 10`, answer: x * 10 },
+            { prompt: `${x * 10} − ${x}`, answer: x * 9 },
+        ];
+        if (y === 11) return [
+            { prompt: `${x} × 10`, answer: x * 10 },
+            { prompt: `${x * 10} + ${x}`, answer: x * 11 },
+        ];
+        if (y === 12) return [
+            { prompt: `${x} × 10`, answer: x * 10 },
+            { prompt: `${x} × 2`, answer: x * 2 },
+            { prompt: `${x * 10} + ${x * 2}`, answer: x * 12 },
+        ];
+        // y ∈ {3, 4}: double-and-add or double-double
+        if (y === 3) return [
+            { prompt: `${x} × 2`, answer: x * 2 },
+            { prompt: `${x * 2} + ${x}`, answer: x * 3 },
+        ];
+        if (y === 4) return [
+            { prompt: `${x} × 2`, answer: x * 2 },
+            { prompt: `${x * 2} × 2`, answer: x * 4 },
+        ];
+        // y ∈ {6, 7, 8}: split as 5 + (y-5)
+        const rest = y - 5;
+        return [
+            { prompt: `${x} × 5`, answer: x * 5 },
+            { prompt: `${x} × ${rest}`, answer: x * rest },
+            { prompt: `${x * 5} + ${x * rest}`, answer: x * y },
+        ];
+    };
+
     const scheduleReview = (problem, rating) => {
         let { stability, difficulty, reps, state, hasMistake } = problem;
         const now = Date.now();
@@ -106,6 +154,19 @@
         const failedCard = scheduleReview(testCard, 1);
         assert(failedCard.nextReview < Date.now() + 60000, "Mistakes repeat in < 1 min in FSRS data");
 
+        // Strategy library: every problem in 2..12 must end with the correct final answer and use positive integers.
+        let strategyBad = 0;
+        for (let i = 2; i <= 12; i++) {
+            for (let j = 2; j <= 12; j++) {
+                const steps = getMultiplicationStrategy(i, j);
+                if (!steps.length || steps[steps.length - 1].answer !== i * j) strategyBad++;
+                for (const s of steps) {
+                    if (!Number.isInteger(s.answer) || s.answer < 0) strategyBad++;
+                }
+            }
+        }
+        assert(strategyBad === 0, "Strategy steps end at a×b and stay non-negative integers");
+
         console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
         console.groupEnd();
     };
@@ -147,15 +208,20 @@
         const [inputValue, setInputValue] = useState('');
         const [feedback, setFeedback] = useState(null);
         const [animatingCoins, setAnimatingCoins] = useState([]);
+        // breakdown = { steps:[{prompt,answer}], idx, reveal } | null
+        const [breakdown, setBreakdown] = useState(null);
+        const [stepError, setStepError] = useState(false);
 
         const walletRef = useRef(null);
         const inputRef = useRef(null);
 
         useEffect(() => {
             runTests();
-            // Restore feedback state if refresh happened during a mistake
+            // Restore correction state if refresh happened mid-mistake.
             if (queue.length > 0 && queue[0].inCorrection) {
                 setFeedback('wrong');
+                const p = queue[0];
+                setBreakdown({ steps: getMultiplicationStrategy(p.a, p.b), idx: 0, reveal: false });
             }
         }, []);
 
@@ -198,73 +264,84 @@
             }
         }, [queue.length, getNextFromDeck]);
 
-        const handleSubmit = (e) => {
-            e.preventDefault();
-            if (!inputValue) return;
-
-            const currentProblem = queue[0];
-            const userVal = parseInt(inputValue);
-            const isCorrect = userVal === currentProblem.answer;
-
-            if (isCorrect) {
-                if (feedback === 'wrong') {
-                    // Corrected the mistake
-                    const nextQueue = [...queue];
-                    const correctedItem = { ...nextQueue.shift(), inCorrection: false };
-                    nextQueue.splice(2, 0, correctedItem);
-                    
-                    while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
-                    
-                    setQueue(nextQueue);
-                    setFeedback(null);
-                    setInputValue('');
-                } else {
-                    // First try success
-                    setFeedback('correct');
-                    const updated = scheduleReview(currentProblem, 3); 
-                    const reward = getCoinReward(currentProblem);
-                    triggerCoinAnimation(reward);
-                    
-                    setTimeout(() => {
-                        setCoins(prev => prev + reward);
-                        setDeck(prev => ({ ...prev, [updated.id]: updated }));
-                        
-                        const nextQueue = [...queue.slice(1)];
-                        while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
-                        setQueue(nextQueue);
-                        setFeedback(null);
-                        setInputValue('');
-                    }, 1000);
-                }
-            } else {
-                if (feedback !== 'wrong') {
-                    // New mistake: Update state and deck immediately
-                    const updated = scheduleReview(currentProblem, 1); 
-                    updated.inCorrection = true; 
-                    
-                    setDeck(prev => ({ ...prev, [updated.id]: updated }));
-                    
-                    const nextQueue = [...queue];
-                    nextQueue[0] = updated;
-                    setQueue(nextQueue);
-                    setFeedback('wrong');
-                }
-                setInputValue('');
-            }
+        const flashError = () => {
+            setStepError(true);
+            setTimeout(() => setStepError(false), 400);
         };
 
-        const handleIDontKnow = () => {
-            const currentProblem = queue[0];
-            const updated = scheduleReview(currentProblem, 1);
+        const enterBreakdown = (problem) => {
+            const updated = scheduleReview(problem, 1);
             updated.inCorrection = true;
-            
             setDeck(prev => ({ ...prev, [updated.id]: updated }));
-            
             const nextQueue = [...queue];
             nextQueue[0] = updated;
             setQueue(nextQueue);
             setFeedback('wrong');
+            setBreakdown({ steps: getMultiplicationStrategy(updated.a, updated.b), idx: 0, reveal: false });
             setInputValue('');
+        };
+
+        const completeCorrection = () => {
+            const nextQueue = [...queue];
+            const correctedItem = { ...nextQueue.shift(), inCorrection: false };
+            // Reinsert "a couple cards later" so the unaided retest happens soon.
+            nextQueue.splice(2, 0, correctedItem);
+            while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
+            setQueue(nextQueue);
+            setFeedback(null);
+            setBreakdown(null);
+            setInputValue('');
+        };
+
+        const handleSubmit = (e) => {
+            e.preventDefault();
+            if (!inputValue) return;
+            const userVal = parseInt(inputValue);
+
+            // Breakdown mode: each step is its own typed check.
+            if (breakdown) {
+                const step = breakdown.steps[breakdown.idx];
+                if (userVal === step.answer) {
+                    if (breakdown.idx + 1 >= breakdown.steps.length) {
+                        completeCorrection();
+                    } else {
+                        setBreakdown({ ...breakdown, idx: breakdown.idx + 1, attempts: 0, reveal: false });
+                        setInputValue('');
+                    }
+                } else {
+                    // Reveal the step's answer after two misses so she isn't stuck.
+                    const attempts = (breakdown.attempts || 0) + 1;
+                    setBreakdown({ ...breakdown, attempts, reveal: attempts >= 2 });
+                    setInputValue('');
+                    flashError();
+                }
+                return;
+            }
+
+            const currentProblem = queue[0];
+            const isCorrect = userVal === currentProblem.answer;
+            if (isCorrect) {
+                // First-try success
+                setFeedback('correct');
+                const updated = scheduleReview(currentProblem, 3);
+                const reward = getCoinReward(currentProblem);
+                triggerCoinAnimation(reward);
+                setTimeout(() => {
+                    setCoins(prev => prev + reward);
+                    setDeck(prev => ({ ...prev, [updated.id]: updated }));
+                    const nextQueue = [...queue.slice(1)];
+                    while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
+                    setQueue(nextQueue);
+                    setFeedback(null);
+                    setInputValue('');
+                }, 1000);
+            } else {
+                enterBreakdown(currentProblem);
+            }
+        };
+
+        const handleIDontKnow = () => {
+            enterBreakdown(queue[0]);
             inputRef.current?.focus();
         };
 
@@ -310,29 +387,36 @@
                             Worth {getCoinReward(currentProblem)} {getCoinReward(currentProblem) === 1 ? 'Coin' : 'Coins'}
                         </div>
 
-                        <div className="text-7xl md:text-9xl font-black text-slate-700 my-8 flex items-center justify-center gap-4">
+                        <div className={`font-black text-slate-700 flex items-center justify-center gap-4 ${breakdown ? 'text-4xl my-4' : 'text-7xl md:text-9xl my-8'}`}>
                             <span>{currentProblem.a}</span>
-                            <span className="text-indigo-500 text-5xl">×</span>
+                            <span className="text-indigo-500 text-3xl">×</span>
                             <span>{currentProblem.b}</span>
+                            {breakdown && <span className="text-slate-400">= ?</span>}
                         </div>
 
-                        {feedback === 'wrong' && (
-                            <div className="mb-6 p-4 bg-red-50 rounded-2xl border-2 border-red-200 animate-pulse">
-                                <p className="text-red-600 font-bold text-lg">Answer: <span className="text-2xl font-black underline">{currentProblem.answer}</span></p>
-                                <p className="text-red-400 text-sm font-medium">Type it to keep learning!</p>
+                        {breakdown && (
+                            <div className="mb-6 p-4 bg-indigo-50 rounded-2xl border-2 border-indigo-200">
+                                <p className="text-indigo-500 text-xs font-black uppercase tracking-widest mb-2">Break it down — step {breakdown.idx + 1} of {breakdown.steps.length}</p>
+                                {breakdown.steps.slice(0, breakdown.idx).map((s, i) => (
+                                    <p key={i} className="text-slate-400 text-base font-bold">{s.prompt} = {s.answer} ✓</p>
+                                ))}
+                                <p className="text-indigo-700 text-2xl font-black mt-1">
+                                    {breakdown.steps[breakdown.idx].prompt} = {breakdown.reveal ? <span className="underline">{breakdown.steps[breakdown.idx].answer}</span> : '?'}
+                                </p>
+                                {breakdown.reveal && <p className="text-indigo-400 text-xs font-medium mt-1">Type it to keep learning!</p>}
                             </div>
                         )}
 
                         <form onSubmit={handleSubmit} className="relative z-10">
                             <input ref={inputRef} type="number" inputMode="numeric" pattern="[0-9]*"
                                    value={inputValue} onChange={(e) => setInputValue(e.target.value)}
-                                   placeholder={feedback === 'wrong' ? currentProblem.answer : "?"} autoFocus
+                                   placeholder={breakdown && breakdown.reveal ? breakdown.steps[breakdown.idx].answer : "?"} autoFocus
                                    autoComplete="off" autoCorrect="off" spellCheck="false"
-                                   className={`w-full text-center text-6xl font-black p-6 rounded-3xl bg-slate-50 border-4 outline-none transition-all ${feedback === 'correct' ? 'border-green-500 bg-green-50 text-green-600' : feedback === 'wrong' ? 'border-red-500 bg-red-50 text-red-600' : 'border-slate-100 focus:border-indigo-400'}`} />
-                            
+                                   className={`w-full text-center text-6xl font-black p-6 rounded-3xl bg-slate-50 border-4 outline-none transition-all ${feedback === 'correct' ? 'border-green-500 bg-green-50 text-green-600' : stepError ? 'border-red-500 bg-red-50 text-red-600 shake' : breakdown ? 'border-indigo-300 focus:border-indigo-500' : 'border-slate-100 focus:border-indigo-400'}`} />
+
                             <div className="mt-6 flex gap-3">
                                 <button type="submit" disabled={!inputValue || feedback === 'correct'} className="flex-[2] bg-slate-800 hover:bg-slate-900 disabled:bg-slate-200 text-white text-2xl font-black py-5 rounded-3xl shadow-lg transition-all">
-                                    {feedback === 'wrong' ? 'CONTINUE' : 'GO!'}
+                                    {breakdown ? (breakdown.idx + 1 === breakdown.steps.length ? 'FINISH' : 'NEXT') : 'GO!'}
                                 </button>
                                 {!feedback && (
                                     <button type="button" onClick={handleIDontKnow} className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold py-5 rounded-3xl flex items-center justify-center gap-2">
