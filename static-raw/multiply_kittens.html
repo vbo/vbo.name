@@ -40,7 +40,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.02';
+    const VERSION = '1.03';
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -112,11 +112,42 @@
                 </>
             ),
         },
+        div: {
+            // Division framed as "find the missing factor": shown as a × ? = a·b.
+            // Kid types b. Same operand space as mul (2..12) so it slots neatly
+            // alongside multiplication facts she already practises.
+            generate: () => ({
+                a: Math.floor(Math.random() * 11) + 2,
+                b: Math.floor(Math.random() * 11) + 2,
+            }),
+            // (a, b) and (b, a) are different probes (multiples-of-a vs multiples-of-b),
+            // so the id is NOT commutative.
+            idOf: (a, b) => `div:${a}_${b}`,
+            compute: (a, b) => b,
+            label: (a, b) => `${a} × ? = ${a * b}`,
+            strategy: (a, b) => getDivisionStrategy(a, b),
+            selfContained: true, // renderPrompt already shows the full equation
+            renderPrompt: ({ a, b }) => (
+                <>
+                    <span>{a}</span>
+                    <span className="text-indigo-500 text-3xl">×</span>
+                    <span className="text-slate-400">?</span>
+                    <span className="text-indigo-500 text-3xl">=</span>
+                    <span>{a * b}</span>
+                </>
+            ),
+        },
     };
+
+    // Reward state for div cards: starts at 3, decays 3→2→1 with each first-try
+    // success and resets to 3 on any miss. Mul/add/sub use the FSRS-difficulty
+    // band instead.
+    const DIV_REWARD_INITIAL = 3;
+    const DIV_REWARD_MIN = 1;
 
     const makeCard = (op, a, b) => {
         const handler = OPS[op];
-        return {
+        const card = {
             id: handler.idOf(a, b),
             op,
             a, b,
@@ -130,9 +161,12 @@
             hasMistake: false,
             inCorrection: false,
         };
+        if (op === 'div') card.reward = DIV_REWARD_INITIAL;
+        return card;
     };
 
     const getCoinReward = (problem) => {
+        if (problem.op === 'div') return problem.reward ?? DIV_REWARD_INITIAL;
         if (!problem.hasMistake) return 1;
         if (problem.difficulty <= 4) return 1;
         if (problem.difficulty <= 7) return 2;
@@ -235,6 +269,20 @@
             { hint: `Step back to ${tens}! ${a} − ${ones} = ${tens}.`, prompt: `${a} − ${ones}`, answer: tens },
             { prompt: `${tens} − ${leftover}`, answer: a - b },
         ];
+    };
+
+    // Division-as-multiplication breakdown: single step framed as a × ? = product.
+    // `inline: true` tells the breakdown UI the prompt already contains its own
+    // '?' placeholder, so it should substitute the answer in place rather than
+    // appending '= answer' at the end.
+    const getDivisionStrategy = (a, b) => {
+        const product = a * b;
+        return [{
+            hint: `Think: ${a} times what number equals ${product}? Walk the ${a}× table.`,
+            prompt: `${a} × ? = ${product}`,
+            answer: b,
+            inline: true,
+        }];
     };
 
     const scheduleReview = (problem, rating) => {
@@ -359,6 +407,19 @@
             if (a < 12 || a > 99 || b < 2 || b > 9 || ones < 1 || ones >= b) subGenBad++;
         }
         assert(subGenBad === 0, "sub generator: 2-digit − 1-digit, forces borrow, ones in [1, b-1]");
+
+        // Division op (framed as a × ? = product)
+        const divCard = makeCard('div', 4, 6);
+        assert(divCard.id === 'div:4_6', "div ids use a_b shape");
+        assert(divCard.answer === 6, "div answer is the missing factor b");
+        assert(divCard.reward === 3, "div cards start at reward 3");
+        assert(makeCard('div', 4, 6).id !== makeCard('div', 6, 4).id, "div ids are NOT commutative");
+        assert(getCoinReward({ op: 'div', reward: 2 }) === 2, "div badge shows per-card reward");
+        assert(getCoinReward({ op: 'div' }) === 3, "div badge defaults to 3 when reward missing");
+
+        const divSteps = getDivisionStrategy(4, 6);
+        assert(divSteps.length === 1 && divSteps[0].answer === 6 && divSteps[0].inline === true,
+            "div strategy is a single inline step with answer=b");
 
         console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
         console.groupEnd();
@@ -486,6 +547,8 @@
         const enterBreakdown = (problem) => {
             const updated = scheduleReview(problem, 1);
             updated.inCorrection = true;
+            // Any miss resets the div coin-decay back to the full 3.
+            if (updated.op === 'div') updated.reward = DIV_REWARD_INITIAL;
             setDeck(prev => ({ ...prev, [updated.id]: updated }));
             const nextQueue = [...queue];
             nextQueue[0] = updated;
@@ -539,6 +602,10 @@
                 setFeedback('correct');
                 const updated = scheduleReview(currentProblem, 3);
                 const reward = getCoinReward(currentProblem);
+                // Decay div coin reward for next appearance: 3 → 2 → 1, floor at 1.
+                if (updated.op === 'div') {
+                    updated.reward = Math.max(DIV_REWARD_MIN, (currentProblem.reward ?? DIV_REWARD_INITIAL) - 1);
+                }
                 triggerCoinAnimation(reward);
                 setTimeout(() => {
                     setCoins(prev => prev + reward);
@@ -603,27 +670,37 @@
 
                         <div className={`font-black text-slate-700 flex items-center justify-center gap-4 ${breakdown ? 'text-4xl my-4' : 'text-7xl md:text-9xl my-8'}`}>
                             {OPS[currentProblem.op].renderPrompt(currentProblem)}
-                            {breakdown && <span className="text-slate-400">= ?</span>}
+                            {breakdown && !OPS[currentProblem.op].selfContained && <span className="text-slate-400">= ?</span>}
                         </div>
 
-                        {breakdown && (
-                            <div className="mb-6 p-4 bg-indigo-50 rounded-2xl border-2 border-indigo-200">
-                                <p className="text-indigo-500 text-xs font-black uppercase tracking-widest mb-2">
-                                    {`Solving ${OPS[currentProblem.op].label(currentProblem.a, currentProblem.b)}`}
-                                    {breakdown.steps.length > 1 && ` — step ${breakdown.idx + 1} of ${breakdown.steps.length}`}
-                                </p>
-                                {breakdown.steps.slice(0, breakdown.idx).map((s, i) => (
-                                    <p key={i} className="text-slate-400 text-base font-bold">{s.prompt} = {s.answer} ✓</p>
-                                ))}
-                                {breakdown.steps[breakdown.idx].hint && (
-                                    <p className="text-indigo-600 text-sm italic mb-1">💡 {breakdown.steps[breakdown.idx].hint}</p>
-                                )}
-                                <p className="text-indigo-700 text-2xl font-black mt-1">
-                                    {breakdown.steps[breakdown.idx].prompt} = {breakdown.reveal ? <span className="underline">{breakdown.steps[breakdown.idx].answer}</span> : '?'}
-                                </p>
-                                {breakdown.reveal && <p className="text-indigo-400 text-xs font-medium mt-1">Type it to keep learning!</p>}
-                            </div>
-                        )}
+                        {breakdown && (() => {
+                            const step = breakdown.steps[breakdown.idx];
+                            // Steps marked inline (e.g. div: "a × ? = product") already contain
+                            // their own '?'. Render the prompt with '?' or the answer in place.
+                            const stepLine = step.inline
+                                ? (breakdown.reveal
+                                    ? <span className="underline">{step.prompt.replace('?', step.answer)}</span>
+                                    : step.prompt)
+                                : <>{step.prompt} = {breakdown.reveal ? <span className="underline">{step.answer}</span> : '?'}</>;
+                            return (
+                                <div className="mb-6 p-4 bg-indigo-50 rounded-2xl border-2 border-indigo-200">
+                                    <p className="text-indigo-500 text-xs font-black uppercase tracking-widest mb-2">
+                                        {`Solving ${OPS[currentProblem.op].label(currentProblem.a, currentProblem.b)}`}
+                                        {breakdown.steps.length > 1 && ` — step ${breakdown.idx + 1} of ${breakdown.steps.length}`}
+                                    </p>
+                                    {breakdown.steps.slice(0, breakdown.idx).map((s, i) => (
+                                        <p key={i} className="text-slate-400 text-base font-bold">
+                                            {s.inline ? s.prompt.replace('?', s.answer) : `${s.prompt} = ${s.answer}`} ✓
+                                        </p>
+                                    ))}
+                                    {step.hint && (
+                                        <p className="text-indigo-600 text-sm italic mb-1">💡 {step.hint}</p>
+                                    )}
+                                    <p className="text-indigo-700 text-2xl font-black mt-1">{stepLine}</p>
+                                    {breakdown.reveal && <p className="text-indigo-400 text-xs font-medium mt-1">Type it to keep learning!</p>}
+                                </div>
+                            );
+                        })()}
 
                         <form onSubmit={handleSubmit} className="relative z-10">
                             <input ref={inputRef} type="number" inputMode="numeric" pattern="[0-9]*"
