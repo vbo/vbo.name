@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Math & Kittens - Persistent FSRS</title>
+    <title>Math</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -39,6 +39,8 @@
     
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
+    // Bump by 0.01 with every merge to master so the kid can tell builds apart.
+    const VERSION = '1.01';
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -355,18 +357,35 @@
 
         const getNextFromDeck = useCallback((currentQueue) => {
             const now = Date.now();
-            const dueCards = Object.values(deck)
-                .filter(card => card.nextReview <= now)
-                .sort((a, b) => a.nextReview - b.nextReview);
-
-            const card = dueCards.find(c => !currentQueue.some(q => q.id === c.id));
-            if (card) return card;
-
-            // No due card — generate a fresh one. With only `mul` registered
-            // today this always picks mul; adding `div`/`add` will mix them in.
             const ops = Object.keys(OPS);
+
+            // Count cards per registered op so under-represented ops get boosted.
+            // Without this, a long-standing op (mul) keeps producing due cards
+            // forever and a newly added op (add) never surfaces.
+            const opCounts = Object.fromEntries(ops.map(op => [op, 0]));
+            for (const c of Object.values(deck)) {
+                if (c.op in opCounts) opCounts[c.op]++;
+            }
+            const minCount = Math.min(...ops.map(op => opCounts[op]));
+            const rarestOps = ops.filter(op => opCounts[op] === minCount);
+            const opsImbalanced = rarestOps.length < ops.length;
+
+            // ~30% of picks force a fresh card from the rarest op when imbalanced.
+            // The remaining 70% (or 100% when balanced) keep FSRS-due cards in order.
+            const wantVariety = opsImbalanced && Math.random() < 0.3;
+
+            if (!wantVariety) {
+                const dueCards = Object.values(deck)
+                    .filter(card => card.nextReview <= now)
+                    .sort((a, b) => a.nextReview - b.nextReview);
+                const card = dueCards.find(c => !currentQueue.some(q => q.id === c.id));
+                if (card) return card;
+            }
+
+            // Fresh draw — restrict to rarest op when forcing variety, any op otherwise.
+            const eligibleOps = wantVariety ? rarestOps : ops;
             for (let attempts = 0; attempts < 50; attempts++) {
-                const op = ops[Math.floor(Math.random() * ops.length)];
+                const op = eligibleOps[Math.floor(Math.random() * eligibleOps.length)];
                 const handler = OPS[op];
                 const { a, b } = handler.generate();
                 const id = handler.idOf(a, b);
@@ -375,7 +394,7 @@
                 }
             }
             // Last-resort fallback if every attempt collided with the queue.
-            const op = ops[0];
+            const op = eligibleOps[0];
             const { a, b } = OPS[op].generate();
             return makeCard(op, a, b);
         }, [deck]);
@@ -497,8 +516,8 @@
                     <div className="flex items-center gap-2">
                         <div className="bg-indigo-100 p-2 rounded-xl"><Icon name="Trophy" className="text-indigo-600" /></div>
                         <div>
-                            <h1 className="font-bold text-lg leading-tight">Math & Kittens</h1>
-                            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">FSRS Locked Mode</p>
+                            <h1 className="font-bold text-lg leading-tight">Math</h1>
+                            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">v{VERSION}</p>
                         </div>
                     </div>
                     <div ref={walletRef} className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md transition-transform hover:scale-105">
