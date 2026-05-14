@@ -472,6 +472,16 @@
             && foursSteps[foursSteps.length - 1].inline === true,
             "4 × ? = 24 → ×4 doubling chain + final inline step with answer 6");
 
+        // Div hint inherits the matching mul anchor.
+        assert(getDivisionStrategy(7, 8)[0].hint.includes("5, 6, 7, 8"),
+            "7 × ? = 56 inherits the consecutive-digit mnemonic");
+        assert(getDivisionStrategy(7, 7)[0].hint.includes("square"),
+            "7 × ? = 49 inherits the square anchor");
+        assert(getDivisionStrategy(7, 9)[0].hint.includes("7 × 10 = 70"),
+            "7 × ? = 63 spells out the ×9 chain");
+        assert(getDivisionStrategy(2, 3)[0].hint.includes("3 + 3 = 6"),
+            "2 × ? = 6 spells out the doubling chain since stepDouble has no anchor");
+
         console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
         console.groupEnd();
     };
