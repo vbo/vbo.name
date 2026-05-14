@@ -62,6 +62,29 @@
                 </>
             ),
         },
+        add: {
+            // 2-digit + 1-digit, ones digits force a carry: (a%10) + b > 10, a+b ≤ 100.
+            generate: () => {
+                for (let i = 0; i < 100; i++) {
+                    const a = 11 + Math.floor(Math.random() * 81); // 11..91
+                    const b = 2 + Math.floor(Math.random() * 8);   // 2..9
+                    if ((a % 10) + b > 10 && a + b <= 100) return { a, b };
+                }
+                return { a: 73, b: 9 };
+            },
+            // Generator always produces (2-digit, 1-digit) in that order, so no commutativity rewrite needed.
+            idOf: (a, b) => `add:${a}+${b}`,
+            compute: (a, b) => a + b,
+            label: (a, b) => `${a} + ${b}`,
+            strategy: (a, b) => getAdditionStrategy(a, b),
+            renderPrompt: ({ a, b }) => (
+                <>
+                    <span>{a}</span>
+                    <span className="text-indigo-500 text-3xl">+</span>
+                    <span>{b}</span>
+                </>
+            ),
+        },
     };
 
     const makeCard = (op, a, b) => {
@@ -162,6 +185,19 @@
         return [{ prompt: `${a} × ${b}`, answer: a * b }];
     };
 
+    // "Make ten" breakdown for 2-digit + 1-digit with a carry.
+    // 73 + 8 → split 8 into (7 + 1): first reach 80, then add the leftover 1.
+    const getAdditionStrategy = (a, b) => {
+        const ones = a % 10;
+        const complement = 10 - ones;
+        const tens = a - ones + 10;
+        const leftover = b - complement;
+        return [
+            { hint: `Make ten! ${a} needs ${complement} more to reach ${tens}.`, prompt: `${a} + ${complement}`, answer: tens },
+            { prompt: `${tens} + ${leftover}`, answer: a + b },
+        ];
+    };
+
     const scheduleReview = (problem, rating) => {
         let { stability, difficulty, reps, state, hasMistake } = problem;
         const now = Date.now();
@@ -224,6 +260,36 @@
             }
         }
         assert(strategyBad === 0, "Strategy steps end at a×b and stay non-negative integers");
+
+        // Addition op
+        assert(makeCard('add', 73, 8).id === 'add:73+8', "add ids are prefixed with a+b");
+        assert(OPS.add.compute(73, 8) === 81, "add compute is plain a+b");
+
+        // make-ten strategy: every carry-add problem ends at a+b and intermediate is the next multiple of 10.
+        let addBad = 0;
+        for (let a = 11; a <= 91; a++) {
+            for (let b = 2; b <= 9; b++) {
+                if ((a % 10) + b <= 10) continue;
+                if (a + b > 100) continue;
+                const steps = getAdditionStrategy(a, b);
+                const tens = a - (a % 10) + 10;
+                if (steps.length !== 2) addBad++;
+                if (steps[0].answer !== tens) addBad++;
+                if (steps[steps.length - 1].answer !== a + b) addBad++;
+                for (const s of steps) {
+                    if (!Number.isInteger(s.answer) || s.answer < 0) addBad++;
+                }
+            }
+        }
+        assert(addBad === 0, "make-ten strategy: step1 hits next 10, step2 = a+b, all integers");
+
+        // Generator always produces a valid carry problem.
+        let genBad = 0;
+        for (let i = 0; i < 200; i++) {
+            const { a, b } = OPS.add.generate();
+            if (!((a % 10) + b > 10) || a + b > 100 || a < 11 || a > 91 || b < 2 || b > 9) genBad++;
+        }
+        assert(genBad === 0, "add generator: 2-digit + 1-digit, forces carry, sum ≤ 100");
 
         console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
         console.groupEnd();
