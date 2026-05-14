@@ -456,8 +456,8 @@
             "7 × ? = 56 → single inline step with the consecutive-digit mnemonic");
         assert(getDivisionStrategy(7, 7)[0].hint.includes("square"),
             "7 × ? = 49 → square anchor");
-        assert(getDivisionStrategy(2, 3)[0].hint.includes("3 + 3 = 6"),
-            "2 × ? = 6 → doubling falls back to its own chain text (stepDouble has no anchor)");
+        assert(getDivisionStrategy(2, 3)[0].hint === "Doubling!",
+            "2 × ? = 6 → single inline step with the stepDouble 'Doubling!' anchor");
 
         // Multi-step strategies: kid types the mul chain first, then a final
         // inline step asks for the missing factor.
