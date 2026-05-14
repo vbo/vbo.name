@@ -62,51 +62,76 @@
     };
 
     // Decompose a × b into typed sub-steps the kid can solve, ending with the original answer.
-    // Each step is { prompt: string, answer: number }.
-    const getMultiplicationStrategy = (a, b) => {
-        // Choose x = "the number we multiply", y = "the multiplier with the trick" if any.
-        const SPECIAL = [1, 2, 5, 9, 10, 11, 12];
-        let x, y;
-        if (SPECIAL.includes(b) && !SPECIAL.includes(a)) { x = a; y = b; }
-        else if (SPECIAL.includes(a) && !SPECIAL.includes(b)) { x = b; y = a; }
-        else { x = Math.max(a, b); y = Math.min(a, b); }
+    // Each step is { prompt: string, answer: number, hint?: string }.
+    // hint is shown above the prompt to anchor a memorized fact (squares, mnemonics, ×11 trick, …).
+    const stepOnes = (x) => [{ hint: "Anything × 1 is just itself!", prompt: `${x} × 1`, answer: x }];
+    const stepTens = (x) => [{ hint: "× 10 — just add a zero", prompt: `${x} × 10`, answer: x * 10 }];
+    const stepElevenDigit = (x) => [{ hint: "× 11 trick — write the digit twice (22, 33, …, 99)", prompt: `${x} × 11`, answer: x * 11 }];
+    const stepSquare = (n) => [{ hint: `It's a square — ${n}²`, prompt: `${n} × ${n}`, answer: n * n }];
+    const stepHitchhiker = () => [{ hint: "Remember: the answer is forty-two!", prompt: "6 × 7", answer: 42 }];
+    const stepConsecutive = () => [{ hint: "5, 6, 7, 8 → 56 = 7 × 8", prompt: "7 × 8", answer: 56 }];
+    const stepElevenSquare = () => [{ hint: "11 × 11 = 121 — memorize it!", prompt: "11 × 11", answer: 121 }];
+    const stepGross = () => [{ hint: "A dozen dozen is a 'gross' — 144", prompt: "12 × 12", answer: 144 }];
 
-        if (y === 1) return [{ prompt: `${x} × 1`, answer: x }];
-        if (y === 10) return [{ prompt: `${x} × 10`, answer: x * 10 }];
-        if (y === 2) return [{ prompt: `${x} + ${x}`, answer: x * 2 }];
-        if (y === 5) return [
-            { prompt: `${x} × 10`, answer: x * 10 },
-            { prompt: `Half of ${x * 10}`, answer: x * 5 },
-        ];
-        if (y === 9) return [
-            { prompt: `${x} × 10`, answer: x * 10 },
-            { prompt: `${x * 10} − ${x}`, answer: x * 9 },
-        ];
-        if (y === 11) return [
-            { prompt: `${x} × 10`, answer: x * 10 },
-            { prompt: `${x * 10} + ${x}`, answer: x * 11 },
-        ];
-        if (y === 12) return [
-            { prompt: `${x} × 10`, answer: x * 10 },
-            { prompt: `${x} × 2`, answer: x * 2 },
-            { prompt: `${x * 10} + ${x * 2}`, answer: x * 12 },
-        ];
-        // y ∈ {3, 4}: double-and-add or double-double
-        if (y === 3) return [
-            { prompt: `${x} × 2`, answer: x * 2 },
-            { prompt: `${x * 2} + ${x}`, answer: x * 3 },
-        ];
-        if (y === 4) return [
-            { prompt: `${x} × 2`, answer: x * 2 },
-            { prompt: `${x * 2} × 2`, answer: x * 4 },
-        ];
-        // y ∈ {6, 7, 8}: split as 5 + (y-5)
-        const rest = y - 5;
-        return [
-            { prompt: `${x} × 5`, answer: x * 5 },
-            { prompt: `${x} × ${rest}`, answer: x * rest },
-            { prompt: `${x * 5} + ${x * rest}`, answer: x * y },
-        ];
+    const stepDouble = (x) => [{ prompt: `${x} + ${x}`, answer: x * 2 }];
+    const stepTimesThree = (x) => [
+        { prompt: `${x} + ${x}`, answer: x * 2 },
+        { prompt: `${x * 2} + ${x}`, answer: x * 3 },
+    ];
+    const stepTimesFour = (x) => [
+        { prompt: `${x} + ${x}`, answer: x * 2 },
+        { prompt: `${x * 2} + ${x * 2}`, answer: x * 4 },
+    ];
+    const stepTimesFive = (x) => [
+        { prompt: `${x} × 10`, answer: x * 10 },
+        { prompt: `Half of ${x * 10}`, answer: x * 5 },
+    ];
+    const stepTimesSix = (x) => [
+        { prompt: `${x} × 5`, answer: x * 5 },
+        { prompt: `${x * 5} + ${x}`, answer: x * 6 },
+    ];
+    const stepTimesNine = (x) => [
+        { prompt: `${x} × 10`, answer: x * 10 },
+        { prompt: `${x * 10} − ${x}`, answer: x * 9 },
+    ];
+    const stepTimesElevenMulti = (x) => [
+        { prompt: `${x} × 10`, answer: x * 10 },
+        { prompt: `${x * 10} + ${x}`, answer: x * 11 },
+    ];
+    const stepTimesTwelve = (x) => [
+        { prompt: `${x} × 10`, answer: x * 10 },
+        { prompt: `${x} × 2`, answer: x * 2 },
+        { prompt: `${x * 10} + ${x * 2}`, answer: x * 12 },
+    ];
+
+    const getMultiplicationStrategy = (a, b) => {
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        const other = (factor) => (a === factor ? b : a);
+
+        // Tier 1 — single-step atoms (memorize / spot a pattern).
+        if (lo === 1) return stepOnes(hi);
+        if (lo === 10 || hi === 10) return stepTens(other(10));
+        if (hi === 11 && lo >= 2 && lo <= 9) return stepElevenDigit(lo);
+        if (a === b && [5, 6, 7, 8, 9].includes(a)) return stepSquare(a);
+        if (lo === 6 && hi === 7) return stepHitchhiker();
+        if (lo === 7 && hi === 8) return stepConsecutive();
+        if (a === 11 && b === 11) return stepElevenSquare();
+        if (a === 12 && b === 12) return stepGross();
+
+        // Tier 2 — two-step tricks, in priority order: 2, 9, 5, 11, 4, 3, 6.
+        if (a === 2 || b === 2) return stepDouble(other(2));
+        if (a === 9 || b === 9) return stepTimesNine(other(9));
+        if (a === 5 || b === 5) return stepTimesFive(other(5));
+        if (a === 11 || b === 11) return stepTimesElevenMulti(other(11));
+        if (a === 4 || b === 4) return stepTimesFour(other(4));
+        if (a === 3 || b === 3) return stepTimesThree(other(3));
+        if (a === 6 || b === 6) return stepTimesSix(other(6));
+
+        // Tier 3 — three-step decomposition for 7×12 and 8×12.
+        if (a === 12 || b === 12) return stepTimesTwelve(other(12));
+
+        // Unreachable for operands in 2..12, but keep a safe fallback.
+        return [{ prompt: `${a} × ${b}`, answer: a * b }];
     };
 
     const scheduleReview = (problem, rating) => {
@@ -396,10 +421,15 @@
 
                         {breakdown && (
                             <div className="mb-6 p-4 bg-indigo-50 rounded-2xl border-2 border-indigo-200">
-                                <p className="text-indigo-500 text-xs font-black uppercase tracking-widest mb-2">Break it down — step {breakdown.idx + 1} of {breakdown.steps.length}</p>
+                                <p className="text-indigo-500 text-xs font-black uppercase tracking-widest mb-2">
+                                    {breakdown.steps.length > 1 ? `Break it down — step ${breakdown.idx + 1} of ${breakdown.steps.length}` : 'Break it down'}
+                                </p>
                                 {breakdown.steps.slice(0, breakdown.idx).map((s, i) => (
                                     <p key={i} className="text-slate-400 text-base font-bold">{s.prompt} = {s.answer} ✓</p>
                                 ))}
+                                {breakdown.steps[breakdown.idx].hint && (
+                                    <p className="text-indigo-600 text-sm italic mb-1">💡 {breakdown.steps[breakdown.idx].hint}</p>
+                                )}
                                 <p className="text-indigo-700 text-2xl font-black mt-1">
                                     {breakdown.steps[breakdown.idx].prompt} = {breakdown.reveal ? <span className="underline">{breakdown.steps[breakdown.idx].answer}</span> : '?'}
                                 </p>
