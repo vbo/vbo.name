@@ -37,9 +37,7 @@
     const RETENTION_TARGET = 0.85;
     const INTERVAL_MODIFIER = Math.log(RETENTION_TARGET) / Math.log(0.9);
     
-    const REWARD_COST = 15;
-    const REWARD_DURATION = 15;
-    const STORAGE_KEY = 'math_kittens_fsrs_state_v6'; 
+    const STORAGE_KEY = 'math_kittens_fsrs_state_v6';
     const QUEUE_SIZE = 5;
 
     const getInitialFSRS = (a, b) => ({
@@ -61,6 +59,79 @@
         if (problem.difficulty <= 4) return 1;
         if (problem.difficulty <= 7) return 2;
         return 3;
+    };
+
+    // Decompose a × b into typed sub-steps the kid can solve, ending with the original answer.
+    // Each step is { prompt: string, answer: number, hint?: string }.
+    // hint is shown above the prompt to anchor a memorized fact (squares, mnemonics, ×11 trick, …).
+    const stepOnes = (x) => [{ hint: "Anything × 1 is just itself!", prompt: `${x} × 1`, answer: x }];
+    const stepTens = (x) => [{ hint: "× 10 — just add a zero", prompt: `${x} × 10`, answer: x * 10 }];
+    const stepElevenDigit = (x) => [{ hint: "× 11 trick — write the digit twice (22, 33, …, 99)", prompt: `${x} × 11`, answer: x * 11 }];
+    const stepSquare = (n) => [{ hint: `It's a square — ${n}²`, prompt: `${n} × ${n}`, answer: n * n }];
+    const stepHitchhiker = () => [{ hint: "Remember: the answer is forty-two!", prompt: "6 × 7", answer: 42 }];
+    const stepConsecutive = () => [{ hint: "5, 6, 7, 8 → 56 = 7 × 8", prompt: "7 × 8", answer: 56 }];
+    const stepElevenSquare = () => [{ hint: "11 × 11 = 121 — memorize it!", prompt: "11 × 11", answer: 121 }];
+    const stepGross = () => [{ hint: "A dozen dozen is a 'gross' — 144", prompt: "12 × 12", answer: 144 }];
+
+    const stepDouble = (x) => [{ prompt: `${x} + ${x}`, answer: x * 2 }];
+    const stepTimesThree = (x) => [
+        { prompt: `${x} + ${x}`, answer: x * 2 },
+        { prompt: `${x * 2} + ${x}`, answer: x * 3 },
+    ];
+    const stepTimesFour = (x) => [
+        { prompt: `${x} + ${x}`, answer: x * 2 },
+        { prompt: `${x * 2} + ${x * 2}`, answer: x * 4 },
+    ];
+    const stepTimesFive = (x) => [
+        { prompt: `${x} × 10`, answer: x * 10 },
+        { prompt: `Half of ${x * 10}`, answer: x * 5 },
+    ];
+    const stepTimesSix = (x) => [
+        { prompt: `${x} × 5`, answer: x * 5 },
+        { prompt: `${x * 5} + ${x}`, answer: x * 6 },
+    ];
+    const stepTimesNine = (x) => [
+        { prompt: `${x} × 10`, answer: x * 10 },
+        { prompt: `${x * 10} − ${x}`, answer: x * 9 },
+    ];
+    const stepTimesElevenMulti = (x) => [
+        { prompt: `${x} × 10`, answer: x * 10 },
+        { prompt: `${x * 10} + ${x}`, answer: x * 11 },
+    ];
+    const stepTimesTwelve = (x) => [
+        { prompt: `${x} × 10`, answer: x * 10 },
+        { prompt: `${x} × 2`, answer: x * 2 },
+        { prompt: `${x * 10} + ${x * 2}`, answer: x * 12 },
+    ];
+
+    const getMultiplicationStrategy = (a, b) => {
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        const other = (factor) => (a === factor ? b : a);
+
+        // Tier 1 — single-step atoms (memorize / spot a pattern).
+        if (lo === 1) return stepOnes(hi);
+        if (lo === 10 || hi === 10) return stepTens(other(10));
+        if (hi === 11 && lo >= 2 && lo <= 9) return stepElevenDigit(lo);
+        if (a === b && [5, 6, 7, 8, 9].includes(a)) return stepSquare(a);
+        if (lo === 6 && hi === 7) return stepHitchhiker();
+        if (lo === 7 && hi === 8) return stepConsecutive();
+        if (a === 11 && b === 11) return stepElevenSquare();
+        if (a === 12 && b === 12) return stepGross();
+
+        // Tier 2 — two-step tricks, in priority order: 2, 9, 5, 11, 4, 3, 6.
+        if (a === 2 || b === 2) return stepDouble(other(2));
+        if (a === 9 || b === 9) return stepTimesNine(other(9));
+        if (a === 5 || b === 5) return stepTimesFive(other(5));
+        if (a === 11 || b === 11) return stepTimesElevenMulti(other(11));
+        if (a === 4 || b === 4) return stepTimesFour(other(4));
+        if (a === 3 || b === 3) return stepTimesThree(other(3));
+        if (a === 6 || b === 6) return stepTimesSix(other(6));
+
+        // Tier 3 — three-step decomposition for 7×12 and 8×12.
+        if (a === 12 || b === 12) return stepTimesTwelve(other(12));
+
+        // Unreachable for operands in 2..12, but keep a safe fallback.
+        return [{ prompt: `${a} × ${b}`, answer: a * b }];
     };
 
     const scheduleReview = (problem, rating) => {
@@ -108,6 +179,19 @@
         const failedCard = scheduleReview(testCard, 1);
         assert(failedCard.nextReview < Date.now() + 60000, "Mistakes repeat in < 1 min in FSRS data");
 
+        // Strategy library: every problem in 2..12 must end with the correct final answer and use positive integers.
+        let strategyBad = 0;
+        for (let i = 2; i <= 12; i++) {
+            for (let j = 2; j <= 12; j++) {
+                const steps = getMultiplicationStrategy(i, j);
+                if (!steps.length || steps[steps.length - 1].answer !== i * j) strategyBad++;
+                for (const s of steps) {
+                    if (!Number.isInteger(s.answer) || s.answer < 0) strategyBad++;
+                }
+            }
+        }
+        assert(strategyBad === 0, "Strategy steps end at a×b and stay non-negative integers");
+
         console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
         console.groupEnd();
     };
@@ -148,20 +232,21 @@
         const [queue, setQueue] = useState(initialState.queue);
         const [inputValue, setInputValue] = useState('');
         const [feedback, setFeedback] = useState(null);
-        const [showReward, setShowReward] = useState(false);
         const [animatingCoins, setAnimatingCoins] = useState([]);
-        const [catUrl, setCatUrl] = useState('');
-        const [isCatLoading, setIsCatLoading] = useState(false);
-        const [timeLeft, setTimeLeft] = useState(0);
-        
+        // breakdown = { steps:[{prompt,answer}], idx, reveal } | null
+        const [breakdown, setBreakdown] = useState(null);
+        const [stepError, setStepError] = useState(false);
+
         const walletRef = useRef(null);
         const inputRef = useRef(null);
 
         useEffect(() => {
             runTests();
-            // Restore feedback state if refresh happened during a mistake
+            // Restore correction state if refresh happened mid-mistake.
             if (queue.length > 0 && queue[0].inCorrection) {
                 setFeedback('wrong');
+                const p = queue[0];
+                setBreakdown({ steps: getMultiplicationStrategy(p.a, p.b), idx: 0, reveal: false });
             }
         }, []);
 
@@ -204,90 +289,86 @@
             }
         }, [queue.length, getNextFromDeck]);
 
-        const handleSubmit = (e) => {
-            e.preventDefault();
-            if (!inputValue) return;
-
-            const currentProblem = queue[0];
-            const userVal = parseInt(inputValue);
-            const isCorrect = userVal === currentProblem.answer;
-
-            if (isCorrect) {
-                if (feedback === 'wrong') {
-                    // Corrected the mistake
-                    const nextQueue = [...queue];
-                    const correctedItem = { ...nextQueue.shift(), inCorrection: false };
-                    nextQueue.splice(2, 0, correctedItem);
-                    
-                    while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
-                    
-                    setQueue(nextQueue);
-                    setFeedback(null);
-                    setInputValue('');
-                } else {
-                    // First try success
-                    setFeedback('correct');
-                    const updated = scheduleReview(currentProblem, 3); 
-                    const reward = getCoinReward(currentProblem);
-                    triggerCoinAnimation(reward);
-                    
-                    setTimeout(() => {
-                        setCoins(prev => prev + reward);
-                        setDeck(prev => ({ ...prev, [updated.id]: updated }));
-                        
-                        const nextQueue = [...queue.slice(1)];
-                        while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
-                        setQueue(nextQueue);
-                        setFeedback(null);
-                        setInputValue('');
-                    }, 1000);
-                }
-            } else {
-                if (feedback !== 'wrong') {
-                    // New mistake: Update state and deck immediately
-                    const updated = scheduleReview(currentProblem, 1); 
-                    updated.inCorrection = true; 
-                    
-                    setDeck(prev => ({ ...prev, [updated.id]: updated }));
-                    
-                    const nextQueue = [...queue];
-                    nextQueue[0] = updated;
-                    setQueue(nextQueue);
-                    setFeedback('wrong');
-                }
-                setInputValue('');
-            }
+        const flashError = () => {
+            setStepError(true);
+            setTimeout(() => setStepError(false), 400);
         };
 
-        const handleIDontKnow = () => {
-            const currentProblem = queue[0];
-            const updated = scheduleReview(currentProblem, 1);
+        const enterBreakdown = (problem) => {
+            const updated = scheduleReview(problem, 1);
             updated.inCorrection = true;
-            
             setDeck(prev => ({ ...prev, [updated.id]: updated }));
-            
             const nextQueue = [...queue];
             nextQueue[0] = updated;
             setQueue(nextQueue);
             setFeedback('wrong');
+            setBreakdown({ steps: getMultiplicationStrategy(updated.a, updated.b), idx: 0, reveal: false });
             setInputValue('');
+        };
+
+        const completeCorrection = () => {
+            const nextQueue = [...queue];
+            const correctedItem = { ...nextQueue.shift(), inCorrection: false };
+            // Reinsert "a couple cards later" so the unaided retest happens soon.
+            nextQueue.splice(2, 0, correctedItem);
+            while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
+            setQueue(nextQueue);
+            setFeedback(null);
+            setBreakdown(null);
+            setInputValue('');
+        };
+
+        const handleSubmit = (e) => {
+            e.preventDefault();
+            if (!inputValue) return;
+            const userVal = parseInt(inputValue);
+
+            // Breakdown mode: each step is its own typed check.
+            if (breakdown) {
+                const step = breakdown.steps[breakdown.idx];
+                if (userVal === step.answer) {
+                    if (breakdown.idx + 1 >= breakdown.steps.length) {
+                        completeCorrection();
+                    } else {
+                        setBreakdown({ ...breakdown, idx: breakdown.idx + 1, attempts: 0, reveal: false });
+                        setInputValue('');
+                    }
+                } else {
+                    // Reveal the step's answer after two misses so she isn't stuck.
+                    const attempts = (breakdown.attempts || 0) + 1;
+                    setBreakdown({ ...breakdown, attempts, reveal: attempts >= 2 });
+                    setInputValue('');
+                    flashError();
+                }
+                return;
+            }
+
+            const currentProblem = queue[0];
+            const isCorrect = userVal === currentProblem.answer;
+            if (isCorrect) {
+                // First-try success
+                setFeedback('correct');
+                const updated = scheduleReview(currentProblem, 3);
+                const reward = getCoinReward(currentProblem);
+                triggerCoinAnimation(reward);
+                setTimeout(() => {
+                    setCoins(prev => prev + reward);
+                    setDeck(prev => ({ ...prev, [updated.id]: updated }));
+                    const nextQueue = [...queue.slice(1)];
+                    while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
+                    setQueue(nextQueue);
+                    setFeedback(null);
+                    setInputValue('');
+                }, 1000);
+            } else {
+                enterBreakdown(currentProblem);
+            }
+        };
+
+        const handleIDontKnow = () => {
+            enterBreakdown(queue[0]);
             inputRef.current?.focus();
         };
-
-        const fetchNewCat = async () => {
-            setIsCatLoading(true);
-            setCatUrl(`https://cataas.com/cat/gif?timestamp=${Date.now()}`);
-        };
-
-        useEffect(() => {
-            let interval;
-            if (showReward && timeLeft > 0 && !isCatLoading) {
-                interval = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
-            } else if (timeLeft === 0 && showReward) {
-                setShowReward(false);
-            }
-            return () => clearInterval(interval);
-        }, [showReward, timeLeft, isCatLoading]);
 
         const triggerCoinAnimation = (count) => {
             const rect = inputRef.current?.getBoundingClientRect();
@@ -325,50 +406,47 @@
                 </div>
 
                 <main className="max-w-xl mx-auto">
-                    <div className="mb-8 text-center">
-                        <div className="flex justify-between items-end mb-2 px-2">
-                            <span className="text-slate-500 font-bold text-sm uppercase">Kitten Goal</span>
-                            <span className="text-indigo-600 font-black text-xl">{Math.min(coins, REWARD_COST)}/{REWARD_COST}</span>
-                        </div>
-                        <div className="h-5 bg-white rounded-full border-2 border-indigo-100 overflow-hidden p-1 relative">
-                            <div className="h-full bg-gradient-to-r from-indigo-400 to-purple-500 rounded-full transition-all duration-700"
-                                 style={{ width: `${Math.min((coins / REWARD_COST) * 100, 100)}%` }} />
-                        </div>
-                        {coins >= REWARD_COST && !showReward && (
-                            <button onClick={() => { setCoins(c => c - REWARD_COST); setTimeLeft(REWARD_DURATION); fetchNewCat(); setShowReward(true); }}
-                                    className="mt-6 w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-2xl font-black text-lg flex items-center justify-center gap-3 shadow-xl animate-pulse active:scale-95">
-                                <Icon name="Cat" /> REDEEM KITTEN!
-                            </button>
-                        )}
-                    </div>
-
                     <div className={`bg-white rounded-[2.5rem] shadow-2xl p-8 md:p-12 border-b-[12px] border-slate-200 transition-all duration-300 relative overflow-hidden ${feedback === 'correct' ? 'scale-105 border-green-400' : feedback === 'wrong' ? 'shake border-red-400' : ''}`}>
                         <div className="absolute top-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-yellow-100 text-yellow-700 px-4 py-1 rounded-full text-xs font-black uppercase tracking-tight">
                             <Icon name="Coins" size={14} className="mt-[-2px]" /> 
                             Worth {getCoinReward(currentProblem)} {getCoinReward(currentProblem) === 1 ? 'Coin' : 'Coins'}
                         </div>
 
-                        <div className="text-7xl md:text-9xl font-black text-slate-700 my-8 flex items-center justify-center gap-4">
+                        <div className={`font-black text-slate-700 flex items-center justify-center gap-4 ${breakdown ? 'text-4xl my-4' : 'text-7xl md:text-9xl my-8'}`}>
                             <span>{currentProblem.a}</span>
-                            <span className="text-indigo-500 text-5xl">×</span>
+                            <span className="text-indigo-500 text-3xl">×</span>
                             <span>{currentProblem.b}</span>
+                            {breakdown && <span className="text-slate-400">= ?</span>}
                         </div>
 
-                        {feedback === 'wrong' && (
-                            <div className="mb-6 p-4 bg-red-50 rounded-2xl border-2 border-red-200 animate-pulse">
-                                <p className="text-red-600 font-bold text-lg">Answer: <span className="text-2xl font-black underline">{currentProblem.answer}</span></p>
-                                <p className="text-red-400 text-sm font-medium">Type it to keep learning!</p>
+                        {breakdown && (
+                            <div className="mb-6 p-4 bg-indigo-50 rounded-2xl border-2 border-indigo-200">
+                                <p className="text-indigo-500 text-xs font-black uppercase tracking-widest mb-2">
+                                    {breakdown.steps.length > 1 ? `Break it down — step ${breakdown.idx + 1} of ${breakdown.steps.length}` : 'Break it down'}
+                                </p>
+                                {breakdown.steps.slice(0, breakdown.idx).map((s, i) => (
+                                    <p key={i} className="text-slate-400 text-base font-bold">{s.prompt} = {s.answer} ✓</p>
+                                ))}
+                                {breakdown.steps[breakdown.idx].hint && (
+                                    <p className="text-indigo-600 text-sm italic mb-1">💡 {breakdown.steps[breakdown.idx].hint}</p>
+                                )}
+                                <p className="text-indigo-700 text-2xl font-black mt-1">
+                                    {breakdown.steps[breakdown.idx].prompt} = {breakdown.reveal ? <span className="underline">{breakdown.steps[breakdown.idx].answer}</span> : '?'}
+                                </p>
+                                {breakdown.reveal && <p className="text-indigo-400 text-xs font-medium mt-1">Type it to keep learning!</p>}
                             </div>
                         )}
 
                         <form onSubmit={handleSubmit} className="relative z-10">
-                            <input ref={inputRef} type="number" value={inputValue} onChange={(e) => setInputValue(e.target.value)}
-                                   placeholder={feedback === 'wrong' ? currentProblem.answer : "?"} autoFocus autoComplete="off"
-                                   className={`w-full text-center text-6xl font-black p-6 rounded-3xl bg-slate-50 border-4 outline-none transition-all ${feedback === 'correct' ? 'border-green-500 bg-green-50 text-green-600' : feedback === 'wrong' ? 'border-red-500 bg-red-50 text-red-600' : 'border-slate-100 focus:border-indigo-400'}`} />
-                            
+                            <input ref={inputRef} type="number" inputMode="numeric" pattern="[0-9]*"
+                                   value={inputValue} onChange={(e) => setInputValue(e.target.value)}
+                                   placeholder={breakdown && breakdown.reveal ? breakdown.steps[breakdown.idx].answer : "?"} autoFocus
+                                   autoComplete="off" autoCorrect="off" spellCheck="false"
+                                   className={`w-full text-center text-6xl font-black p-6 rounded-3xl bg-slate-50 border-4 outline-none transition-all ${feedback === 'correct' ? 'border-green-500 bg-green-50 text-green-600' : stepError ? 'border-red-500 bg-red-50 text-red-600 shake' : breakdown ? 'border-indigo-300 focus:border-indigo-500' : 'border-slate-100 focus:border-indigo-400'}`} />
+
                             <div className="mt-6 flex gap-3">
                                 <button type="submit" disabled={!inputValue || feedback === 'correct'} className="flex-[2] bg-slate-800 hover:bg-slate-900 disabled:bg-slate-200 text-white text-2xl font-black py-5 rounded-3xl shadow-lg transition-all">
-                                    {feedback === 'wrong' ? 'CONTINUE' : 'GO!'}
+                                    {breakdown ? (breakdown.idx + 1 === breakdown.steps.length ? 'FINISH' : 'NEXT') : 'GO!'}
                                 </button>
                                 {!feedback && (
                                     <button type="button" onClick={handleIDontKnow} className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold py-5 rounded-3xl flex items-center justify-center gap-2">
@@ -379,27 +457,6 @@
                         </form>
                     </div>
                 </main>
-
-                {showReward && (
-                    <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                        <div className="bg-white rounded-[2rem] overflow-hidden w-full max-w-md relative shadow-2xl flex flex-col">
-                            <div className={`p-3 flex items-center justify-center gap-2 font-black text-white ${isCatLoading ? 'bg-slate-600' : 'bg-indigo-600'}`}>
-                                <Icon name="Timer" className="animate-pulse" />
-                                <span>KITTEN TIME: {timeLeft}s</span>
-                            </div>
-                            <div className="aspect-square bg-slate-100 relative overflow-hidden">
-                                {isCatLoading && <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 gap-2"><Icon name="Loader2" className="animate-spin" /><span>Fetching...</span></div>}
-                                <img src={catUrl} onLoad={() => setIsCatLoading(false)} className={`w-full h-full object-cover ${isCatLoading ? 'opacity-0' : 'opacity-100'}`} />
-                            </div>
-                            <div className="p-6 bg-white flex gap-3">
-                                <button onClick={fetchNewCat} disabled={isCatLoading} className="flex-1 bg-indigo-50 text-indigo-700 py-4 rounded-2xl font-black flex items-center justify-center gap-2 border-2 border-indigo-100">
-                                    <Icon name="SkipForward" /> NEXT
-                                </button>
-                                <button onClick={() => setShowReward(false)} className="flex-1 bg-slate-800 text-white py-4 rounded-2xl font-black">DONE</button>
-                            </div>
-                        </div>
-                    </div>
-                )}
 
                 {animatingCoins.map(coin => (
                     <div key={coin.id} className="fixed pointer-events-none z-[100] animate-coin-fly"
