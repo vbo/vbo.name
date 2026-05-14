@@ -40,7 +40,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.04';
+    const VERSION = '1.05';
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -271,33 +271,47 @@
         ];
     };
 
-    // The hint is borrowed from the matching multiplication strategy (squares,
-    // mnemonics, ×9 chain, …) so 7 × ? = 56 gets "5, 6, 7, 8 → 56 = 7 × 8" — the
-    // same anchor she's already using for 7 × 8 in mul mode. When the mul
-    // strategy has no catchy hint (e.g. ×2 doubling) we fall back to spelling
-    // out the chain of sub-steps; she can read the missing factor off it.
-    // `inline: true` tells the breakdown UI the prompt already contains its own
-    // '?' placeholder, so it should substitute the answer in place rather than
-    // appending '= answer' at the end.
+    // Division-as-multiplication breakdown.
+    //
+    // For single-step mul strategies (Tier 1 anchors: squares, hitchhiker,
+    // ×11 trick, … plus the lone ×2 doubling) the div breakdown collapses
+    // to one typed step that re-shows the original question with the
+    // matching anchor hint.
+    //
+    // For multi-step mul strategies (×3/4/5/6/9/11-multi/12) we walk her
+    // through the same typed chain she'd see in mul mode — she actually
+    // computes the product step by step — and then a final typed step asks
+    // her to identify the missing factor, by which point the product is
+    // sitting right above on the screen.
+    //
+    // `inline: true` on the final step tells the UI to substitute the
+    // answer in place of '?' rather than appending '= answer'.
     const getDivisionStrategy = (a, b) => {
         const product = a * b;
         const mulSteps = getMultiplicationStrategy(a, b);
-        const anchors = mulSteps.map(s => s.hint).filter(Boolean);
-        const pieces = [...anchors];
-        // Show the chain when there's no anchor at all, or when the mul strategy
-        // is genuinely multi-step (anchor alone wouldn't show how product builds).
-        if (anchors.length === 0 || mulSteps.length > 1) {
-            pieces.push(mulSteps.map(s => `${s.prompt} = ${s.answer}`).join('; '));
+
+        if (mulSteps.length === 1) {
+            const lone = mulSteps[0];
+            // Use the anchor when it exists; otherwise spell the chain so ×2
+            // shows '3 + 3 = 6' (which doubles as strategy and answer-spot).
+            const hint = lone.hint || `${lone.prompt} = ${lone.answer}`;
+            return [{
+                hint,
+                prompt: `${a} × ? = ${product}`,
+                answer: b,
+                inline: true,
+            }];
         }
-        const hint = pieces.length
-            ? pieces.join(' ')
-            : `Think: ${a} times what number equals ${product}?`;
-        return [{
-            hint,
-            prompt: `${a} × ? = ${product}`,
-            answer: b,
-            inline: true,
-        }];
+
+        return [
+            ...mulSteps.map(s => ({ prompt: s.prompt, answer: s.answer, hint: s.hint })),
+            {
+                hint: `You just built ${product} = ${a} × ?. What's the missing number?`,
+                prompt: `${a} × ? = ${product}`,
+                answer: b,
+                inline: true,
+            },
+        ];
     };
 
     const scheduleReview = (problem, rating) => {
@@ -432,9 +446,31 @@
         assert(getCoinReward({ op: 'div', reward: 2 }) === 2, "div badge shows per-card reward");
         assert(getCoinReward({ op: 'div' }) === 3, "div badge defaults to 3 when reward missing");
 
-        const divSteps = getDivisionStrategy(4, 6);
-        assert(divSteps.length === 1 && divSteps[0].answer === 6 && divSteps[0].inline === true,
-            "div strategy is a single inline step with answer=b");
+        // Single-step Tier 1 anchors: collapse to one inline step with the mul anchor.
+        const consecutiveSteps = getDivisionStrategy(7, 8);
+        assert(consecutiveSteps.length === 1 && consecutiveSteps[0].answer === 8
+            && consecutiveSteps[0].inline === true
+            && consecutiveSteps[0].hint.includes("5, 6, 7, 8"),
+            "7 × ? = 56 → single inline step with the consecutive-digit mnemonic");
+        assert(getDivisionStrategy(7, 7)[0].hint.includes("square"),
+            "7 × ? = 49 → square anchor");
+        assert(getDivisionStrategy(2, 3)[0].hint.includes("3 + 3 = 6"),
+            "2 × ? = 6 → doubling falls back to its own chain text (stepDouble has no anchor)");
+
+        // Multi-step strategies: kid types the mul chain first, then a final
+        // inline step asks for the missing factor.
+        const ninesSteps = getDivisionStrategy(7, 9);
+        assert(ninesSteps.length === 3
+            && ninesSteps[0].prompt === "7 × 10" && ninesSteps[0].answer === 70
+            && ninesSteps[1].answer === 63
+            && ninesSteps[2].inline === true && ninesSteps[2].answer === 9,
+            "7 × ? = 63 → typed chain (7×10=70, 70−7=63) + final inline 'missing factor'");
+
+        const foursSteps = getDivisionStrategy(4, 6);
+        assert(foursSteps.length === 3
+            && foursSteps[foursSteps.length - 1].answer === 6
+            && foursSteps[foursSteps.length - 1].inline === true,
+            "4 × ? = 24 → ×4 doubling chain + final inline step with answer 6");
 
         // Div hint inherits the matching mul anchor.
         assert(getDivisionStrategy(7, 8)[0].hint.includes("5, 6, 7, 8"),
