@@ -38,7 +38,6 @@
     const INTERVAL_MODIFIER = Math.log(RETENTION_TARGET) / Math.log(0.9);
     
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
-    const LEGACY_STORAGE_KEYS = ['math_kittens_fsrs_state_v6'];
     const QUEUE_SIZE = 5;
 
     // Op registry — each handler knows how to generate fresh operands, derive a
@@ -241,13 +240,6 @@
         return <i ref={ref} className={className} style={{ width: size, height: size }}></i>;
     };
 
-    // Re-stamp a legacy card (pre-op-axis) as a mul card with a namespaced id.
-    const migrateLegacyCard = (card) => {
-        const op = 'mul';
-        const id = OPS.mul.idOf(card.a, card.b);
-        return { ...card, op, id };
-    };
-
     const loadSavedState = () => {
         try {
             const saved = localStorage.getItem(STORAGE_KEY);
@@ -258,20 +250,6 @@
                     deck: parsed.deck || {},
                     queue: parsed.queue || []
                 };
-            }
-            // No current-version state — try to migrate from any legacy key.
-            for (const legacyKey of LEGACY_STORAGE_KEYS) {
-                const legacy = localStorage.getItem(legacyKey);
-                if (!legacy) continue;
-                const parsed = JSON.parse(legacy);
-                const newDeck = {};
-                for (const k of Object.keys(parsed.deck || {})) {
-                    const migrated = migrateLegacyCard(parsed.deck[k]);
-                    newDeck[migrated.id] = migrated;
-                }
-                const newQueue = (parsed.queue || []).map(migrateLegacyCard);
-                console.log(`Migrated FSRS state from ${legacyKey} → ${STORAGE_KEY}`);
-                return { coins: parsed.coins || 0, deck: newDeck, queue: newQueue };
             }
         } catch (e) {
             console.error("Failed to load initial state", e);
