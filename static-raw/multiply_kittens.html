@@ -40,7 +40,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.09';
+    const VERSION = '1.10';
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -230,7 +230,9 @@
         if (lo === 1) return stepOnes(hi);
         if (lo === 10 || hi === 10) return stepTens(other(10));
         if (hi === 11 && lo >= 2 && lo <= 9) return stepElevenDigit(lo);
-        if (a === b && [5, 6, 7, 8, 9].includes(a)) return stepSquare(a);
+        // 9² intentionally excluded — the ×9 chain (10n − n) is a stronger
+        // anchor than a hintless 'just remember 81' for this kid.
+        if (a === b && [5, 6, 7, 8].includes(a)) return stepSquare(a);
         if (lo === 6 && hi === 7) return stepHitchhiker();
         if (lo === 7 && hi === 8) return stepConsecutive();
         if (a === 11 && b === 11) return stepElevenSquare();
