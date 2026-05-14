@@ -40,7 +40,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.06';
+    const VERSION = '1.07';
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -256,7 +256,7 @@
         const tens = a - ones + 10;
         const leftover = b - complement;
         return [
-            { hint: `Make ten! ${a} needs ${complement} more to reach ${tens}.`, prompt: `${a} + ${complement}`, answer: tens },
+            { hint: "Bridge to a round ten first.", prompt: `${a} + ${complement}`, answer: tens },
             { hint: "Now add what's left.", prompt: `${tens} + ${leftover}`, answer: a + b },
         ];
     };
@@ -268,7 +268,7 @@
         const tens = a - ones;
         const leftover = b - ones;
         return [
-            { hint: `Step back to ${tens}! ${a} − ${ones} = ${tens}.`, prompt: `${a} − ${ones}`, answer: tens },
+            { hint: "Step back to a round ten first.", prompt: `${a} − ${ones}`, answer: tens },
             { hint: "Now subtract what's left.", prompt: `${tens} − ${leftover}`, answer: a - b },
         ];
     };
