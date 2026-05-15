@@ -74,6 +74,11 @@
             pointer-events: none;
             animation: praise-spark 500ms ease-out forwards;
         }
+        /* Page background follows the streak. Buildup eases in; a miss
+           toggles energy-no-transition for one frame so the drop is
+           perceived as instant, then transitions re-enable for next time. */
+        .energy-transition { transition: background-color 600ms ease-out; }
+        .energy-no-transition { transition: none; }
     </style>
 </head>
 <body class="antialiased bg-slate-50">
@@ -150,7 +155,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.14';
+    const VERSION = '1.15';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
@@ -199,6 +204,20 @@
         if (streak >= 10) return 2;
         if (streak >= 5) return 1;
         return 0;
+    };
+
+    // Adaptive background energy: the page background lerps from neutral
+    // slate-50 toward a vibrant teal-200 as the streak grows, hitting full
+    // saturation at STREAK_MAX_ENERGY. Builds smoothly (CSS transition);
+    // a miss snaps back to neutral instantly via the energy-no-transition
+    // class — see handleSubmit's enterBreakdown call.
+    const STREAK_MAX_ENERGY = 15;
+    const ENERGY_NEUTRAL = [248, 250, 252]; // slate-50
+    const ENERGY_VIBRANT = [153, 246, 228]; // teal-200
+    const getEnergyColor = (streak) => {
+        const t = Math.min(1, Math.max(0, streak) / STREAK_MAX_ENERGY);
+        const c = (i) => Math.round(ENERGY_NEUTRAL[i] + (ENERGY_VIBRANT[i] - ENERGY_NEUTRAL[i]) * t);
+        return `rgb(${c(0)}, ${c(1)}, ${c(2)})`;
     };
 
     // Op registry — each handler knows how to generate fresh operands, derive a
@@ -666,6 +685,25 @@
         assert(getPraiseTier(15) === 3 && getPraiseTier(50) === 3,
             "praise tier: ≥ 15 ⇒ tier 3 (chromatic + glow)");
 
+        // Adaptive background energy.
+        assert(getEnergyColor(0) === `rgb(${ENERGY_NEUTRAL.join(', ')})`,
+            "energy: streak 0 ⇒ neutral slate-50");
+        assert(getEnergyColor(STREAK_MAX_ENERGY) === `rgb(${ENERGY_VIBRANT.join(', ')})`,
+            "energy: streak at max ⇒ fully saturated vibrant target");
+        assert(getEnergyColor(100) === `rgb(${ENERGY_VIBRANT.join(', ')})`,
+            "energy: streak past max stays clamped at vibrant target");
+        // Mid-streak should lie strictly between neutral and vibrant on every channel
+        // that actually changes (rules out off-by-one in the lerp).
+        const mid = getEnergyColor(Math.floor(STREAK_MAX_ENERGY / 2))
+            .match(/\d+/g).map(Number);
+        let energyMidBad = 0;
+        for (let i = 0; i < 3; i++) {
+            const lo = Math.min(ENERGY_NEUTRAL[i], ENERGY_VIBRANT[i]);
+            const hi = Math.max(ENERGY_NEUTRAL[i], ENERGY_VIBRANT[i]);
+            if (mid[i] < lo || mid[i] > hi) energyMidBad++;
+        }
+        assert(energyMidBad === 0, "energy: mid-streak each channel stays between neutral and vibrant");
+
         const foursSteps = getDivisionStrategy(4, 6);
         assert(foursSteps.length === 1
             && foursSteps[0].inline === true && foursSteps[0].answer === 6
@@ -731,8 +769,12 @@
         // Rolling buffer of recent answer events used for the coins/min badge.
         const [paceEvents, setPaceEvents] = useState(initialState.paceEvents);
         // Current run of first-try corrects (resets on any miss). Not shown
-        // to the kid — drives praise word + animation tier only.
+        // to the kid — drives praise word + animation tier + background.
         const [streak, setStreak] = useState(0);
+        // True for ~one frame after a miss so the background snap to neutral
+        // skips the buildup transition. Otherwise the page would lazily
+        // fade down, blunting the "you missed" signal.
+        const [energyResetting, setEnergyResetting] = useState(false);
         // praise = { id, word, color, tilt, tier } | null. New id on every
         // pop so React remounts and the CSS animation restarts.
         const [praise, setPraise] = useState(null);
@@ -849,7 +891,11 @@
             updated.inCorrection = true;
             // Any miss resets the div coin-decay back to the full 3.
             if (updated.op === 'div') updated.reward = DIV_REWARD_INITIAL;
+            setEnergyResetting(true);
             setStreak(0);
+            // Re-enable transitions after the browser has painted the
+            // neutral background — next streak gain eases in smoothly.
+            setTimeout(() => setEnergyResetting(false), 60);
             setDeck(prev => ({ ...prev, [updated.id]: updated }));
             const nextQueue = [...queue];
             nextQueue[0] = updated;
@@ -954,7 +1000,8 @@
         const currentProblem = queue[0];
 
         return (
-            <div className="min-h-screen p-4 md:p-8 font-sans text-slate-800 bg-slate-50">
+            <div className={`min-h-screen p-4 md:p-8 font-sans text-slate-800 ${energyResetting ? 'energy-no-transition' : 'energy-transition'}`}
+                 style={{ backgroundColor: getEnergyColor(streak) }}>
                 <div className="max-w-4xl mx-auto flex justify-between items-center mb-8 bg-white p-4 rounded-3xl shadow-sm border border-purple-200">
                     <div className="flex items-center gap-2">
                         <div className="bg-indigo-100 p-2 rounded-xl"><Icon name="Trophy" className="text-indigo-600" /></div>
