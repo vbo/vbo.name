@@ -114,6 +114,7 @@
             </button>
 
             <p id="status" class="text-sm text-slate-600 min-h-[1.25rem] text-center" aria-live="polite"></p>
+            <pre id="debug" class="text-xs text-slate-500 bg-slate-100 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-words hidden"></pre>
         </form>
     </div>
 
@@ -128,6 +129,7 @@
 
         const form = document.getElementById('form');
         const statusEl = document.getElementById('status');
+        const debugEl = document.getElementById('debug');
         const submitBtn = document.getElementById('submit');
         const dateEl = document.getElementById('date');
         const amountEl = document.getElementById('amount');
@@ -170,6 +172,13 @@
 
             submitBtn.disabled = true;
             setStatus('Speichern…', 'info');
+            debugEl.classList.add('hidden');
+            debugEl.textContent = '';
+
+            const showDebug = (label, body) => {
+                debugEl.textContent = `→ sent:\n${JSON.stringify(payload, null, 2)}\n\n← ${label}:\n${body}`;
+                debugEl.classList.remove('hidden');
+            };
 
             try {
                 const res = await fetch(WEB_APP_URL, {
@@ -177,10 +186,19 @@
                     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                     body: JSON.stringify(payload),
                 });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
                 const text = await res.text();
-                if (!text.startsWith('ok')) throw new Error(text || 'Unbekannte Antwort');
-                setStatus('Gespeichert ✓', 'ok');
+                if (!res.ok) {
+                    showDebug(`HTTP ${res.status}`, text);
+                    throw new Error('HTTP ' + res.status);
+                }
+                let parsed;
+                try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
+                if (!parsed || parsed.ok !== true) {
+                    showDebug(`HTTP ${res.status}`, text);
+                    throw new Error(parsed && parsed.error ? parsed.error : 'Server hat nicht ok zurückgegeben');
+                }
+                setStatus(`Gespeichert ✓ (v${parsed.version || '?'})`, 'ok');
+                showDebug(`HTTP ${res.status}`, text);
                 resetToDefaults();
                 amountEl.focus();
             } catch (err) {
