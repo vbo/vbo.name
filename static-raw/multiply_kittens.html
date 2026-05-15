@@ -155,7 +155,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.15';
+    const VERSION = '1.16';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
@@ -218,6 +218,26 @@
         const t = Math.min(1, Math.max(0, streak) / STREAK_MAX_ENERGY);
         const c = (i) => Math.round(ENERGY_NEUTRAL[i] + (ENERGY_VIBRANT[i] - ENERGY_NEUTRAL[i]) * t);
         return `rgb(${c(0)}, ${c(1)}, ${c(2)})`;
+    };
+
+    // Haptic feedback (Android / supported tablets only — iOS Safari has no
+    // Vibration API). Single light tap on every first-try correct; a
+    // double-tap at the same streak milestones the praise system already
+    // celebrates (5 / 10 / 15) so the body matches the eye.
+    const HAPTIC_TAP = 20;                  // single 20ms buzz
+    const HAPTIC_DOUBLE = [15, 60, 15];     // tap–gap–tap
+    const HAPTIC_STREAK_MILESTONES = new Set([5, 10, 15]);
+    const getHapticPattern = (streak) =>
+        HAPTIC_STREAK_MILESTONES.has(streak) ? HAPTIC_DOUBLE : HAPTIC_TAP;
+    const triggerHaptic = (pattern) => {
+        if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return;
+        // Respect prefers-reduced-motion — same accessibility hint the
+        // visual animations should be ducking under (we can wire that in
+        // later if it comes up).
+        try {
+            if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            navigator.vibrate(pattern);
+        } catch (_) { /* sandboxed iframe / permissions / etc. — silently skip */ }
     };
 
     // Op registry — each handler knows how to generate fresh operands, derive a
@@ -704,6 +724,17 @@
         }
         assert(energyMidBad === 0, "energy: mid-streak each channel stays between neutral and vibrant");
 
+        // Haptic pattern selection — single tap on plain corrects, double
+        // tap on the same streak milestones the praise system celebrates.
+        assert(getHapticPattern(1) === HAPTIC_TAP && getHapticPattern(7) === HAPTIC_TAP,
+            "haptic: non-milestone streak ⇒ single light tap");
+        assert(getHapticPattern(5) === HAPTIC_DOUBLE
+            && getHapticPattern(10) === HAPTIC_DOUBLE
+            && getHapticPattern(15) === HAPTIC_DOUBLE,
+            "haptic: streak milestones (5/10/15) ⇒ double tap");
+        assert(getHapticPattern(20) === HAPTIC_TAP,
+            "haptic: past-milestone streaks fall back to single tap");
+
         const foursSteps = getDivisionStrategy(4, 6);
         assert(foursSteps.length === 1
             && foursSteps[0].inline === true && foursSteps[0].answer === 6
@@ -961,6 +992,7 @@
                 const newStreak = streak + 1;
                 setStreak(newStreak);
                 showPraise(pickPraise(ms, paceEvents, newStreak), getPraiseTier(newStreak));
+                triggerHaptic(getHapticPattern(newStreak));
                 triggerCoinAnimation(reward);
                 setTimeout(() => {
                     setCoins(prev => prev + reward);
