@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#4f46e5">
+    <title>Ausgaben</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Prevent iOS auto-zoom on focus by keeping inputs at 16px. */
+        input, select, textarea, button { font-size: 16px; }
+        /* Segmented-toggle look for radio groups. */
+        .seg input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
+        .seg label {
+            flex: 1; text-align: center; padding: 0.75rem 0.5rem;
+            border: 1px solid #cbd5e1; background: #fff; color: #334155;
+            cursor: pointer; user-select: none;
+        }
+        .seg label:first-of-type { border-top-left-radius: 0.5rem; border-bottom-left-radius: 0.5rem; }
+        .seg label:last-of-type  { border-top-right-radius: 0.5rem; border-bottom-right-radius: 0.5rem; }
+        .seg label + label { border-left: none; }
+        .seg input[type="radio"]:checked + label {
+            background: #4f46e5; color: #fff; border-color: #4f46e5;
+        }
+    </style>
+</head>
+<body class="antialiased bg-slate-50 min-h-screen">
+    <div class="max-w-md mx-auto p-4">
+        <header class="mb-4">
+            <h1 class="text-2xl font-bold text-slate-900">Ausgaben</h1>
+            <p class="text-sm text-slate-500">Neue Buchung erfassen</p>
+        </header>
+
+        <form id="form" class="space-y-4 bg-white rounded-2xl shadow-sm p-4">
+            <label class="block">
+                <span class="text-sm font-medium text-slate-700">Betrag</span>
+                <input id="amount" type="number" inputmode="decimal" step="0.01" min="0" required autofocus
+                    class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 text-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </label>
+
+            <label class="block">
+                <span class="text-sm font-medium text-slate-700">Notiz</span>
+                <input id="note" type="text" autocomplete="off"
+                    class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </label>
+
+            <label class="block">
+                <span class="text-sm font-medium text-slate-700">Kategorie</span>
+                <select id="category"
+                    class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <optgroup label="Essen">
+                        <option value="Lebensmittel: Essen">Lebensmittel: Essen</option>
+                        <option value="Auswärts: Essen">Auswärts: Essen</option>
+                    </optgroup>
+                    <optgroup label="Leben">
+                        <option value="Kleidung: Leben">Kleidung: Leben</option>
+                        <option value="Geschenke: Leben">Geschenke: Leben</option>
+                        <option value="Betreuung: Leben">Betreuung: Leben</option>
+                        <option value="Medizinisch: Leben">Medizinisch: Leben</option>
+                        <option value="Andere: Leben">Andere: Leben</option>
+                    </optgroup>
+                    <optgroup label="Zuhause">
+                        <option value="Miete: Zuhause">Miete: Zuhause</option>
+                        <option value="Haushaltwaren: Zuhause">Haushaltwaren: Zuhause</option>
+                        <option value="Elektronik: Zuhause">Elektronik: Zuhause</option>
+                        <option value="Andere: Zuhause">Andere: Zuhause</option>
+                    </optgroup>
+                    <optgroup label="Unterhaltung">
+                        <option value="Sport: Unterhaltung">Sport: Unterhaltung</option>
+                        <option value="Spielzeuge: Unterhaltung">Spielzeuge: Unterhaltung</option>
+                        <option value="Andere: Unterhaltung">Andere: Unterhaltung</option>
+                    </optgroup>
+                    <optgroup label="Versorgungsunternehmen">
+                        <option value="Breitband: Versorgungsunternehmen">Breitband: Versorgungsunternehmen</option>
+                    </optgroup>
+                    <optgroup label="Sonstiges">
+                        <option value="Verkehrsmittel">Verkehrsmittel</option>
+                        <option value="Überweisen">Überweisen</option>
+                    </optgroup>
+                </select>
+            </label>
+
+            <div>
+                <span class="text-sm font-medium text-slate-700">Währung</span>
+                <div class="seg mt-1 flex">
+                    <input type="radio" name="currency" id="cur-chf" value="CHF" checked>
+                    <label for="cur-chf">CHF</label>
+                    <input type="radio" name="currency" id="cur-eur" value="EUR">
+                    <label for="cur-eur">EUR</label>
+                    <input type="radio" name="currency" id="cur-rub" value="RUB">
+                    <label for="cur-rub">RUB</label>
+                </div>
+            </div>
+
+            <div>
+                <span class="text-sm font-medium text-slate-700">Bezahlt von</span>
+                <div class="seg mt-1 flex">
+                    <input type="radio" name="paidBy" id="paid-andrey" value="Andrey" checked>
+                    <label for="paid-andrey">Andrey</label>
+                    <input type="radio" name="paidBy" id="paid-katia" value="Katia">
+                    <label for="paid-katia">Katia</label>
+                </div>
+            </div>
+
+            <label class="block">
+                <span class="text-sm font-medium text-slate-700">Datum</span>
+                <input id="date" type="date" required
+                    class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </label>
+
+            <button id="submit" type="submit"
+                class="w-full rounded-lg bg-indigo-600 text-white text-lg font-semibold px-4 py-3 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50 disabled:cursor-not-allowed">
+                Speichern
+            </button>
+
+            <p id="status" class="text-sm text-slate-600 min-h-[1.25rem] text-center" aria-live="polite"></p>
+        </form>
+    </div>
+
+    <script>
+        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbzAgpky5AwFCMIu6qMAEjvuDz6x4znz7jKLJ9EcSohUD2e-tzB4Wwilq3a16uDPgIJp/exec';
+
+        const DEFAULTS = {
+            category: 'Lebensmittel: Essen',
+            currency: 'CHF',
+            paidBy: 'Andrey',
+        };
+
+        const form = document.getElementById('form');
+        const statusEl = document.getElementById('status');
+        const submitBtn = document.getElementById('submit');
+        const dateEl = document.getElementById('date');
+        const amountEl = document.getElementById('amount');
+        const noteEl = document.getElementById('note');
+        const categoryEl = document.getElementById('category');
+
+        function todayISO() {
+            const d = new Date();
+            const tz = d.getTimezoneOffset() * 60000;
+            return new Date(d - tz).toISOString().slice(0, 10);
+        }
+
+        function resetToDefaults() {
+            amountEl.value = '';
+            noteEl.value = '';
+            categoryEl.value = DEFAULTS.category;
+            document.querySelector(`input[name="currency"][value="${DEFAULTS.currency}"]`).checked = true;
+            document.querySelector(`input[name="paidBy"][value="${DEFAULTS.paidBy}"]`).checked = true;
+            dateEl.value = todayISO();
+        }
+
+        resetToDefaults();
+
+        function setStatus(text, kind) {
+            const colors = { ok: 'text-green-700', err: 'text-red-700', info: 'text-slate-600' };
+            statusEl.textContent = text;
+            statusEl.className = `text-sm min-h-[1.25rem] text-center ${colors[kind] || colors.info}`;
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const payload = {
+                date: dateEl.value,
+                amount: parseFloat(amountEl.value),
+                note: noteEl.value.trim(),
+                category: categoryEl.value,
+                currency: document.querySelector('input[name="currency"]:checked').value,
+                paidBy: document.querySelector('input[name="paidBy"]:checked').value,
+            };
+
+            submitBtn.disabled = true;
+            setStatus('Speichern…', 'info');
+
+            try {
+                const res = await fetch(WEB_APP_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify(payload),
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const text = await res.text();
+                if (!text.startsWith('ok')) throw new Error(text || 'Unbekannte Antwort');
+                setStatus('Gespeichert ✓', 'ok');
+                resetToDefaults();
+                amountEl.focus();
+            } catch (err) {
+                setStatus('Fehler: ' + err.message, 'err');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
