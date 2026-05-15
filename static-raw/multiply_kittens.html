@@ -31,6 +31,67 @@
     <div id="root"></div>
 
     <script type="text/babel">
+    /**
+     * Math — single-page spaced-repetition practice app for an 8-year-old.
+     * Filename is historical ("multiply_kittens") — the game now covers four
+     * operations and there are no kittens anymore.
+     *
+     * WHAT IT IS
+     * Random multiplication, carry-addition (e.g. 73 + 8), borrow-subtraction
+     * (e.g. 75 − 6), and division (framed as "a × ? = product" — the word
+     * "division" never appears, the ÷ symbol never appears). First-try
+     * correct earns coins. Misses drop into a typed step-by-step correction
+     * breakdown that walks her to the answer. She must TYPE every sub-step's
+     * answer — never just "next" — so she can't skim past help.
+     *
+     * TECH
+     * Single HTML file, no build step for JSX. React 18 + Babel standalone +
+     * Tailwind, all via CDN. Hexo just copies static-raw/ → public/. State
+     * lives in localStorage under STORAGE_KEY (currently `_v7`).
+     *   npm run build      hexo generate + copy static-raw/ → public/
+     *   npm run validate   checks link integrity only (NOT JSX)
+     *
+     * ARCHITECTURE
+     * `OPS` registry: each op owns generate / idOf / compute / label /
+     * strategy / renderPrompt. Cards carry `card.op`. `makeCard(op, a, b)`
+     * builds a fresh FSRS card. Adding a new op = one OPS entry + one
+     * getXxxStrategy(a, b). The engine doesn't change.
+     *
+     * SCHEDULING
+     * FSRS (see W weights + scheduleReview). Queue of 5. ~70% of picks are
+     * the earliest-due card; ~30% are forced fresh draws from the rarest op
+     * (variety bias — keeps newly-added ops surfacing instead of being
+     * drowned by a long tail of due mul cards). On a miss the corrected card
+     * is reinserted at queue position 2 for unaided retest a couple cards
+     * later.
+     *
+     * CORRECTION BREAKDOWNS
+     * Each strategy returns `[{prompt, answer, hint?, inline?}]`. Hints are
+     * short, narrative, jargon-free ("Try ×10 first.", "9 is one less than
+     * 10.") — explicitly NOT "squares", "N²", or anything an 8yo wouldn't
+     * recognise. After two wrong attempts on a step the answer is revealed,
+     * but she still has to type it to advance. Div uses skip-count lists
+     * (e.g. "Skip-count 4s: 4, 8, 12, …, 36. Count them!") for any case
+     * without a Tier 1 anchor — reusing the mul chain there would feed `b`
+     * in as an input, and `b` is the thing she's trying to find.
+     *
+     * COIN ECONOMY
+     * mul/add/sub: 1 coin first-try, 1–3 coins for first-try-after-a-miss
+     * (banded by FSRS difficulty). div is special — per-card reward starts
+     * at 3 and decays 3→2→1 with each first-try success; any miss resets to
+     * 3. Engagement bait for the topic she fears.
+     *
+     * PACE METRIC
+     * Header chip = coins/min averaged over the last 100 answer events.
+     * Corrections record 0 coins so time on mistakes drags the rate down.
+     * Any single answer over 60s is skipped entirely (likely distraction).
+     *
+     * VERSIONING & TESTING
+     * Bump `VERSION` by 0.01 on every merge to master so the kid can tell
+     * builds apart. `runTests()` runs on page load and logs pass/fail to the
+     * browser console — add asserts when adding behaviour, there's no
+     * separate test runner.
+     */
     const { useState, useEffect, useCallback, useRef } = React;
     
     const W = [0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, 0.14, 0.94, 2.18, 0.05, 0.34, 1.26, 0.29, 2.61];
@@ -40,7 +101,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.11';
+    const VERSION = '1.12';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
