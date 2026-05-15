@@ -25,6 +25,20 @@
             60% { transform: translateX(-15px); }
             80% { transform: translateX(15px); }
         }
+        @keyframes praise-pop {
+            0%   { transform: translate(-50%, -50%) scale(0.3) rotate(var(--tilt, -8deg)); opacity: 0; }
+            30%  { transform: translate(-50%, -50%) scale(1.25) rotate(var(--tilt, -8deg)); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(1.5) rotate(var(--tilt, -8deg)); opacity: 0; }
+        }
+        .animate-praise { animation: praise-pop 500ms ease-out forwards; }
+        .praise-word {
+            font-family: 'Impact', 'Arial Black', sans-serif;
+            text-shadow:
+                3px 3px 0 #000, -3px 3px 0 #000, 3px -3px 0 #000, -3px -3px 0 #000,
+                0 3px 0 #000, 3px 0 0 #000, 0 -3px 0 #000, -3px 0 0 #000,
+                6px 6px 0 rgba(0,0,0,0.3);
+            letter-spacing: 0.05em;
+        }
     </style>
 </head>
 <body class="antialiased bg-slate-50">
@@ -101,11 +115,39 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.12';
+    const VERSION = '1.13';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
     const DISTRACTION_MS = 60_000;
+
+    // Kinetic typography: comic-book praise words that pop near the solved
+    // equation on a first-try correct answer. More triggers will hang off
+    // streak / pace in the future; the streak itself stays hidden.
+    const PRAISE_DEFAULTS = ['BOOM!', 'SHARP!', 'SPEEDY!', 'SMART!'];
+    const PRAISE_COLORS = [
+        'text-pink-400', 'text-amber-300', 'text-emerald-400',
+        'text-sky-400', 'text-fuchsia-400', 'text-orange-400',
+    ];
+    // Minimum streak length that counts as a "record" worth celebrating —
+    // otherwise the very first correct answer ever (streak 1 > max 0) would
+    // trigger UNSTOPPABLE.
+    const STREAK_RECORD_MIN = 3;
+    // Need a baseline before LIGHTSPEED is meaningful.
+    const LIGHTSPEED_MIN_SAMPLES = 5;
+
+    // Decide which praise word to show given the just-recorded answer's ms,
+    // the prior pace events (correct first-tries only contribute to avg),
+    // the new streak length, and the previous max streak.
+    const pickPraise = (ms, paceEvents, streak, prevMaxStreak) => {
+        if (streak >= STREAK_RECORD_MIN && streak > prevMaxStreak) return 'UNSTOPPABLE!';
+        const correctEvents = paceEvents.filter(e => e.coins > 0);
+        if (correctEvents.length >= LIGHTSPEED_MIN_SAMPLES) {
+            const avgMs = correctEvents.reduce((s, e) => s + e.ms, 0) / correctEvents.length;
+            if (ms < avgMs / 2) return 'LIGHTSPEED!';
+        }
+        return PRAISE_DEFAULTS[Math.floor(Math.random() * PRAISE_DEFAULTS.length)];
+    };
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -542,6 +584,21 @@
             "pace: 5 coins in 60s ⇒ 5.0 c/min");
         assert(computePace([]) === null, "pace: no events ⇒ null");
 
+        // Praise picker — streak record beats lightspeed beats default pool.
+        const fastEvents = Array.from({ length: 6 }, () => ({ coins: 1, ms: 10_000 }));
+        assert(pickPraise(2_000, fastEvents, 5, 3) === 'UNSTOPPABLE!',
+            "praise: new streak record (≥ STREAK_RECORD_MIN, > prev max) ⇒ UNSTOPPABLE!");
+        assert(pickPraise(2_000, fastEvents, 1, 0) !== 'UNSTOPPABLE!',
+            "praise: streak of 1 isn't a record worth celebrating");
+        assert(pickPraise(2_000, fastEvents, 2, 5) !== 'UNSTOPPABLE!',
+            "praise: streak below prior max ⇒ not UNSTOPPABLE");
+        assert(pickPraise(4_000, fastEvents, 1, 1) === 'LIGHTSPEED!',
+            "praise: ms < half of avg (with enough samples) ⇒ LIGHTSPEED!");
+        assert(pickPraise(4_000, fastEvents.slice(0, 2), 1, 1) !== 'LIGHTSPEED!',
+            "praise: fewer than LIGHTSPEED_MIN_SAMPLES samples ⇒ no LIGHTSPEED");
+        assert(PRAISE_DEFAULTS.includes(pickPraise(9_000, fastEvents, 1, 1)),
+            "praise: nothing special ⇒ a default pool word");
+
         const foursSteps = getDivisionStrategy(4, 6);
         assert(foursSteps.length === 1
             && foursSteps[0].inline === true && foursSteps[0].answer === 6
@@ -574,13 +631,14 @@
                     coins: parsed.coins || 0,
                     deck: parsed.deck || {},
                     queue: parsed.queue || [],
-                    paceEvents: parsed.paceEvents || []
+                    paceEvents: parsed.paceEvents || [],
+                    maxStreak: parsed.maxStreak || 0,
                 };
             }
         } catch (e) {
             console.error("Failed to load initial state", e);
         }
-        return { coins: 0, deck: {}, queue: [], paceEvents: [] };
+        return { coins: 0, deck: {}, queue: [], paceEvents: [], maxStreak: 0 };
     };
 
     // Average answering pace in coins/minute. Returns null when there's
@@ -606,6 +664,14 @@
         const [stepError, setStepError] = useState(false);
         // Rolling buffer of recent answer events used for the coins/min badge.
         const [paceEvents, setPaceEvents] = useState(initialState.paceEvents);
+        // Current run of first-try corrects (resets on any miss). Not shown
+        // to the kid — drives praise-word effects only.
+        const [streak, setStreak] = useState(0);
+        const [maxStreak, setMaxStreak] = useState(initialState.maxStreak);
+        // praise = { id, word, color, tilt } | null — the comic-book word
+        // floating over the equation. New id on every pop so React remounts
+        // and the CSS animation restarts.
+        const [praise, setPraise] = useState(null);
 
         const walletRef = useRef(null);
         const inputRef = useRef(null);
@@ -624,8 +690,8 @@
         }, []);
 
         useEffect(() => {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents }));
-        }, [coins, deck, queue, paceEvents]);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents, maxStreak }));
+        }, [coins, deck, queue, paceEvents, maxStreak]);
 
         // Restart the card timer whenever the visible problem changes.
         useEffect(() => {
@@ -634,8 +700,21 @@
 
         const recordAnswer = (coinsEarned) => {
             const ms = Date.now() - cardStartRef.current;
-            if (ms > DISTRACTION_MS) return; // probably a distraction — skip this event
+            if (ms > DISTRACTION_MS) return ms; // probably a distraction — skip this event
             setPaceEvents(prev => [...prev.slice(-(PACE_WINDOW - 1)), { coins: coinsEarned, ms }]);
+            return ms;
+        };
+
+        const showPraise = (word) => {
+            setPraise({
+                id: Math.random(),
+                word,
+                color: PRAISE_COLORS[Math.floor(Math.random() * PRAISE_COLORS.length)],
+                tilt: (Math.random() * 24 - 12).toFixed(1), // -12°..+12°
+            });
+            // Clear shortly after the 500ms animation finishes so the node
+            // unmounts and doesn't sit around invisible.
+            setTimeout(() => setPraise(p => (p && p.word === word ? null : p)), 600);
         };
 
         const getNextFromDeck = useCallback((currentQueue) => {
@@ -704,6 +783,7 @@
             updated.inCorrection = true;
             // Any miss resets the div coin-decay back to the full 3.
             if (updated.op === 'div') updated.reward = DIV_REWARD_INITIAL;
+            setStreak(0);
             setDeck(prev => ({ ...prev, [updated.id]: updated }));
             const nextQueue = [...queue];
             nextQueue[0] = updated;
@@ -765,7 +845,11 @@
                 if (updated.op === 'div') {
                     updated.reward = Math.max(DIV_REWARD_MIN, (currentProblem.reward ?? DIV_REWARD_INITIAL) - 1);
                 }
-                recordAnswer(reward);
+                const ms = recordAnswer(reward);
+                const newStreak = streak + 1;
+                setStreak(newStreak);
+                if (newStreak > maxStreak) setMaxStreak(newStreak);
+                showPraise(pickPraise(ms, paceEvents, newStreak, maxStreak));
                 triggerCoinAnimation(reward);
                 setTimeout(() => {
                     setCoins(prev => prev + reward);
@@ -839,9 +923,20 @@
                             Worth {getCoinReward(currentProblem)} {getCoinReward(currentProblem) === 1 ? 'Coin' : 'Coins'}
                         </div>
 
-                        <div className={`font-black text-slate-700 flex items-center justify-center gap-4 ${breakdown ? 'text-4xl my-4' : 'text-7xl md:text-9xl my-8'}`}>
-                            {OPS[currentProblem.op].renderPrompt(currentProblem)}
-                            {breakdown && !OPS[currentProblem.op].selfContained && <span className="text-slate-400">= ?</span>}
+                        <div className="relative">
+                            <div className={`font-black text-slate-700 flex items-center justify-center gap-4 ${breakdown ? 'text-4xl my-4' : 'text-7xl md:text-9xl my-8'}`}>
+                                {OPS[currentProblem.op].renderPrompt(currentProblem)}
+                                {breakdown && !OPS[currentProblem.op].selfContained && <span className="text-slate-400">= ?</span>}
+                            </div>
+                            {praise && (
+                                <div key={praise.id}
+                                     className="absolute left-1/2 top-1/2 pointer-events-none z-30 animate-praise"
+                                     style={{ '--tilt': `${praise.tilt}deg` }}>
+                                    <span className={`praise-word text-6xl md:text-7xl font-black ${praise.color}`}>
+                                        {praise.word}
+                                    </span>
+                                </div>
+                            )}
                         </div>
 
                         {breakdown && (() => {
