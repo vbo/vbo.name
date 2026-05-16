@@ -116,6 +116,16 @@
             <p id="status" class="text-sm text-slate-600 min-h-[1.25rem] text-center" aria-live="polite"></p>
             <pre id="debug" class="text-xs text-slate-500 bg-slate-100 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-words hidden"></pre>
         </form>
+
+        <section class="mt-6">
+            <div class="flex items-center justify-between mb-2">
+                <h2 class="text-sm font-semibold text-slate-700">Letzte Buchungen</h2>
+                <button id="refresh" type="button"
+                    class="text-xs text-indigo-600 hover:text-indigo-800">Aktualisieren</button>
+            </div>
+            <ul id="recent" class="space-y-2"></ul>
+            <p id="recentStatus" class="text-xs text-slate-400 mt-2 text-center"></p>
+        </section>
     </div>
 
     <script>
@@ -201,12 +211,84 @@
                 showDebug(`HTTP ${res.status}`, text);
                 resetToDefaults();
                 amountEl.focus();
+                loadRecent(); // fire-and-forget; form stays usable
             } catch (err) {
                 setStatus('Fehler: ' + err.message, 'err');
             } finally {
                 submitBtn.disabled = false;
             }
         });
+
+        const recentEl = document.getElementById('recent');
+        const recentStatusEl = document.getElementById('recentStatus');
+        const refreshBtn = document.getElementById('refresh');
+
+        function fmtDate(v) {
+            if (!v) return '';
+            // Apps Script serializes a Date cell as an ISO string; a text cell
+            // comes back as-is. Either way, keep the YYYY-MM-DD prefix.
+            const m = String(v).match(/^\d{4}-\d{2}-\d{2}/);
+            return m ? m[0] : String(v);
+        }
+
+        function fmtAmount(v) {
+            const n = Number(v);
+            return Number.isFinite(n) ? n.toFixed(2) : String(v ?? '');
+        }
+
+        function renderRecent(rows) {
+            recentEl.innerHTML = '';
+            if (!rows || rows.length === 0) {
+                recentStatusEl.textContent = 'Noch keine Buchungen.';
+                return;
+            }
+            for (const r of rows) {
+                const li = document.createElement('li');
+                li.className = 'bg-white rounded-lg shadow-sm px-3 py-2 text-sm';
+                li.innerHTML = `
+                    <div class="flex items-baseline justify-between gap-2">
+                        <span class="font-semibold text-slate-900">${fmtAmount(r.amount)} ${escapeHtml(r.currency || '')}</span>
+                        <span class="text-xs text-slate-400">${escapeHtml(fmtDate(r.date))}</span>
+                    </div>
+                    <div class="text-slate-600 truncate">${escapeHtml(r.note || '')}</div>
+                    <div class="text-xs text-slate-400 flex justify-between gap-2">
+                        <span class="truncate">${escapeHtml(r.category || '')}</span>
+                        <span>${escapeHtml(r.paidBy || '')}</span>
+                    </div>`;
+                recentEl.appendChild(li);
+            }
+            recentStatusEl.textContent = '';
+        }
+
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => (
+                { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+            ));
+        }
+
+        let recentSeq = 0;
+        async function loadRecent() {
+            const seq = ++recentSeq;
+            recentStatusEl.textContent = 'Lädt…';
+            try {
+                const res = await fetch(WEB_APP_URL, { method: 'GET' });
+                const text = await res.text();
+                if (seq !== recentSeq) return; // a newer load superseded this one
+                let parsed;
+                try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
+                if (!parsed || parsed.ok !== true || !Array.isArray(parsed.rows)) {
+                    recentStatusEl.textContent = 'Konnte Buchungen nicht laden.';
+                    return;
+                }
+                renderRecent(parsed.rows);
+            } catch (err) {
+                if (seq !== recentSeq) return;
+                recentStatusEl.textContent = 'Konnte Buchungen nicht laden.';
+            }
+        }
+
+        refreshBtn.addEventListener('click', loadRecent);
+        loadRecent(); // async on page load; never blocks the form
     </script>
 </body>
 </html>
