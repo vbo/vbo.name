@@ -101,7 +101,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.12';
+    const VERSION = '1.13';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
@@ -333,15 +333,39 @@
     };
 
     // "Step back to ten" breakdown for 2-digit − 1-digit with a borrow.
-    // 75 − 6 → split 6 into (5 + 1): step down to 70 first, then subtract the leftover 1.
+    // 75 − 6 → step down to 70 first, then take the leftover 1.
+    //
+    // The kid finds "80 − 3" hard even though she knows "10 − 3" cold — she
+    // hasn't internalised the regrouping (80 = 70 + 10, take 3 from the 10,
+    // put the 70 back). So for any round ten ≥ 20 we split that hard step
+    // into the two moves she CAN do, anchored on the 10−n fact. For a in
+    // 11–19 the round ten is 10, which she's already comfortable with, so we
+    // keep the original 2-step there.
     const getSubtractionStrategy = (a, b) => {
         const ones = a % 10;
-        const tens = a - ones;
-        const leftover = b - ones;
-        return [
+        const tens = a - ones;            // round ten she steps back to
+        const leftover = b - ones;        // 1..8, still to subtract after reaching `tens`
+        const lowerTen = tens - 10;       // the ten just below `tens`
+        const complement = 10 - leftover; // the "10 − n" fact she already knows
+
+        const steps = [
             { hint: "Step back to a round ten first.", prompt: `${a} − ${ones}`, answer: tens },
-            { hint: "Now subtract what's left.", prompt: `${tens} − ${leftover}`, answer: a - b },
         ];
+        if (tens === 10) {
+            steps.push({ hint: "Now subtract what's left.", prompt: `${tens} − ${leftover}`, answer: a - b });
+        } else {
+            steps.push({
+                hint: `${tens} is ${lowerTen} + 10. Take ${leftover} from the 10 — you know this!`,
+                prompt: `10 − ${leftover}`,
+                answer: complement,
+            });
+            steps.push({
+                hint: `Now put the ${lowerTen} back.`,
+                prompt: `${lowerTen} + ${complement}`,
+                answer: a - b,
+            });
+        }
+        return steps;
     };
 
     // Division-as-multiplication breakdown.
@@ -481,7 +505,9 @@
         assert(makeCard('sub', 75, 6).id === 'sub:75-6', "sub ids are prefixed with a-b");
         assert(OPS.sub.compute(75, 6) === 69, "sub compute is plain a-b");
 
-        // step-back-to-ten strategy: step1 hits the lower multiple of 10, step2 = a-b.
+        // step-back-to-ten strategy: step 1 hits the lower ten, last step = a-b.
+        // 2 steps when the round ten is 10 (a in 11-19), else 3 steps that
+        // anchor on the 10−n fact she already knows.
         let subBad = 0;
         for (let a = 12; a <= 99; a++) {
             for (let b = 2; b <= 9; b++) {
@@ -489,15 +515,17 @@
                 if (!(ones >= 1 && ones < b)) continue;
                 const steps = getSubtractionStrategy(a, b);
                 const tens = a - ones;
-                if (steps.length !== 2) subBad++;
+                const expectedLen = tens === 10 ? 2 : 3;
+                if (steps.length !== expectedLen) subBad++;
                 if (steps[0].answer !== tens) subBad++;
                 if (steps[steps.length - 1].answer !== a - b) subBad++;
+                if (expectedLen === 3 && steps[1].answer !== 10 - (b - ones)) subBad++;
                 for (const s of steps) {
                     if (!Number.isInteger(s.answer) || s.answer < 0) subBad++;
                 }
             }
         }
-        assert(subBad === 0, "step-back-to-ten strategy: step1 hits prev 10, step2 = a-b, all non-negative integers");
+        assert(subBad === 0, "step-back-to-ten: step1=lower ten, last=a-b, 3-step anchors on 10−n, all non-neg ints");
 
         let subGenBad = 0;
         for (let i = 0; i < 200; i++) {
