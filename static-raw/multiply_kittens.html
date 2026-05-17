@@ -25,6 +25,60 @@
             60% { transform: translateX(-15px); }
             80% { transform: translateX(15px); }
         }
+        @keyframes praise-pop {
+            0%   { transform: translate(-50%, -50%) scale(0.3) rotate(var(--tilt, -8deg)); opacity: 0; }
+            30%  { transform: translate(-50%, -50%) scale(var(--peak, 1.25)) rotate(var(--tilt, -8deg)); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(calc(var(--peak, 1.25) * 1.2)) rotate(var(--tilt, -8deg)); opacity: 0; }
+        }
+        .animate-praise { animation: praise-pop 500ms ease-out forwards; }
+        .praise-word {
+            font-family: 'Impact', 'Arial Black', sans-serif;
+            text-shadow:
+                3px 3px 0 #000, -3px 3px 0 #000, 3px -3px 0 #000, -3px -3px 0 #000,
+                0 3px 0 #000, 3px 0 0 #000, 0 -3px 0 #000, -3px 0 0 #000,
+                6px 6px 0 rgba(0,0,0,0.3);
+            letter-spacing: 0.05em;
+            display: inline-block;
+        }
+        /* Tier 1+: a quick jiggle on the inner span; outer wrapper still pops. */
+        @keyframes praise-shake {
+            0%, 100% { transform: translateX(0); }
+            25%      { transform: translateX(-4px); }
+            50%      { transform: translateX(4px); }
+            75%      { transform: translateX(-4px); }
+        }
+        .praise-shake { animation: praise-shake 90ms ease-in-out 3; }
+        /* Tier 3: chromatic-aberration text split + neon glow. Replaces the
+           solid black stroke so the colours read; the wrapper drop-shadow
+           still adds some weight. */
+        .praise-chromatic {
+            text-shadow:
+                -3px 0 0 rgba(255, 0, 90, 0.95),
+                 3px 0 0 rgba(0, 200, 255, 0.95),
+                0 0 12px currentColor,
+                0 0 24px currentColor,
+                0 0 36px currentColor;
+        }
+        /* Tier 2+: tiny radial sparks. Each spark sets its own --angle. */
+        @keyframes praise-spark {
+            0%   { transform: translate(-50%, -50%) rotate(var(--angle)) translateX(0)   scale(1);   opacity: 1; }
+            100% { transform: translate(-50%, -50%) rotate(var(--angle)) translateX(90px) scale(0.2); opacity: 0; }
+        }
+        .praise-spark {
+            position: absolute;
+            left: 50%; top: 50%;
+            width: 10px; height: 10px;
+            background: #fde047;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #fbbf24, 0 0 16px #f59e0b;
+            pointer-events: none;
+            animation: praise-spark 500ms ease-out forwards;
+        }
+        /* Page background follows the streak. Buildup eases in; a miss
+           toggles energy-no-transition for one frame so the drop is
+           perceived as instant, then transitions re-enable for next time. */
+        .energy-transition { transition: background-color 600ms ease-out; }
+        .energy-no-transition { transition: none; }
     </style>
 </head>
 <body class="antialiased bg-slate-50">
@@ -101,11 +155,192 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.13';
+    const VERSION = '1.18';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
     const DISTRACTION_MS = 60_000;
+
+    // Kinetic typography: comic-book praise words that pop near the solved
+    // equation on a first-try correct answer. The streak itself is hidden —
+    // word + animation tier are the only signal she gets that something's
+    // building.
+    const PRAISE_DEFAULTS = ['BOOM!', 'SHARP!', 'SPEEDY!', 'SMART!'];
+    // Streak 3–4 — warming up. Streak 5 hits 'UNSTOPPABLE!', 10 hits
+    // 'LEGENDARY!'; the gaps fall back to the default/lightspeed pool so the
+    // milestone words don't lose their punch.
+    const STREAK_WARMUP_WORDS = ['ON FIRE!', "STREAKIN'!"];
+    const PRAISE_COLORS = [
+        'text-pink-400', 'text-amber-300', 'text-emerald-400',
+        'text-sky-400', 'text-fuchsia-400', 'text-orange-400',
+    ];
+    // Need a baseline before LIGHTSPEED is meaningful.
+    const LIGHTSPEED_MIN_SAMPLES = 5;
+
+    // Word selection. Milestones are exact-match so repeating streak 5s don't
+    // keep yelling UNSTOPPABLE — the next celebration has to wait for 10.
+    const pickPraise = (ms, paceEvents, streak) => {
+        if (streak === 5) return 'UNSTOPPABLE!';
+        if (streak === 10) return 'LEGENDARY!';
+        if (streak === 3 || streak === 4) {
+            return STREAK_WARMUP_WORDS[Math.floor(Math.random() * STREAK_WARMUP_WORDS.length)];
+        }
+        const correctEvents = paceEvents.filter(e => e.coins > 0);
+        if (correctEvents.length >= LIGHTSPEED_MIN_SAMPLES) {
+            const avgMs = correctEvents.reduce((s, e) => s + e.ms, 0) / correctEvents.length;
+            if (ms < avgMs / 2) return 'LIGHTSPEED!';
+        }
+        return PRAISE_DEFAULTS[Math.floor(Math.random() * PRAISE_DEFAULTS.length)];
+    };
+
+    // Animation intensity tier — escalates with streak length, independent of
+    // word selection. Same word ("BOOM!") feels different at streak 7 vs 17.
+    //   0  default pop
+    //   1  + horizontal jiggle  (streak ≥ 5)
+    //   2  + 20% larger peak scale + radial spark burst  (streak ≥ 10)
+    //   3  + chromatic split + neon glow  (streak ≥ 15)
+    const getPraiseTier = (streak) => {
+        if (streak >= 15) return 3;
+        if (streak >= 10) return 2;
+        if (streak >= 5) return 1;
+        return 0;
+    };
+
+    // Adaptive background energy: the page background lerps from neutral
+    // slate-50 toward a vibrant teal-200 as the streak grows, hitting full
+    // saturation at STREAK_MAX_ENERGY. Builds smoothly (CSS transition);
+    // a miss snaps back to neutral instantly via the energy-no-transition
+    // class — see handleSubmit's enterBreakdown call.
+    const STREAK_MAX_ENERGY = 15;
+    const ENERGY_NEUTRAL = [248, 250, 252]; // slate-50
+    const ENERGY_VIBRANT = [153, 246, 228]; // teal-200
+    const getEnergyColor = (streak) => {
+        const t = Math.min(1, Math.max(0, streak) / STREAK_MAX_ENERGY);
+        const c = (i) => Math.round(ENERGY_NEUTRAL[i] + (ENERGY_VIBRANT[i] - ENERGY_NEUTRAL[i]) * t);
+        return `rgb(${c(0)}, ${c(1)}, ${c(2)})`;
+    };
+
+    // Haptic feedback (Android / supported tablets only — iOS Safari has no
+    // Vibration API). Single light tap on every first-try correct; a
+    // double-tap at the same streak milestones the praise system already
+    // celebrates (5 / 10 / 15) so the body matches the eye.
+    const HAPTIC_TAP = 20;                  // single 20ms buzz
+    const HAPTIC_DOUBLE = [15, 60, 15];     // tap–gap–tap
+    const HAPTIC_STREAK_MILESTONES = new Set([5, 10, 15]);
+    const getHapticPattern = (streak) =>
+        HAPTIC_STREAK_MILESTONES.has(streak) ? HAPTIC_DOUBLE : HAPTIC_TAP;
+    const triggerHaptic = (pattern) => {
+        if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return;
+        // Respect prefers-reduced-motion — same accessibility hint the
+        // visual animations should be ducking under (we can wire that in
+        // later if it comes up).
+        try {
+            if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            navigator.vibrate(pattern);
+        } catch (_) { /* sandboxed iframe / permissions / etc. — silently skip */ }
+    };
+
+    // Audio juice — three procedural SFX synthesized via Web Audio so we
+    // ship zero audio assets and pitch-shifting is free.
+    //   • playChime(streak)    — rising-pitch "combo" ding on every correct
+    //   • playWhoosh()         — subtle low whoosh on self-correction (backspace)
+    //   • playStreakBreak()    — soft downward slide when a streak ≥ 1 breaks
+    // The context is created lazily on first sound so we don't trip
+    // autoplay policies before the kid has interacted with the page.
+    let _audioCtx = null;
+    const getAudioCtx = () => {
+        if (_audioCtx) return _audioCtx;
+        try {
+            const Ctor = window.AudioContext || window.webkitAudioContext;
+            if (!Ctor) return null;
+            _audioCtx = new Ctor();
+            return _audioCtx;
+        } catch (_) { return null; }
+    };
+    const withAudio = (render) => {
+        try {
+            const ctx = getAudioCtx();
+            if (!ctx) return;
+            if (ctx.state === 'suspended') ctx.resume();
+            render(ctx, ctx.currentTime);
+        } catch (_) { /* silent fail — sound is optional */ }
+    };
+
+    // Pitch multiplier follows the streak: streak 1 plays at base (1.0),
+    // every additional correct adds +0.1, capped at 1.8. Cap is reached at
+    // streak 9 — past that, repeated correct answers all play at top pitch.
+    const CHIME_PITCH_CAP = 1.8;
+    const getChimePitch = (streak) =>
+        Math.min(CHIME_PITCH_CAP, 1.0 + Math.max(0, streak - 1) * 0.1);
+
+    const playChime = (streak) => {
+        const pitch = getChimePitch(streak);
+        withAudio((ctx, now) => {
+            const baseFreq = 523.25;  // C5
+            // Fundamental + softer octave — a touch of "bell" without a full
+            // additive-synth setup. Quick attack, ~220ms exponential decay.
+            const mix = ctx.createGain();
+            mix.gain.setValueAtTime(0, now);
+            mix.gain.linearRampToValueAtTime(0.22, now + 0.008);
+            mix.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+            mix.connect(ctx.destination);
+
+            const o1 = ctx.createOscillator();
+            o1.type = 'sine';
+            o1.frequency.value = baseFreq * pitch;
+            o1.connect(mix);
+            o1.start(now); o1.stop(now + 0.26);
+
+            const o2 = ctx.createOscillator();
+            o2.type = 'sine';
+            o2.frequency.value = baseFreq * pitch * 2;
+            const o2g = ctx.createGain();
+            o2g.gain.value = 0.35;
+            o2.connect(o2g).connect(mix);
+            o2.start(now); o2.stop(now + 0.26);
+        });
+    };
+
+    // Filtered noise burst — sweeps a band-pass downward so it reads as a
+    // brief "whoosh" rather than a tone. Quiet on purpose; this is an
+    // acknowledgement, not a celebration.
+    const playWhoosh = () => withAudio((ctx, now) => {
+        const dur = 0.18;
+        const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const filt = ctx.createBiquadFilter();
+        filt.type = 'bandpass';
+        filt.Q.value = 6;
+        filt.frequency.setValueAtTime(800, now);
+        filt.frequency.exponentialRampToValueAtTime(180, now + dur);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(0.06, now + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+        src.connect(filt).connect(g).connect(ctx.destination);
+        src.start(now);
+    });
+
+    // Soft downward slide on a streak break — NOT a buzzer. Slides ~A4 down
+    // to ~A2 over 400ms, gentle sine, quick attack, slow decay. Reads as
+    // "reset" without sounding like a reprimand.
+    const playStreakBreak = () => withAudio((ctx, now) => {
+        const dur = 0.45;
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.exponentialRampToValueAtTime(110, now + dur);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(0.14, now + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+        osc.connect(g).connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + dur + 0.05);
+    });
 
     // Op registry — each handler knows how to generate fresh operands, derive a
     // stable id, compute the answer, build a typed breakdown, and render the
@@ -570,6 +805,75 @@
             "pace: 5 coins in 60s ⇒ 5.0 c/min");
         assert(computePace([]) === null, "pace: no events ⇒ null");
 
+        // Praise picker — streak milestones beat lightspeed beats default pool.
+        const fastEvents = Array.from({ length: 6 }, () => ({ coins: 1, ms: 10_000 }));
+        assert(pickPraise(9_000, fastEvents, 5) === 'UNSTOPPABLE!',
+            "praise: streak exactly 5 ⇒ UNSTOPPABLE!");
+        assert(pickPraise(9_000, fastEvents, 10) === 'LEGENDARY!',
+            "praise: streak exactly 10 ⇒ LEGENDARY!");
+        assert(STREAK_WARMUP_WORDS.includes(pickPraise(9_000, fastEvents, 3)),
+            "praise: streak 3 ⇒ a warmup word (ON FIRE / STREAKIN')");
+        assert(STREAK_WARMUP_WORDS.includes(pickPraise(9_000, fastEvents, 4)),
+            "praise: streak 4 ⇒ a warmup word");
+        assert(pickPraise(9_000, fastEvents, 7) !== 'UNSTOPPABLE!'
+            && pickPraise(9_000, fastEvents, 7) !== 'LEGENDARY!',
+            "praise: between-milestone streaks fall back to the standard pool");
+        assert(pickPraise(4_000, fastEvents, 7) === 'LIGHTSPEED!',
+            "praise: fast answer between milestones ⇒ LIGHTSPEED! still wins");
+        assert(pickPraise(4_000, fastEvents.slice(0, 2), 1) !== 'LIGHTSPEED!',
+            "praise: fewer than LIGHTSPEED_MIN_SAMPLES samples ⇒ no LIGHTSPEED");
+        assert(PRAISE_DEFAULTS.includes(pickPraise(9_000, fastEvents, 1)),
+            "praise: nothing special ⇒ a default pool word");
+
+        // Animation tier — escalates with streak length.
+        assert(getPraiseTier(0) === 0 && getPraiseTier(4) === 0,
+            "praise tier: < 5 ⇒ base animation");
+        assert(getPraiseTier(5) === 1 && getPraiseTier(9) === 1,
+            "praise tier: 5..9 ⇒ tier 1 (shake)");
+        assert(getPraiseTier(10) === 2 && getPraiseTier(14) === 2,
+            "praise tier: 10..14 ⇒ tier 2 (bigger + sparks)");
+        assert(getPraiseTier(15) === 3 && getPraiseTier(50) === 3,
+            "praise tier: ≥ 15 ⇒ tier 3 (chromatic + glow)");
+
+        // Adaptive background energy.
+        assert(getEnergyColor(0) === `rgb(${ENERGY_NEUTRAL.join(', ')})`,
+            "energy: streak 0 ⇒ neutral slate-50");
+        assert(getEnergyColor(STREAK_MAX_ENERGY) === `rgb(${ENERGY_VIBRANT.join(', ')})`,
+            "energy: streak at max ⇒ fully saturated vibrant target");
+        assert(getEnergyColor(100) === `rgb(${ENERGY_VIBRANT.join(', ')})`,
+            "energy: streak past max stays clamped at vibrant target");
+        // Mid-streak should lie strictly between neutral and vibrant on every channel
+        // that actually changes (rules out off-by-one in the lerp).
+        const mid = getEnergyColor(Math.floor(STREAK_MAX_ENERGY / 2))
+            .match(/\d+/g).map(Number);
+        let energyMidBad = 0;
+        for (let i = 0; i < 3; i++) {
+            const lo = Math.min(ENERGY_NEUTRAL[i], ENERGY_VIBRANT[i]);
+            const hi = Math.max(ENERGY_NEUTRAL[i], ENERGY_VIBRANT[i]);
+            if (mid[i] < lo || mid[i] > hi) energyMidBad++;
+        }
+        assert(energyMidBad === 0, "energy: mid-streak each channel stays between neutral and vibrant");
+
+        // Haptic pattern selection — single tap on plain corrects, double
+        // tap on the same streak milestones the praise system celebrates.
+        assert(getHapticPattern(1) === HAPTIC_TAP && getHapticPattern(7) === HAPTIC_TAP,
+            "haptic: non-milestone streak ⇒ single light tap");
+        assert(getHapticPattern(5) === HAPTIC_DOUBLE
+            && getHapticPattern(10) === HAPTIC_DOUBLE
+            && getHapticPattern(15) === HAPTIC_DOUBLE,
+            "haptic: streak milestones (5/10/15) ⇒ double tap");
+        assert(getHapticPattern(20) === HAPTIC_TAP,
+            "haptic: past-milestone streaks fall back to single tap");
+
+        // Chime pitch — climbs +0.1 per streak from a 1.0 base, capped at 1.8.
+        const approxEq = (a, b) => Math.abs(a - b) < 1e-9;
+        assert(getChimePitch(1) === 1.0, "chime: streak 1 plays at base pitch (1.0)");
+        assert(approxEq(getChimePitch(2), 1.1), "chime: streak 2 ⇒ 1.1");
+        assert(approxEq(getChimePitch(3), 1.2), "chime: streak 3 ⇒ 1.2");
+        assert(getChimePitch(9) === CHIME_PITCH_CAP, "chime: streak 9 ⇒ cap (1.8)");
+        assert(getChimePitch(50) === CHIME_PITCH_CAP, "chime: past-cap streaks stay clamped");
+        assert(getChimePitch(0) === 1.0, "chime: streak 0 still maps to 1.0 (defensive)");
+
         const foursSteps = getDivisionStrategy(4, 6);
         assert(foursSteps.length === 1
             && foursSteps[0].inline === true && foursSteps[0].answer === 6
@@ -602,7 +906,7 @@
                     coins: parsed.coins || 0,
                     deck: parsed.deck || {},
                     queue: parsed.queue || [],
-                    paceEvents: parsed.paceEvents || []
+                    paceEvents: parsed.paceEvents || [],
                 };
             }
         } catch (e) {
@@ -634,12 +938,26 @@
         const [stepError, setStepError] = useState(false);
         // Rolling buffer of recent answer events used for the coins/min badge.
         const [paceEvents, setPaceEvents] = useState(initialState.paceEvents);
+        // Current run of first-try corrects (resets on any miss). Not shown
+        // to the kid — drives praise word + animation tier + background.
+        const [streak, setStreak] = useState(0);
+        // True for ~one frame after a miss so the background snap to neutral
+        // skips the buildup transition. Otherwise the page would lazily
+        // fade down, blunting the "you missed" signal.
+        const [energyResetting, setEnergyResetting] = useState(false);
+        // praise = { id, word, color, tilt, tier } | null. New id on every
+        // pop so React remounts and the CSS animation restarts.
+        const [praise, setPraise] = useState(null);
 
         const walletRef = useRef(null);
         const inputRef = useRef(null);
         // Wall-clock when the current card was first shown. Reset whenever the
         // top of the queue changes (a new problem, or the corrected card pops out).
         const cardStartRef = useRef(Date.now());
+        // Has the kid already triggered a self-correction whoosh on this card?
+        // One whoosh per card is enough — multiple rapid backspaces shouldn't
+        // stack into a stutter.
+        const selfCorrectedRef = useRef(false);
 
         useEffect(() => {
             runTests();
@@ -658,12 +976,43 @@
         // Restart the card timer whenever the visible problem changes.
         useEffect(() => {
             cardStartRef.current = Date.now();
+            selfCorrectedRef.current = false;
         }, [queue[0]?.id]);
+
+        // Detect "typed some digits, hit backspace, then keeps going" — fire
+        // a single subtle whoosh the first time it happens on a card.
+        // oldLen ≥ 2 filters out the trivial "typed one digit, cleared it"
+        // case where there's no real correction to acknowledge.
+        const handleInputChange = (e) => {
+            const newVal = e.target.value;
+            if (!selfCorrectedRef.current
+                && inputValue.length >= 2
+                && newVal.length < inputValue.length) {
+                selfCorrectedRef.current = true;
+                playWhoosh();
+            }
+            setInputValue(newVal);
+        };
 
         const recordAnswer = (coinsEarned) => {
             const ms = Date.now() - cardStartRef.current;
-            if (ms > DISTRACTION_MS) return; // probably a distraction — skip this event
+            if (ms > DISTRACTION_MS) return ms; // probably a distraction — skip this event
             setPaceEvents(prev => [...prev.slice(-(PACE_WINDOW - 1)), { coins: coinsEarned, ms }]);
+            return ms;
+        };
+
+        const showPraise = (word, tier) => {
+            const id = Math.random();
+            setPraise({
+                id,
+                word,
+                tier,
+                color: PRAISE_COLORS[Math.floor(Math.random() * PRAISE_COLORS.length)],
+                tilt: (Math.random() * 24 - 12).toFixed(1), // -12°..+12°
+            });
+            // Clear shortly after the 500ms animation finishes so the node
+            // unmounts and doesn't sit around invisible.
+            setTimeout(() => setPraise(p => (p && p.id === id ? null : p)), 600);
         };
 
         const getNextFromDeck = useCallback((currentQueue) => {
@@ -732,6 +1081,15 @@
             updated.inCorrection = true;
             // Any miss resets the div coin-decay back to the full 3.
             if (updated.op === 'div') updated.reward = DIV_REWARD_INITIAL;
+            // Only sound the "reset" cue when there's actually a streak to
+            // break — first miss of a session is silent on the audio side
+            // (the visual shake + red border still signals the miss).
+            if (streak > 0) playStreakBreak();
+            setEnergyResetting(true);
+            setStreak(0);
+            // Re-enable transitions after the browser has painted the
+            // neutral background — next streak gain eases in smoothly.
+            setTimeout(() => setEnergyResetting(false), 60);
             setDeck(prev => ({ ...prev, [updated.id]: updated }));
             const nextQueue = [...queue];
             nextQueue[0] = updated;
@@ -793,7 +1151,12 @@
                 if (updated.op === 'div') {
                     updated.reward = Math.max(DIV_REWARD_MIN, (currentProblem.reward ?? DIV_REWARD_INITIAL) - 1);
                 }
-                recordAnswer(reward);
+                const ms = recordAnswer(reward);
+                const newStreak = streak + 1;
+                setStreak(newStreak);
+                showPraise(pickPraise(ms, paceEvents, newStreak), getPraiseTier(newStreak));
+                triggerHaptic(getHapticPattern(newStreak));
+                playChime(newStreak);
                 triggerCoinAnimation(reward);
                 setTimeout(() => {
                     setCoins(prev => prev + reward);
@@ -833,7 +1196,8 @@
         const currentProblem = queue[0];
 
         return (
-            <div className="min-h-screen p-4 md:p-8 font-sans text-slate-800 bg-slate-50">
+            <div className={`min-h-screen p-4 md:p-8 font-sans text-slate-800 ${energyResetting ? 'energy-no-transition' : 'energy-transition'}`}
+                 style={{ backgroundColor: getEnergyColor(streak) }}>
                 <div className="max-w-4xl mx-auto flex justify-between items-center mb-8 bg-white p-4 rounded-3xl shadow-sm border border-purple-200">
                     <div className="flex items-center gap-2">
                         <div className="bg-indigo-100 p-2 rounded-xl"><Icon name="Trophy" className="text-indigo-600" /></div>
@@ -867,9 +1231,27 @@
                             Worth {getCoinReward(currentProblem)} {getCoinReward(currentProblem) === 1 ? 'Coin' : 'Coins'}
                         </div>
 
-                        <div className={`font-black text-slate-700 flex items-center justify-center gap-4 ${breakdown ? 'text-4xl my-4' : 'text-7xl md:text-9xl my-8'}`}>
-                            {OPS[currentProblem.op].renderPrompt(currentProblem)}
-                            {breakdown && !OPS[currentProblem.op].selfContained && <span className="text-slate-400">= ?</span>}
+                        <div className="relative">
+                            <div className={`font-black text-slate-700 flex items-center justify-center gap-4 ${breakdown ? 'text-4xl my-4' : 'text-7xl md:text-9xl my-8'}`}>
+                                {OPS[currentProblem.op].renderPrompt(currentProblem)}
+                                {breakdown && !OPS[currentProblem.op].selfContained && <span className="text-slate-400">= ?</span>}
+                            </div>
+                            {praise && (
+                                <div key={praise.id}
+                                     className="absolute left-1/2 top-1/2 pointer-events-none z-30 animate-praise"
+                                     style={{
+                                         '--tilt': `${praise.tilt}deg`,
+                                         '--peak': praise.tier >= 2 ? 1.5 : 1.25,
+                                     }}>
+                                    <span className={`praise-word text-6xl md:text-7xl font-black ${praise.color} ${praise.tier >= 1 ? 'praise-shake' : ''} ${praise.tier >= 3 ? 'praise-chromatic' : ''}`}>
+                                        {praise.word}
+                                    </span>
+                                    {praise.tier >= 2 && Array.from({ length: 8 }).map((_, i) => (
+                                        <span key={i} className="praise-spark"
+                                              style={{ '--angle': `${(i / 8) * 360}deg` }} />
+                                    ))}
+                                </div>
+                            )}
                         </div>
 
                         {breakdown && (() => {
@@ -903,7 +1285,7 @@
 
                         <form onSubmit={handleSubmit} className="relative z-10">
                             <input ref={inputRef} type="number" inputMode="numeric" pattern="[0-9]*"
-                                   value={inputValue} onChange={(e) => setInputValue(e.target.value)}
+                                   value={inputValue} onChange={handleInputChange}
                                    placeholder={breakdown && breakdown.reveal ? breakdown.steps[breakdown.idx].answer : "?"} autoFocus
                                    autoComplete="off" autoCorrect="off" spellCheck="false"
                                    className={`w-full text-center text-6xl font-black p-6 rounded-3xl bg-slate-50 border-4 outline-none transition-all ${feedback === 'correct' ? 'border-green-500 bg-green-50 text-green-600' : stepError ? 'border-red-500 bg-red-50 text-red-600 shake' : breakdown ? 'border-indigo-300 focus:border-indigo-500' : 'border-slate-100 focus:border-indigo-400'}`} />
