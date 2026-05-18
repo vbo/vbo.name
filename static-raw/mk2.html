@@ -1,0 +1,1494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Math</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @keyframes coin-fly {
+            0% { transform: translate(-50%, 0) scale(1) rotate(0deg); opacity: 1; }
+            20% { transform: translate(-50%, -60px) scale(1.5) rotate(20deg); }
+            100% { transform: translate(calc(var(--target-x) - 50%), var(--target-y)) scale(0.3) rotate(360deg); opacity: 0; }
+        }
+        .animate-coin-fly { animation: coin-fly 1s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+        .animate-spin-slow { animation: spin 3s linear infinite; }
+        .shake { animation: shake 0.4s ease-in-out; }
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20% { transform: translateX(-15px); }
+            40% { transform: translateX(15px); }
+            60% { transform: translateX(-15px); }
+            80% { transform: translateX(15px); }
+        }
+        @keyframes praise-pop {
+            0%   { transform: translate(-50%, -50%) scale(0.3) rotate(var(--tilt, -8deg)); opacity: 0; }
+            30%  { transform: translate(-50%, -50%) scale(var(--peak, 1.25)) rotate(var(--tilt, -8deg)); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(calc(var(--peak, 1.25) * 1.2)) rotate(var(--tilt, -8deg)); opacity: 0; }
+        }
+        .animate-praise { animation: praise-pop 500ms ease-out forwards; }
+        .praise-word {
+            font-family: 'Impact', 'Arial Black', sans-serif;
+            text-shadow:
+                3px 3px 0 #000, -3px 3px 0 #000, 3px -3px 0 #000, -3px -3px 0 #000,
+                0 3px 0 #000, 3px 0 0 #000, 0 -3px 0 #000, -3px 0 0 #000,
+                6px 6px 0 rgba(0,0,0,0.3);
+            letter-spacing: 0.05em;
+            display: inline-block;
+        }
+        /* Tier 1+: a jiggle on the inner span; outer wrapper still pops.
+           Duration must stay in sync with PRAISE_SHAKE_MS in the script
+           (the chime is delayed to land right after the shake ends).
+           90ms × 5 = 450ms, comfortably inside the 500ms pop window. */
+        @keyframes praise-shake {
+            0%, 100% { transform: translateX(0); }
+            25%      { transform: translateX(-4px); }
+            50%      { transform: translateX(4px); }
+            75%      { transform: translateX(-4px); }
+        }
+        .praise-shake { animation: praise-shake 90ms ease-in-out 5; }
+        /* Tier 3: chromatic-aberration text split + neon glow. Replaces the
+           solid black stroke so the colours read; the wrapper drop-shadow
+           still adds some weight. */
+        .praise-chromatic {
+            text-shadow:
+                -3px 0 0 rgba(255, 0, 90, 0.95),
+                 3px 0 0 rgba(0, 200, 255, 0.95),
+                0 0 12px currentColor,
+                0 0 24px currentColor,
+                0 0 36px currentColor;
+        }
+        /* Tier 2+: tiny radial sparks. Each spark sets its own --angle. */
+        @keyframes praise-spark {
+            0%   { transform: translate(-50%, -50%) rotate(var(--angle)) translateX(0)   scale(1);   opacity: 1; }
+            100% { transform: translate(-50%, -50%) rotate(var(--angle)) translateX(90px) scale(0.2); opacity: 0; }
+        }
+        .praise-spark {
+            position: absolute;
+            left: 50%; top: 50%;
+            width: 10px; height: 10px;
+            background: #fde047;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #fbbf24, 0 0 16px #f59e0b;
+            pointer-events: none;
+            animation: praise-spark 500ms ease-out forwards;
+        }
+        /* Page background follows the streak. Buildup eases in; a miss
+           toggles energy-no-transition for one frame so the drop is
+           perceived as instant, then transitions re-enable for next time. */
+        .energy-transition { transition: background-color 600ms ease-out; }
+        .energy-no-transition { transition: none; }
+
+        /* --- EXPERIMENTAL (mk2 only): roaming cat ---------------------------
+           Purely decorative ambient pet. Lives in a bottom strip, pointer
+           pass-through, no effect on game state. */
+        @keyframes cat-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+        .cat-walking { animation: cat-bob 280ms ease-in-out infinite; }
+        @keyframes cat-breathe { 0%,100% { transform: scaleY(1); } 50% { transform: scaleY(1.04); } }
+        .cat-idle { animation: cat-breathe 2.6s ease-in-out infinite; transform-origin: 50% 100%; }
+        @keyframes cat-leg-f { 0%,100% { transform: rotate(14deg); } 50% { transform: rotate(-14deg); } }
+        @keyframes cat-leg-b { 0%,100% { transform: rotate(-14deg); } 50% { transform: rotate(14deg); } }
+        .cat-walking .cat-leg-1, .cat-walking .cat-leg-4 { animation: cat-leg-f 280ms ease-in-out infinite; }
+        .cat-walking .cat-leg-2, .cat-walking .cat-leg-3 { animation: cat-leg-b 280ms ease-in-out infinite; }
+        .cat-leg-1, .cat-leg-2, .cat-leg-3, .cat-leg-4 { transform-origin: 50% 0%; }
+        @keyframes cat-tail-sway { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(-16deg); } }
+        .cat-tail { animation: cat-tail-sway 1.8s ease-in-out infinite; transform-origin: 100% 100%; }
+    </style>
+</head>
+<body class="antialiased bg-slate-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+    /**
+     * Math — single-page spaced-repetition practice app for an 8-year-old.
+     * Filename is historical ("multiply_kittens") — the game now covers four
+     * operations and there are no kittens anymore.
+     *
+     * WHAT IT IS
+     * Random multiplication, carry-addition (e.g. 73 + 8), borrow-subtraction
+     * (e.g. 75 − 6), and division (framed as "a × ? = product" — the word
+     * "division" never appears, the ÷ symbol never appears). First-try
+     * correct earns coins. Misses drop into a typed step-by-step correction
+     * breakdown that walks her to the answer. She must TYPE every sub-step's
+     * answer — never just "next" — so she can't skim past help.
+     *
+     * TECH
+     * Single HTML file, no build step for JSX. React 18 + Babel standalone +
+     * Tailwind, all via CDN. Hexo just copies static-raw/ → public/. State
+     * lives in localStorage under STORAGE_KEY (currently `_v7`).
+     *   npm run build      hexo generate + copy static-raw/ → public/
+     *   npm run validate   checks link integrity only (NOT JSX)
+     *
+     * ARCHITECTURE
+     * `OPS` registry: each op owns generate / idOf / compute / label /
+     * strategy / renderPrompt. Cards carry `card.op`. `makeCard(op, a, b)`
+     * builds a fresh FSRS card. Adding a new op = one OPS entry + one
+     * getXxxStrategy(a, b). The engine doesn't change.
+     *
+     * SCHEDULING
+     * FSRS (see W weights + scheduleReview). Queue of 5. ~70% of picks are
+     * the earliest-due card; ~30% are forced fresh draws from the rarest op
+     * (variety bias — keeps newly-added ops surfacing instead of being
+     * drowned by a long tail of due mul cards). On a miss the corrected card
+     * is reinserted at queue position 2 for unaided retest a couple cards
+     * later.
+     *
+     * CORRECTION BREAKDOWNS
+     * Each strategy returns `[{prompt, answer, hint?, inline?}]`. Hints are
+     * short, narrative, jargon-free ("Try ×10 first.", "9 is one less than
+     * 10.") — explicitly NOT "squares", "N²", or anything an 8yo wouldn't
+     * recognise. After two wrong attempts on a step the answer is revealed,
+     * but she still has to type it to advance. Div uses skip-count lists
+     * (e.g. "Skip-count 4s: 4, 8, 12, …, 36. Count them!") for any case
+     * without a Tier 1 anchor — reusing the mul chain there would feed `b`
+     * in as an input, and `b` is the thing she's trying to find.
+     *
+     * COIN ECONOMY
+     * mul/add/sub: 1 coin first-try, 1–3 coins for first-try-after-a-miss
+     * (banded by FSRS difficulty). div is special — per-card reward starts
+     * at 3 and decays 3→2→1 with each first-try success; any miss resets to
+     * 3. Engagement bait for the topic she fears.
+     *
+     * PACE METRIC
+     * Header chip = coins/min averaged over the last 100 answer events.
+     * Corrections record 0 coins so time on mistakes drags the rate down.
+     * Any single answer over 60s is skipped entirely (likely distraction).
+     *
+     * VERSIONING & TESTING
+     * Bump `VERSION` by 0.01 on every merge to master so the kid can tell
+     * builds apart. `runTests()` runs on page load and logs pass/fail to the
+     * browser console — add asserts when adding behaviour, there's no
+     * separate test runner.
+     */
+    const { useState, useEffect, useCallback, useRef } = React;
+    
+    const W = [0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, 0.14, 0.94, 2.18, 0.05, 0.34, 1.26, 0.29, 2.61];
+    const RETENTION_TARGET = 0.85;
+    const INTERVAL_MODIFIER = Math.log(RETENTION_TARGET) / Math.log(0.9);
+    
+    const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
+    const QUEUE_SIZE = 5;
+    // Bump by 0.01 with every merge to master so the kid can tell builds apart.
+    const VERSION = '1.19';
+    // Pace metric: keep the last N answer events ({coins, ms}); skip any
+    // answer that took longer than DISTRACTION_MS (likely interrupted).
+    const PACE_WINDOW = 100;
+    const DISTRACTION_MS = 60_000;
+
+    // Kinetic typography: comic-book praise words that pop near the solved
+    // equation on a first-try correct answer. The streak itself is hidden —
+    // word + animation tier are the only signal she gets that something's
+    // building.
+    const PRAISE_DEFAULTS = ['BOOM!', 'SHARP!', 'SPEEDY!', 'SMART!'];
+    // Streak 3–4 — warming up. Streak 5 hits 'UNSTOPPABLE!', 10 hits
+    // 'LEGENDARY!'; the gaps fall back to the default/lightspeed pool so the
+    // milestone words don't lose their punch.
+    const STREAK_WARMUP_WORDS = ['ON FIRE!', "STREAKIN'!"];
+    const PRAISE_COLORS = [
+        'text-pink-400', 'text-amber-300', 'text-emerald-400',
+        'text-sky-400', 'text-fuchsia-400', 'text-orange-400',
+    ];
+    // Need a baseline before LIGHTSPEED is meaningful.
+    const LIGHTSPEED_MIN_SAMPLES = 5;
+
+    // Word selection. Milestones are exact-match so repeating streak 5s don't
+    // keep yelling UNSTOPPABLE — the next celebration has to wait for 10.
+    const pickPraise = (ms, paceEvents, streak) => {
+        if (streak === 5) return 'UNSTOPPABLE!';
+        if (streak === 10) return 'LEGENDARY!';
+        if (streak === 3 || streak === 4) {
+            return STREAK_WARMUP_WORDS[Math.floor(Math.random() * STREAK_WARMUP_WORDS.length)];
+        }
+        const correctEvents = paceEvents.filter(e => e.coins > 0);
+        if (correctEvents.length >= LIGHTSPEED_MIN_SAMPLES) {
+            const avgMs = correctEvents.reduce((s, e) => s + e.ms, 0) / correctEvents.length;
+            if (ms < avgMs / 2) return 'LIGHTSPEED!';
+        }
+        return PRAISE_DEFAULTS[Math.floor(Math.random() * PRAISE_DEFAULTS.length)];
+    };
+
+    // Animation intensity tier — escalates with streak length, independent of
+    // word selection. Same word ("BOOM!") feels different at streak 7 vs 17.
+    //   0  default pop
+    //   1  + horizontal jiggle  (streak ≥ 5)
+    //   2  + 20% larger peak scale + radial spark burst  (streak ≥ 10)
+    //   3  + chromatic split + neon glow  (streak ≥ 15)
+    const getPraiseTier = (streak) => {
+        if (streak >= 15) return 3;
+        if (streak >= 10) return 2;
+        if (streak >= 5) return 1;
+        return 0;
+    };
+    // Total duration of the tier ≥ 1 shake — MUST match the .praise-shake
+    // CSS rule (90ms × 5). The combo chime is held until the shake finishes
+    // so the sound lands as a payoff after the wobble, not on top of it.
+    const PRAISE_SHAKE_MS = 450;
+
+    // Adaptive background energy: the page background lerps from neutral
+    // slate-50 toward a vibrant teal-200 as the streak grows, hitting full
+    // saturation at STREAK_MAX_ENERGY. Builds smoothly (CSS transition);
+    // a miss snaps back to neutral instantly via the energy-no-transition
+    // class — see handleSubmit's enterBreakdown call.
+    const STREAK_MAX_ENERGY = 15;
+    const ENERGY_NEUTRAL = [248, 250, 252]; // slate-50
+    const ENERGY_VIBRANT = [153, 246, 228]; // teal-200
+    const getEnergyColor = (streak) => {
+        const t = Math.min(1, Math.max(0, streak) / STREAK_MAX_ENERGY);
+        const c = (i) => Math.round(ENERGY_NEUTRAL[i] + (ENERGY_VIBRANT[i] - ENERGY_NEUTRAL[i]) * t);
+        return `rgb(${c(0)}, ${c(1)}, ${c(2)})`;
+    };
+
+    // Haptic feedback (Android / supported tablets only — iOS Safari has no
+    // Vibration API). Single light tap on every first-try correct; a
+    // double-tap at the same streak milestones the praise system already
+    // celebrates (5 / 10 / 15) so the body matches the eye.
+    const HAPTIC_TAP = 20;                  // single 20ms buzz
+    const HAPTIC_DOUBLE = [15, 60, 15];     // tap–gap–tap
+    const HAPTIC_STREAK_MILESTONES = new Set([5, 10, 15]);
+    const getHapticPattern = (streak) =>
+        HAPTIC_STREAK_MILESTONES.has(streak) ? HAPTIC_DOUBLE : HAPTIC_TAP;
+    const triggerHaptic = (pattern) => {
+        if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return;
+        // Respect prefers-reduced-motion — same accessibility hint the
+        // visual animations should be ducking under (we can wire that in
+        // later if it comes up).
+        try {
+            if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            navigator.vibrate(pattern);
+        } catch (_) { /* sandboxed iframe / permissions / etc. — silently skip */ }
+    };
+
+    // Audio juice — three procedural SFX synthesized via Web Audio so we
+    // ship zero audio assets and pitch-shifting is free.
+    //   • playChime(streak)    — rising-pitch "combo" ding on every correct
+    //   • playWhoosh()         — subtle low whoosh on self-correction (backspace)
+    //   • playStreakBreak()    — soft downward slide when a streak ≥ 1 breaks
+    // The context is created lazily on first sound so we don't trip
+    // autoplay policies before the kid has interacted with the page.
+    let _audioCtx = null;
+    const getAudioCtx = () => {
+        if (_audioCtx) return _audioCtx;
+        try {
+            const Ctor = window.AudioContext || window.webkitAudioContext;
+            if (!Ctor) return null;
+            _audioCtx = new Ctor();
+            return _audioCtx;
+        } catch (_) { return null; }
+    };
+    const withAudio = (render) => {
+        try {
+            const ctx = getAudioCtx();
+            if (!ctx) return;
+            if (ctx.state === 'suspended') ctx.resume();
+            render(ctx, ctx.currentTime);
+        } catch (_) { /* silent fail — sound is optional */ }
+    };
+
+    // Pitch multiplier follows the streak: streak 1 plays at base (1.0),
+    // every additional correct adds +0.1, capped at 1.8. Cap is reached at
+    // streak 9 — past that, repeated correct answers all play at top pitch.
+    const CHIME_PITCH_CAP = 1.8;
+    const getChimePitch = (streak) =>
+        Math.min(CHIME_PITCH_CAP, 1.0 + Math.max(0, streak - 1) * 0.1);
+
+    const playChime = (streak) => {
+        const pitch = getChimePitch(streak);
+        withAudio((ctx, now) => {
+            const baseFreq = 523.25;  // C5
+            // Fundamental + softer octave — a touch of "bell" without a full
+            // additive-synth setup. Quick attack, ~220ms exponential decay.
+            const mix = ctx.createGain();
+            mix.gain.setValueAtTime(0, now);
+            mix.gain.linearRampToValueAtTime(0.22, now + 0.008);
+            mix.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+            mix.connect(ctx.destination);
+
+            const o1 = ctx.createOscillator();
+            o1.type = 'sine';
+            o1.frequency.value = baseFreq * pitch;
+            o1.connect(mix);
+            o1.start(now); o1.stop(now + 0.26);
+
+            const o2 = ctx.createOscillator();
+            o2.type = 'sine';
+            o2.frequency.value = baseFreq * pitch * 2;
+            const o2g = ctx.createGain();
+            o2g.gain.value = 0.35;
+            o2.connect(o2g).connect(mix);
+            o2.start(now); o2.stop(now + 0.26);
+        });
+    };
+
+    // Filtered noise burst — sweeps a band-pass downward so it reads as a
+    // brief "whoosh" rather than a tone. Quiet on purpose; this is an
+    // acknowledgement, not a celebration.
+    const playWhoosh = () => withAudio((ctx, now) => {
+        const dur = 0.18;
+        const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const filt = ctx.createBiquadFilter();
+        filt.type = 'bandpass';
+        filt.Q.value = 6;
+        filt.frequency.setValueAtTime(800, now);
+        filt.frequency.exponentialRampToValueAtTime(180, now + dur);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(0.06, now + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+        src.connect(filt).connect(g).connect(ctx.destination);
+        src.start(now);
+    });
+
+    // Soft downward slide on a streak break — NOT a buzzer. Slides ~A4 down
+    // to ~A2 over 400ms, gentle sine, quick attack, slow decay. Reads as
+    // "reset" without sounding like a reprimand.
+    const playStreakBreak = () => withAudio((ctx, now) => {
+        const dur = 0.45;
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.exponentialRampToValueAtTime(110, now + dur);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(0.14, now + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+        osc.connect(g).connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + dur + 0.05);
+    });
+
+    // Op registry — each handler knows how to generate fresh operands, derive a
+    // stable id, compute the answer, build a typed breakdown, and render the
+    // prompt. Adding division or carry-addition later means adding an entry
+    // here, not touching the engine.
+    const OPS = {
+        mul: {
+            generate: () => ({
+                a: Math.floor(Math.random() * 11) + 2,
+                b: Math.floor(Math.random() * 11) + 2,
+            }),
+            idOf: (a, b) => `mul:${Math.min(a, b)}x${Math.max(a, b)}`,
+            compute: (a, b) => a * b,
+            label: (a, b) => `${a} × ${b}`,
+            strategy: (a, b) => getMultiplicationStrategy(a, b),
+            renderPrompt: ({ a, b }) => (
+                <>
+                    <span>{a}</span>
+                    <span className="text-indigo-500 text-3xl">×</span>
+                    <span>{b}</span>
+                </>
+            ),
+        },
+        add: {
+            // 2-digit + 1-digit, ones digits force a carry: (a%10) + b > 10, a+b ≤ 100.
+            generate: () => {
+                for (let i = 0; i < 100; i++) {
+                    const a = 11 + Math.floor(Math.random() * 81); // 11..91
+                    const b = 2 + Math.floor(Math.random() * 8);   // 2..9
+                    if ((a % 10) + b > 10 && a + b <= 100) return { a, b };
+                }
+                return { a: 73, b: 9 };
+            },
+            // Generator always produces (2-digit, 1-digit) in that order, so no commutativity rewrite needed.
+            idOf: (a, b) => `add:${a}+${b}`,
+            compute: (a, b) => a + b,
+            label: (a, b) => `${a} + ${b}`,
+            strategy: (a, b) => getAdditionStrategy(a, b),
+            renderPrompt: ({ a, b }) => (
+                <>
+                    <span>{a}</span>
+                    <span className="text-indigo-500 text-3xl">+</span>
+                    <span>{b}</span>
+                </>
+            ),
+        },
+        sub: {
+            // 2-digit − 1-digit with a borrow: ones digit of a is in [1, b-1] so
+            // subtracting b crosses a ten. Excluding ones=0 keeps the
+            // "step back to the round number" breakdown a clean two-step.
+            generate: () => {
+                for (let i = 0; i < 100; i++) {
+                    const a = 12 + Math.floor(Math.random() * 88); // 12..99
+                    const b = 2 + Math.floor(Math.random() * 8);   // 2..9
+                    const ones = a % 10;
+                    if (ones >= 1 && ones < b) return { a, b };
+                }
+                return { a: 75, b: 6 };
+            },
+            idOf: (a, b) => `sub:${a}-${b}`,
+            compute: (a, b) => a - b,
+            label: (a, b) => `${a} − ${b}`,
+            strategy: (a, b) => getSubtractionStrategy(a, b),
+            renderPrompt: ({ a, b }) => (
+                <>
+                    <span>{a}</span>
+                    <span className="text-indigo-500 text-3xl">−</span>
+                    <span>{b}</span>
+                </>
+            ),
+        },
+        div: {
+            // Division framed as "find the missing factor": shown as a × ? = a·b.
+            // Kid types b. Same operand space as mul (2..12) so it slots neatly
+            // alongside multiplication facts she already practises.
+            generate: () => ({
+                a: Math.floor(Math.random() * 11) + 2,
+                b: Math.floor(Math.random() * 11) + 2,
+            }),
+            // (a, b) and (b, a) are different probes (multiples-of-a vs multiples-of-b),
+            // so the id is NOT commutative.
+            idOf: (a, b) => `div:${a}_${b}`,
+            compute: (a, b) => b,
+            label: (a, b) => `${a} × ? = ${a * b}`,
+            strategy: (a, b) => getDivisionStrategy(a, b),
+            selfContained: true, // renderPrompt already shows the full equation
+            renderPrompt: ({ a, b }) => (
+                <>
+                    <span>{a}</span>
+                    <span className="text-indigo-500 text-3xl">×</span>
+                    <span className="text-slate-400">?</span>
+                    <span className="text-indigo-500 text-3xl">=</span>
+                    <span>{a * b}</span>
+                </>
+            ),
+        },
+    };
+
+    // Reward state for div cards: starts at 3, decays 3→2→1 with each first-try
+    // success and resets to 3 on any miss. Mul/add/sub use the FSRS-difficulty
+    // band instead.
+    const DIV_REWARD_INITIAL = 3;
+    const DIV_REWARD_MIN = 1;
+
+    const makeCard = (op, a, b) => {
+        const handler = OPS[op];
+        const card = {
+            id: handler.idOf(a, b),
+            op,
+            a, b,
+            answer: handler.compute(a, b),
+            stability: 0,
+            difficulty: 5.0,
+            reps: 0,
+            state: 0,
+            lastReview: null,
+            nextReview: Date.now(),
+            hasMistake: false,
+            inCorrection: false,
+        };
+        if (op === 'div') card.reward = DIV_REWARD_INITIAL;
+        return card;
+    };
+
+    const getCoinReward = (problem) => {
+        if (problem.op === 'div') return problem.reward ?? DIV_REWARD_INITIAL;
+        if (!problem.hasMistake) return 1;
+        if (problem.difficulty <= 4) return 1;
+        if (problem.difficulty <= 7) return 2;
+        return 3;
+    };
+
+    // Decompose a × b into typed sub-steps the kid can solve, ending with the original answer.
+    // Each step is { prompt: string, answer: number, hint?: string }.
+    // hint is shown above the prompt to anchor a memorized fact (squares, mnemonics, ×11 trick, …).
+    const stepOnes = (x) => [{ hint: "Anything × 1 is just itself!", prompt: `${x} × 1`, answer: x }];
+    const stepTens = (x) => [{ hint: "× 10 — just add a zero", prompt: `${x} × 10`, answer: x * 10 }];
+    const stepElevenDigit = (x) => [{ hint: "× 11 trick — write the digit twice (22, 33, …, 99)", prompt: `${x} × 11`, answer: x * 11 }];
+    // No hint here on purpose: an 8-year-old doesn't know "square" / "N²" notation,
+    // and the ×10 bridge ("9 × 10 = 90 — too much, try 9") would just leak the
+    // answer. Div correction falls through to skip-count, mul mode shows no
+    // hint and the kid recalls or misses.
+    const stepSquare = (n) => [{ prompt: `${n} × ${n}`, answer: n * n }];
+    const stepHitchhiker = () => [{ hint: "Remember: the answer is forty-two!", prompt: "6 × 7", answer: 42 }];
+    const stepConsecutive = () => [{ hint: "5, 6, 7, 8 → 56 = 7 × 8", prompt: "7 × 8", answer: 56 }];
+    const stepElevenSquare = () => [{ hint: "11 × 11 = 121 — memorize it!", prompt: "11 × 11", answer: 121 }];
+    const stepGross = () => [{ hint: "A dozen dozen is a 'gross' — 144", prompt: "12 × 12", answer: 144 }];
+
+    const stepDouble = (x) => [
+        { hint: "Doubling!", prompt: `${x} + ${x}`, answer: x * 2 },
+    ];
+    const stepTimesThree = (x) => [
+        { hint: "Double it first.", prompt: `${x} + ${x}`, answer: x * 2 },
+        { hint: "Then add one more.", prompt: `${x * 2} + ${x}`, answer: x * 3 },
+    ];
+    const stepTimesFour = (x) => [
+        { hint: "Double it.", prompt: `${x} + ${x}`, answer: x * 2 },
+        { hint: "Double again!", prompt: `${x * 2} + ${x * 2}`, answer: x * 4 },
+    ];
+    const stepTimesFive = (x) => [
+        { hint: "Try ×10 first — easy!", prompt: `${x} × 10`, answer: x * 10 },
+        { hint: "×5 is half of ×10.", prompt: `Half of ${x * 10}`, answer: x * 5 },
+    ];
+    const stepTimesSix = (x) => [
+        { hint: "Start with ×5.", prompt: `${x} × 5`, answer: x * 5 },
+        { hint: "Then add one more.", prompt: `${x * 5} + ${x}`, answer: x * 6 },
+    ];
+    const stepTimesNine = (x) => [
+        { hint: "Try ×10 first.", prompt: `${x} × 10`, answer: x * 10 },
+        { hint: "9 is one less than 10.", prompt: `${x * 10} − ${x}`, answer: x * 9 },
+    ];
+    const stepTimesElevenMulti = (x) => [
+        { hint: "Try ×10 first.", prompt: `${x} × 10`, answer: x * 10 },
+        { hint: "Then add one more.", prompt: `${x * 10} + ${x}`, answer: x * 11 },
+    ];
+    const stepTimesTwelve = (x) => [
+        { hint: "Try ×10 first.", prompt: `${x} × 10`, answer: x * 10 },
+        { hint: "And ×2 too.", prompt: `${x} × 2`, answer: x * 2 },
+        { hint: "Now add them!", prompt: `${x * 10} + ${x * 2}`, answer: x * 12 },
+    ];
+
+    const getMultiplicationStrategy = (a, b) => {
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        const other = (factor) => (a === factor ? b : a);
+
+        // Tier 1 — single-step atoms (memorize / spot a pattern).
+        if (lo === 1) return stepOnes(hi);
+        if (lo === 10 || hi === 10) return stepTens(other(10));
+        if (hi === 11 && lo >= 2 && lo <= 9) return stepElevenDigit(lo);
+        // 9² intentionally excluded — the ×9 chain (10n − n) is a stronger
+        // anchor than a hintless 'just remember 81' for this kid.
+        if (a === b && [5, 6, 7, 8].includes(a)) return stepSquare(a);
+        if (lo === 6 && hi === 7) return stepHitchhiker();
+        if (lo === 7 && hi === 8) return stepConsecutive();
+        if (a === 11 && b === 11) return stepElevenSquare();
+        if (a === 12 && b === 12) return stepGross();
+
+        // Tier 2 — two-step tricks, in priority order: 2, 9, 5, 11, 4, 3, 6.
+        if (a === 2 || b === 2) return stepDouble(other(2));
+        if (a === 9 || b === 9) return stepTimesNine(other(9));
+        if (a === 5 || b === 5) return stepTimesFive(other(5));
+        if (a === 11 || b === 11) return stepTimesElevenMulti(other(11));
+        if (a === 4 || b === 4) return stepTimesFour(other(4));
+        if (a === 3 || b === 3) return stepTimesThree(other(3));
+        if (a === 6 || b === 6) return stepTimesSix(other(6));
+
+        // Tier 3 — three-step decomposition for 7×12 and 8×12.
+        if (a === 12 || b === 12) return stepTimesTwelve(other(12));
+
+        // Unreachable for operands in 2..12, but keep a safe fallback.
+        return [{ prompt: `${a} × ${b}`, answer: a * b }];
+    };
+
+    // "Make ten" breakdown for 2-digit + 1-digit with a carry.
+    // 73 + 8 → split 8 into (7 + 1): first reach 80, then add the leftover 1.
+    const getAdditionStrategy = (a, b) => {
+        const ones = a % 10;
+        const complement = 10 - ones;
+        const tens = a - ones + 10;
+        const leftover = b - complement;
+        return [
+            { hint: "Bridge to a round ten first.", prompt: `${a} + ${complement}`, answer: tens },
+            { hint: "Now add what's left.", prompt: `${tens} + ${leftover}`, answer: a + b },
+        ];
+    };
+
+    // "Step back to ten" breakdown for 2-digit − 1-digit with a borrow.
+    // 75 − 6 → step down to 70 first, then take the leftover 1.
+    //
+    // The kid finds "80 − 3" hard even though she knows "10 − 3" cold — she
+    // hasn't internalised the regrouping (80 = 70 + 10, take 3 from the 10,
+    // put the 70 back). So for any round ten ≥ 20 we split that hard step
+    // into the two moves she CAN do, anchored on the 10−n fact. For a in
+    // 11–19 the round ten is 10, which she's already comfortable with, so we
+    // keep the original 2-step there.
+    const getSubtractionStrategy = (a, b) => {
+        const ones = a % 10;
+        const tens = a - ones;            // round ten she steps back to
+        const leftover = b - ones;        // 1..8, still to subtract after reaching `tens`
+        const lowerTen = tens - 10;       // the ten just below `tens`
+        const complement = 10 - leftover; // the "10 − n" fact she already knows
+
+        const steps = [
+            { hint: "Step back to a round ten first.", prompt: `${a} − ${ones}`, answer: tens },
+        ];
+        if (tens === 10) {
+            steps.push({ hint: "Now subtract what's left.", prompt: `${tens} − ${leftover}`, answer: a - b });
+        } else {
+            steps.push({
+                hint: `${tens} is ${lowerTen} + 10. Take ${leftover} from the 10 — you know this!`,
+                prompt: `10 − ${leftover}`,
+                answer: complement,
+            });
+            steps.push({
+                hint: `Now put the ${lowerTen} back.`,
+                prompt: `${lowerTen} + ${complement}`,
+                answer: a - b,
+            });
+        }
+        return steps;
+    };
+
+    // Division-as-multiplication breakdown.
+    //
+    // For single-step mul strategies (Tier 1 anchors + the lone ×2 doubling)
+    // we re-use the anchor hint — those exist precisely so the kid can
+    // recognise the fact and read off the missing factor.
+    //
+    // For everything else, the mul chain is unsuitable: it computes a × b by
+    // feeding b in as an input (e.g. stepTimesThree(12) for 3 × ? = 36 ends
+    // up showing "12 + 12 = ?", and the kid has no idea where 12 came from —
+    // finding 12 *is* the task). Instead we collapse to a single inline
+    // step whose hint lists the multiples of a, so she can skip-count her
+    // way to the answer.
+    //
+    // `inline: true` tells the UI to substitute the typed answer into the
+    // '?' slot of the prompt rather than appending '= answer'.
+    const getDivisionStrategy = (a, b) => {
+        const product = a * b;
+        const mulSteps = getMultiplicationStrategy(a, b);
+
+        // Single-step mul WITH an anchor hint (squares are intentionally hintless,
+        // and they fall through to the skip-count path below).
+        if (mulSteps.length === 1 && mulSteps[0].hint) {
+            return [{
+                hint: mulSteps[0].hint,
+                prompt: `${a} × ? = ${product}`,
+                answer: b,
+                inline: true,
+            }];
+        }
+
+        const multiples = [];
+        for (let i = 1; i <= b; i++) multiples.push(a * i);
+        return [{
+            hint: `Skip-count ${a}s: ${multiples.join(", ")}. Count them!`,
+            prompt: `${a} × ? = ${product}`,
+            answer: b,
+            inline: true,
+        }];
+    };
+
+    const scheduleReview = (problem, rating) => {
+        let { stability, difficulty, reps, state, hasMistake } = problem;
+        const now = Date.now();
+
+        if (rating === 1) hasMistake = true;
+    
+        if (state === 0) { 
+            stability = W[rating === 1 ? 0 : 2];
+            difficulty = W[4] - W[5] * (rating - 3);
+            state = 2; 
+        } else {
+            difficulty = difficulty - W[6] * (rating - 3);
+            difficulty = Math.max(1, Math.min(10, difficulty));
+            if (rating === 1) { 
+                stability = W[0] * 0.5; 
+            } else { 
+                const recallRate = 0.9; 
+                stability = stability * (1 + Math.exp(W[8]) * (11 - difficulty) * Math.pow(stability, -W[9]) * (Math.exp(W[10] * (1 - recallRate)) - 1));
+            }
+        }
+
+        const intervalInMinutes = rating === 1 ? 0.75 : (stability * INTERVAL_MODIFIER * 5);
+        const nextReview = now + (intervalInMinutes * 60 * 1000); 
+
+        return { ...problem, stability, difficulty, reps: reps + 1, state, lastReview: now, nextReview, hasMistake };
+    };
+
+    // --- EXPERIMENTAL (mk2 only): roaming cat -------------------------------
+    // The cat ambles along a bottom strip of the viewport. Targets are in vw%,
+    // clamped so the 64px sprite never walks off either edge.
+    const CAT_MIN_X = 1;
+    const CAT_MAX_X = 88;
+    const pickCatTarget = () => {
+        const x = Math.random() * (CAT_MAX_X - CAT_MIN_X) + CAT_MIN_X;
+        return Math.min(CAT_MAX_X, Math.max(CAT_MIN_X, x));
+    };
+
+    const runTests = () => {
+        console.group("%c🧮 Math & Kittens: Corrected Logic Test Suite", "color: #6366f1; font-weight: bold; font-size: 1.2em;");
+        let passed = 0; let failed = 0;
+        const assert = (condition, message, details = "") => {
+            if (condition) { console.log(`%c✅ Pass: ${message}`, "color: #10b981;"); passed++; }
+            else { console.error(`%c❌ Fail: ${message}\nDetail: ${details}`, "color: #ef4444; font-weight: bold;"); failed++; }
+        };
+
+        const testCard = makeCard('mul', 7, 8);
+        const reviewedGood = scheduleReview(testCard, 3);
+        assert(reviewedGood.stability > 0, "Stability should increase on success");
+
+        const cardWithBounty = { ...makeCard('mul', 9, 9), hasMistake: true, difficulty: 9.0 };
+        assert(getCoinReward(cardWithBounty) === 3, "High difficulty mistakes = 3 coins bounty");
+
+        const failedCard = scheduleReview(testCard, 1);
+        assert(failedCard.nextReview < Date.now() + 60000, "Mistakes repeat in < 1 min in FSRS data");
+
+        // Op registry sanity: ids are namespaced and commutative for mul.
+        assert(makeCard('mul', 4, 6).id === 'mul:4x6', "mul ids are prefixed and lo×hi-ordered");
+        assert(makeCard('mul', 6, 4).id === makeCard('mul', 4, 6).id, "mul ids are commutative");
+        assert(makeCard('mul', 7, 8).op === 'mul', "card carries its op tag");
+
+        // Strategy library: every problem in 2..12 must end with the correct final answer and use positive integers.
+        let strategyBad = 0;
+        for (let i = 2; i <= 12; i++) {
+            for (let j = 2; j <= 12; j++) {
+                const steps = getMultiplicationStrategy(i, j);
+                if (!steps.length || steps[steps.length - 1].answer !== i * j) strategyBad++;
+                for (const s of steps) {
+                    if (!Number.isInteger(s.answer) || s.answer < 0) strategyBad++;
+                }
+            }
+        }
+        assert(strategyBad === 0, "Strategy steps end at a×b and stay non-negative integers");
+
+        // Addition op
+        assert(makeCard('add', 73, 8).id === 'add:73+8', "add ids are prefixed with a+b");
+        assert(OPS.add.compute(73, 8) === 81, "add compute is plain a+b");
+
+        // make-ten strategy: every carry-add problem ends at a+b and intermediate is the next multiple of 10.
+        let addBad = 0;
+        for (let a = 11; a <= 91; a++) {
+            for (let b = 2; b <= 9; b++) {
+                if ((a % 10) + b <= 10) continue;
+                if (a + b > 100) continue;
+                const steps = getAdditionStrategy(a, b);
+                const tens = a - (a % 10) + 10;
+                if (steps.length !== 2) addBad++;
+                if (steps[0].answer !== tens) addBad++;
+                if (steps[steps.length - 1].answer !== a + b) addBad++;
+                for (const s of steps) {
+                    if (!Number.isInteger(s.answer) || s.answer < 0) addBad++;
+                }
+            }
+        }
+        assert(addBad === 0, "make-ten strategy: step1 hits next 10, step2 = a+b, all integers");
+
+        // Generator always produces a valid carry problem.
+        let genBad = 0;
+        for (let i = 0; i < 200; i++) {
+            const { a, b } = OPS.add.generate();
+            if (!((a % 10) + b > 10) || a + b > 100 || a < 11 || a > 91 || b < 2 || b > 9) genBad++;
+        }
+        assert(genBad === 0, "add generator: 2-digit + 1-digit, forces carry, sum ≤ 100");
+
+        // Subtraction op
+        assert(makeCard('sub', 75, 6).id === 'sub:75-6', "sub ids are prefixed with a-b");
+        assert(OPS.sub.compute(75, 6) === 69, "sub compute is plain a-b");
+
+        // step-back-to-ten strategy: step 1 hits the lower ten, last step = a-b.
+        // 2 steps when the round ten is 10 (a in 11-19), else 3 steps that
+        // anchor on the 10−n fact she already knows.
+        let subBad = 0;
+        for (let a = 12; a <= 99; a++) {
+            for (let b = 2; b <= 9; b++) {
+                const ones = a % 10;
+                if (!(ones >= 1 && ones < b)) continue;
+                const steps = getSubtractionStrategy(a, b);
+                const tens = a - ones;
+                const expectedLen = tens === 10 ? 2 : 3;
+                if (steps.length !== expectedLen) subBad++;
+                if (steps[0].answer !== tens) subBad++;
+                if (steps[steps.length - 1].answer !== a - b) subBad++;
+                if (expectedLen === 3 && steps[1].answer !== 10 - (b - ones)) subBad++;
+                for (const s of steps) {
+                    if (!Number.isInteger(s.answer) || s.answer < 0) subBad++;
+                }
+            }
+        }
+        assert(subBad === 0, "step-back-to-ten: step1=lower ten, last=a-b, 3-step anchors on 10−n, all non-neg ints");
+
+        let subGenBad = 0;
+        for (let i = 0; i < 200; i++) {
+            const { a, b } = OPS.sub.generate();
+            const ones = a % 10;
+            if (a < 12 || a > 99 || b < 2 || b > 9 || ones < 1 || ones >= b) subGenBad++;
+        }
+        assert(subGenBad === 0, "sub generator: 2-digit − 1-digit, forces borrow, ones in [1, b-1]");
+
+        // Division op (framed as a × ? = product)
+        const divCard = makeCard('div', 4, 6);
+        assert(divCard.id === 'div:4_6', "div ids use a_b shape");
+        assert(divCard.answer === 6, "div answer is the missing factor b");
+        assert(divCard.reward === 3, "div cards start at reward 3");
+        assert(makeCard('div', 4, 6).id !== makeCard('div', 6, 4).id, "div ids are NOT commutative");
+        assert(getCoinReward({ op: 'div', reward: 2 }) === 2, "div badge shows per-card reward");
+        assert(getCoinReward({ op: 'div' }) === 3, "div badge defaults to 3 when reward missing");
+
+        // Single-step Tier 1 anchors: collapse to one inline step with the mul anchor.
+        const consecutiveSteps = getDivisionStrategy(7, 8);
+        assert(consecutiveSteps.length === 1 && consecutiveSteps[0].answer === 8
+            && consecutiveSteps[0].inline === true
+            && consecutiveSteps[0].hint.includes("5, 6, 7, 8"),
+            "7 × ? = 56 → single inline step with the consecutive-digit mnemonic");
+        assert(getDivisionStrategy(7, 7)[0].hint.includes("7, 14")
+            && getDivisionStrategy(7, 7)[0].hint.includes("49"),
+            "7 × ? = 49 → skip-count (squares are hintless; no jargon for 8-year-olds)");
+        assert(getDivisionStrategy(2, 3)[0].hint === "Doubling!",
+            "2 × ? = 6 → single inline step with the stepDouble 'Doubling!' anchor");
+
+        // Non-Tier-1 strategies: single inline step with a skip-count hint
+        // listing the multiples (no mul chain that uses b as input).
+        const ninesSteps = getDivisionStrategy(7, 9);
+        assert(ninesSteps.length === 1
+            && ninesSteps[0].inline === true && ninesSteps[0].answer === 9
+            && ninesSteps[0].hint.includes("7, 14")
+            && ninesSteps[0].hint.includes("63"),
+            "7 × ? = 63 → single skip-count step listing multiples of 7 up to 63");
+
+        // Pace: 3 coins in 30s + 2 coins in 30s = 5 coins per minute.
+        assert(computePace([{ coins: 3, ms: 30_000 }, { coins: 2, ms: 30_000 }]) === 5,
+            "pace: 5 coins in 60s ⇒ 5.0 c/min");
+        assert(computePace([]) === null, "pace: no events ⇒ null");
+
+        // Praise picker — streak milestones beat lightspeed beats default pool.
+        const fastEvents = Array.from({ length: 6 }, () => ({ coins: 1, ms: 10_000 }));
+        assert(pickPraise(9_000, fastEvents, 5) === 'UNSTOPPABLE!',
+            "praise: streak exactly 5 ⇒ UNSTOPPABLE!");
+        assert(pickPraise(9_000, fastEvents, 10) === 'LEGENDARY!',
+            "praise: streak exactly 10 ⇒ LEGENDARY!");
+        assert(STREAK_WARMUP_WORDS.includes(pickPraise(9_000, fastEvents, 3)),
+            "praise: streak 3 ⇒ a warmup word (ON FIRE / STREAKIN')");
+        assert(STREAK_WARMUP_WORDS.includes(pickPraise(9_000, fastEvents, 4)),
+            "praise: streak 4 ⇒ a warmup word");
+        assert(pickPraise(9_000, fastEvents, 7) !== 'UNSTOPPABLE!'
+            && pickPraise(9_000, fastEvents, 7) !== 'LEGENDARY!',
+            "praise: between-milestone streaks fall back to the standard pool");
+        assert(pickPraise(4_000, fastEvents, 7) === 'LIGHTSPEED!',
+            "praise: fast answer between milestones ⇒ LIGHTSPEED! still wins");
+        assert(pickPraise(4_000, fastEvents.slice(0, 2), 1) !== 'LIGHTSPEED!',
+            "praise: fewer than LIGHTSPEED_MIN_SAMPLES samples ⇒ no LIGHTSPEED");
+        assert(PRAISE_DEFAULTS.includes(pickPraise(9_000, fastEvents, 1)),
+            "praise: nothing special ⇒ a default pool word");
+
+        // Animation tier — escalates with streak length.
+        assert(getPraiseTier(0) === 0 && getPraiseTier(4) === 0,
+            "praise tier: < 5 ⇒ base animation");
+        assert(getPraiseTier(5) === 1 && getPraiseTier(9) === 1,
+            "praise tier: 5..9 ⇒ tier 1 (shake)");
+        assert(getPraiseTier(10) === 2 && getPraiseTier(14) === 2,
+            "praise tier: 10..14 ⇒ tier 2 (bigger + sparks)");
+        assert(getPraiseTier(15) === 3 && getPraiseTier(50) === 3,
+            "praise tier: ≥ 15 ⇒ tier 3 (chromatic + glow)");
+        // Shake duration must match the .praise-shake CSS (90ms × 5) and
+        // stay inside the 500ms praise-pop window so the chime, which is
+        // delayed by PRAISE_SHAKE_MS, still lands before the word dissolves.
+        assert(PRAISE_SHAKE_MS === 90 * 5, "shake: PRAISE_SHAKE_MS stays in sync with the CSS (90ms × 5)");
+        assert(PRAISE_SHAKE_MS < 500, "shake: chime delay stays inside the praise-pop window");
+
+        // Adaptive background energy.
+        assert(getEnergyColor(0) === `rgb(${ENERGY_NEUTRAL.join(', ')})`,
+            "energy: streak 0 ⇒ neutral slate-50");
+        assert(getEnergyColor(STREAK_MAX_ENERGY) === `rgb(${ENERGY_VIBRANT.join(', ')})`,
+            "energy: streak at max ⇒ fully saturated vibrant target");
+        assert(getEnergyColor(100) === `rgb(${ENERGY_VIBRANT.join(', ')})`,
+            "energy: streak past max stays clamped at vibrant target");
+        // Mid-streak should lie strictly between neutral and vibrant on every channel
+        // that actually changes (rules out off-by-one in the lerp).
+        const mid = getEnergyColor(Math.floor(STREAK_MAX_ENERGY / 2))
+            .match(/\d+/g).map(Number);
+        let energyMidBad = 0;
+        for (let i = 0; i < 3; i++) {
+            const lo = Math.min(ENERGY_NEUTRAL[i], ENERGY_VIBRANT[i]);
+            const hi = Math.max(ENERGY_NEUTRAL[i], ENERGY_VIBRANT[i]);
+            if (mid[i] < lo || mid[i] > hi) energyMidBad++;
+        }
+        assert(energyMidBad === 0, "energy: mid-streak each channel stays between neutral and vibrant");
+
+        // Haptic pattern selection — single tap on plain corrects, double
+        // tap on the same streak milestones the praise system celebrates.
+        assert(getHapticPattern(1) === HAPTIC_TAP && getHapticPattern(7) === HAPTIC_TAP,
+            "haptic: non-milestone streak ⇒ single light tap");
+        assert(getHapticPattern(5) === HAPTIC_DOUBLE
+            && getHapticPattern(10) === HAPTIC_DOUBLE
+            && getHapticPattern(15) === HAPTIC_DOUBLE,
+            "haptic: streak milestones (5/10/15) ⇒ double tap");
+        assert(getHapticPattern(20) === HAPTIC_TAP,
+            "haptic: past-milestone streaks fall back to single tap");
+
+        // Chime pitch — climbs +0.1 per streak from a 1.0 base, capped at 1.8.
+        const approxEq = (a, b) => Math.abs(a - b) < 1e-9;
+        assert(getChimePitch(1) === 1.0, "chime: streak 1 plays at base pitch (1.0)");
+        assert(approxEq(getChimePitch(2), 1.1), "chime: streak 2 ⇒ 1.1");
+        assert(approxEq(getChimePitch(3), 1.2), "chime: streak 3 ⇒ 1.2");
+        assert(getChimePitch(9) === CHIME_PITCH_CAP, "chime: streak 9 ⇒ cap (1.8)");
+        assert(getChimePitch(50) === CHIME_PITCH_CAP, "chime: past-cap streaks stay clamped");
+        assert(getChimePitch(0) === 1.0, "chime: streak 0 still maps to 1.0 (defensive)");
+
+        const foursSteps = getDivisionStrategy(4, 6);
+        assert(foursSteps.length === 1
+            && foursSteps[0].inline === true && foursSteps[0].answer === 6
+            && foursSteps[0].hint.includes("4, 8")
+            && foursSteps[0].hint.includes("24"),
+            "4 × ? = 24 → single skip-count step listing multiples of 4 up to 24");
+
+        // Roaming cat (mk2): every target stays on-screen.
+        let catBad = 0;
+        for (let i = 0; i < 300; i++) {
+            const t = pickCatTarget();
+            if (t < CAT_MIN_X || t > CAT_MAX_X || !Number.isFinite(t)) catBad++;
+        }
+        assert(catBad === 0, "cat targets stay within the on-screen strip");
+
+        console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
+        console.groupEnd();
+    };
+
+    const Icon = ({ name, className = "", size = 24 }) => {
+        const ref = useRef(null);
+        useEffect(() => {
+            if (ref.current && window.lucide) {
+                const iconName = name.charAt(0).toLowerCase() + name.slice(1).replace(/[A-Z]/g, l => `-${l.toLowerCase()}`);
+                ref.current.setAttribute('data-lucide', iconName);
+                lucide.createIcons();
+            }
+        }, [name]);
+        return <i ref={ref} className={className} style={{ width: size, height: size }}></i>;
+    };
+
+    const loadSavedState = () => {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                return {
+                    coins: parsed.coins || 0,
+                    deck: parsed.deck || {},
+                    queue: parsed.queue || [],
+                    paceEvents: parsed.paceEvents || [],
+                };
+            }
+        } catch (e) {
+            console.error("Failed to load initial state", e);
+        }
+        return { coins: 0, deck: {}, queue: [], paceEvents: [] };
+    };
+
+    // Average answering pace in coins/minute. Returns null when there's
+    // nothing useful to display yet.
+    const computePace = (events) => {
+        if (!events.length) return null;
+        const totalCoins = events.reduce((s, e) => s + e.coins, 0);
+        const totalMs = events.reduce((s, e) => s + e.ms, 0);
+        if (totalMs <= 0) return null;
+        return (totalCoins / totalMs) * 60_000;
+    };
+
+    // --- EXPERIMENTAL (mk2 only): roaming cat sprite ------------------------
+    // A small amber tabby drawn in a 64×64 viewBox, always facing right; the
+    // wrapper flips it for left-facing. Four poses share the same head/colours
+    // so the cat reads as one animal changing posture.
+    const CatSprite = ({ pose }) => {
+        const FUR = "#f59e0b", STRIPE = "#d97706", BELLY = "#fcd34d", EAR = "#fb7185";
+        if (pose === 'lie') {
+            return (
+                <svg viewBox="0 0 64 64" width="64" height="64">
+                    <path className="cat-tail" d="M14 50 C4 48 2 38 9 36 C12 35 13 40 11 44 C16 46 16 50 14 50 Z" fill={FUR} />
+                    <ellipse cx="34" cy="50" rx="22" ry="9" fill={FUR} />
+                    <ellipse cx="34" cy="53" rx="16" ry="5" fill={BELLY} />
+                    <path d="M22 47 L26 41 M30 47 L34 41 M38 47 L42 41" stroke={STRIPE} strokeWidth="2.5" strokeLinecap="round" />
+                    <circle cx="52" cy="44" r="9" fill={FUR} />
+                    <path d="M46 37 L44 31 L50 35 Z M58 37 L60 31 L54 35 Z" fill={FUR} />
+                    <path d="M47 35 L46 32 L49 34 Z M57 35 L58 32 L55 34 Z" fill={EAR} />
+                    <circle cx="50" cy="43" r="1.5" fill="#1f2937" />
+                    <circle cx="56" cy="43" r="1.5" fill="#1f2937" />
+                    <path d="M52 46 q1.5 1.5 3 0" stroke="#1f2937" strokeWidth="1.3" fill="none" strokeLinecap="round" />
+                </svg>
+            );
+        }
+        if (pose === 'sit') {
+            return (
+                <svg viewBox="0 0 64 64" width="64" height="64">
+                    <path className="cat-tail" d="M44 54 C56 56 58 44 50 40 C46 38 45 44 48 47 C44 49 40 51 44 54 Z" fill={FUR} />
+                    <path d="M22 56 Q22 30 34 28 Q46 30 46 56 Z" fill={FUR} />
+                    <ellipse cx="34" cy="50" rx="8" ry="9" fill={BELLY} />
+                    <path d="M27 56 a3 3 0 0 0 6 0 M35 56 a3 3 0 0 0 6 0" fill={FUR} />
+                    <circle cx="34" cy="22" r="11" fill={FUR} />
+                    <path d="M25 15 L21 5 L31 11 Z M43 15 L47 5 L37 11 Z" fill={FUR} />
+                    <path d="M26 13 L24 7 L29 11 Z M42 13 L44 7 L39 11 Z" fill={EAR} />
+                    <path d="M30 17 L34 14 L38 17" stroke={STRIPE} strokeWidth="2" strokeLinecap="round" fill="none" />
+                    <circle cx="30" cy="23" r="2" fill="#1f2937" />
+                    <circle cx="38" cy="23" r="2" fill="#1f2937" />
+                    <path d="M33 27 q1 1.5 2 0" stroke="#1f2937" strokeWidth="1.4" fill="none" strokeLinecap="round" />
+                    <path d="M24 26 L15 25 M24 28 L16 30 M40 26 L49 25 M40 28 L48 30" stroke="#9ca3af" strokeWidth="1" strokeLinecap="round" />
+                </svg>
+            );
+        }
+        // 'walk' and 'look' share a standing four-legged body. 'look' just
+        // holds still (handled by the wrapper class), so the kid sees it
+        // pause and glance around.
+        return (
+            <svg viewBox="0 0 64 64" width="64" height="64">
+                <path className="cat-tail" d="M10 40 C0 36 2 24 10 26 C14 27 12 33 9 34 C12 37 13 41 10 40 Z" fill={FUR} />
+                <rect className="cat-leg-1" x="16" y="42" width="5" height="15" rx="2.5" fill={STRIPE} />
+                <rect className="cat-leg-2" x="24" y="42" width="5" height="15" rx="2.5" fill={FUR} />
+                <rect className="cat-leg-3" x="38" y="42" width="5" height="15" rx="2.5" fill={STRIPE} />
+                <rect className="cat-leg-4" x="46" y="42" width="5" height="15" rx="2.5" fill={FUR} />
+                <ellipse cx="33" cy="38" rx="20" ry="11" fill={FUR} />
+                <path d="M22 32 L24 26 M30 31 L31 25 M38 31 L39 25 M46 33 L48 27" stroke={STRIPE} strokeWidth="2.5" strokeLinecap="round" />
+                <ellipse cx="33" cy="44" rx="14" ry="5" fill={BELLY} />
+                <circle cx="50" cy="28" r="10" fill={FUR} />
+                <path d="M42 21 L40 11 L49 17 Z M58 21 L60 11 L52 16 Z" fill={FUR} />
+                <path d="M43 19 L42 13 L47 17 Z M57 19 L58 13 L53 16 Z" fill={EAR} />
+                <circle cx="48" cy="28" r="2" fill="#1f2937" />
+                <circle cx="56" cy="28" r="2" fill="#1f2937" />
+                <path d="M51 32 q1.5 1.5 3 0" stroke="#1f2937" strokeWidth="1.4" fill="none" strokeLinecap="round" />
+                <path d="M44 30 L35 29 M44 32 L36 34 M60 30 L67 29 M60 32 L68 34" stroke="#9ca3af" strokeWidth="1" strokeLinecap="round" />
+            </svg>
+        );
+    };
+
+    // Self-contained ambient pet. Owns a tiny state machine: walk to a random
+    // spot, then idle in a pose (sit / lie / look) for a few seconds, repeat.
+    // No props, no game-state coupling — intentionally a small distraction.
+    const RoamingCat = () => {
+        const [x, setX] = useState(() => pickCatTarget());
+        const [facing, setFacing] = useState('right');
+        const [pose, setPose] = useState('sit');
+        const [walkMs, setWalkMs] = useState(0);
+        const xRef = useRef(x);
+        const timer = useRef(null);
+
+        useEffect(() => {
+            const idle = () => {
+                const poses = ['sit', 'look', 'lie', 'sit', 'look'];
+                setPose(poses[Math.floor(Math.random() * poses.length)]);
+                // Sometimes glance the other way while resting.
+                if (Math.random() < 0.45) setFacing(f => (f === 'left' ? 'right' : 'left'));
+                timer.current = setTimeout(walk, 2600 + Math.random() * 4200);
+            };
+            const walk = () => {
+                const target = pickCatTarget();
+                const dist = Math.abs(target - xRef.current);
+                const ms = Math.max(900, dist * 95); // ~95ms per vw% travelled
+                setFacing(target >= xRef.current ? 'right' : 'left');
+                setPose('walk');
+                setWalkMs(ms);
+                xRef.current = target;
+                setX(target);
+                timer.current = setTimeout(idle, ms + 60);
+            };
+            timer.current = setTimeout(walk, 1600);
+            return () => clearTimeout(timer.current);
+        }, []);
+
+        const moving = pose === 'walk';
+        return (
+            <div aria-hidden="true"
+                 className="fixed bottom-1 z-[5] pointer-events-none select-none"
+                 style={{
+                     left: `${x}vw`,
+                     width: 64, height: 64,
+                     transition: moving ? `left ${walkMs}ms linear` : 'none',
+                 }}>
+                <div style={{ transform: facing === 'left' ? 'scaleX(-1)' : 'none' }}>
+                    <div className={moving ? 'cat-walking' : 'cat-idle'}>
+                        <CatSprite pose={pose} />
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    const App = () => {
+        const initialState = useRef(loadSavedState()).current;
+        const [coins, setCoins] = useState(initialState.coins);
+        const [deck, setDeck] = useState(initialState.deck);
+        const [queue, setQueue] = useState(initialState.queue);
+        const [inputValue, setInputValue] = useState('');
+        const [feedback, setFeedback] = useState(null);
+        const [animatingCoins, setAnimatingCoins] = useState([]);
+        // breakdown = { steps:[{prompt,answer}], idx, reveal } | null
+        const [breakdown, setBreakdown] = useState(null);
+        const [stepError, setStepError] = useState(false);
+        // Rolling buffer of recent answer events used for the coins/min badge.
+        const [paceEvents, setPaceEvents] = useState(initialState.paceEvents);
+        // Current run of first-try corrects (resets on any miss). Not shown
+        // to the kid — drives praise word + animation tier + background.
+        const [streak, setStreak] = useState(0);
+        // True for ~one frame after a miss so the background snap to neutral
+        // skips the buildup transition. Otherwise the page would lazily
+        // fade down, blunting the "you missed" signal.
+        const [energyResetting, setEnergyResetting] = useState(false);
+        // praise = { id, word, color, tilt, tier } | null. New id on every
+        // pop so React remounts and the CSS animation restarts.
+        const [praise, setPraise] = useState(null);
+
+        const walletRef = useRef(null);
+        const inputRef = useRef(null);
+        // Wall-clock when the current card was first shown. Reset whenever the
+        // top of the queue changes (a new problem, or the corrected card pops out).
+        const cardStartRef = useRef(Date.now());
+        // Has the kid already triggered a self-correction whoosh on this card?
+        // One whoosh per card is enough — multiple rapid backspaces shouldn't
+        // stack into a stutter.
+        const selfCorrectedRef = useRef(false);
+
+        useEffect(() => {
+            runTests();
+            // Restore correction state if refresh happened mid-mistake.
+            if (queue.length > 0 && queue[0].inCorrection) {
+                setFeedback('wrong');
+                const p = queue[0];
+                setBreakdown({ steps: OPS[p.op].strategy(p.a, p.b), idx: 0, reveal: false });
+            }
+        }, []);
+
+        useEffect(() => {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents }));
+        }, [coins, deck, queue, paceEvents]);
+
+        // Restart the card timer whenever the visible problem changes.
+        useEffect(() => {
+            cardStartRef.current = Date.now();
+            selfCorrectedRef.current = false;
+        }, [queue[0]?.id]);
+
+        // Detect "typed some digits, hit backspace, then keeps going" — fire
+        // a single subtle whoosh the first time it happens on a card.
+        // oldLen ≥ 2 filters out the trivial "typed one digit, cleared it"
+        // case where there's no real correction to acknowledge.
+        const handleInputChange = (e) => {
+            const newVal = e.target.value;
+            if (!selfCorrectedRef.current
+                && inputValue.length >= 2
+                && newVal.length < inputValue.length) {
+                selfCorrectedRef.current = true;
+                playWhoosh();
+            }
+            setInputValue(newVal);
+        };
+
+        const recordAnswer = (coinsEarned) => {
+            const ms = Date.now() - cardStartRef.current;
+            if (ms > DISTRACTION_MS) return ms; // probably a distraction — skip this event
+            setPaceEvents(prev => [...prev.slice(-(PACE_WINDOW - 1)), { coins: coinsEarned, ms }]);
+            return ms;
+        };
+
+        const showPraise = (word, tier) => {
+            const id = Math.random();
+            setPraise({
+                id,
+                word,
+                tier,
+                color: PRAISE_COLORS[Math.floor(Math.random() * PRAISE_COLORS.length)],
+                tilt: (Math.random() * 24 - 12).toFixed(1), // -12°..+12°
+            });
+            // Clear shortly after the 500ms animation finishes so the node
+            // unmounts and doesn't sit around invisible.
+            setTimeout(() => setPraise(p => (p && p.id === id ? null : p)), 600);
+        };
+
+        const getNextFromDeck = useCallback((currentQueue) => {
+            const now = Date.now();
+            const ops = Object.keys(OPS);
+
+            // Count cards per registered op so under-represented ops get boosted.
+            // Without this, a long-standing op (mul) keeps producing due cards
+            // forever and a newly added op (add) never surfaces.
+            const opCounts = Object.fromEntries(ops.map(op => [op, 0]));
+            for (const c of Object.values(deck)) {
+                if (c.op in opCounts) opCounts[c.op]++;
+            }
+            const minCount = Math.min(...ops.map(op => opCounts[op]));
+            const rarestOps = ops.filter(op => opCounts[op] === minCount);
+            const opsImbalanced = rarestOps.length < ops.length;
+
+            // ~30% of picks force a fresh card from the rarest op when imbalanced.
+            // The remaining 70% (or 100% when balanced) keep FSRS-due cards in order.
+            const wantVariety = opsImbalanced && Math.random() < 0.3;
+
+            if (!wantVariety) {
+                const dueCards = Object.values(deck)
+                    .filter(card => card.nextReview <= now)
+                    .sort((a, b) => a.nextReview - b.nextReview);
+                const card = dueCards.find(c => !currentQueue.some(q => q.id === c.id));
+                if (card) return card;
+            }
+
+            // Fresh draw — restrict to rarest op when forcing variety, any op otherwise.
+            const eligibleOps = wantVariety ? rarestOps : ops;
+            for (let attempts = 0; attempts < 50; attempts++) {
+                const op = eligibleOps[Math.floor(Math.random() * eligibleOps.length)];
+                const handler = OPS[op];
+                const { a, b } = handler.generate();
+                const id = handler.idOf(a, b);
+                if (!currentQueue.some(q => q.id === id)) {
+                    return deck[id] || makeCard(op, a, b);
+                }
+            }
+            // Last-resort fallback if every attempt collided with the queue.
+            const op = eligibleOps[0];
+            const { a, b } = OPS[op].generate();
+            return makeCard(op, a, b);
+        }, [deck]);
+
+        // Only fill if empty and not just loaded from storage
+        useEffect(() => {
+            if (queue.length === 0) {
+                const initial = [];
+                while(initial.length < QUEUE_SIZE) {
+                    const p = getNextFromDeck(initial);
+                    if (!initial.find(x => x.id === p.id)) initial.push(p);
+                }
+                setQueue(initial);
+            }
+        }, [queue.length, getNextFromDeck]);
+
+        const flashError = () => {
+            setStepError(true);
+            setTimeout(() => setStepError(false), 400);
+        };
+
+        const enterBreakdown = (problem) => {
+            const updated = scheduleReview(problem, 1);
+            updated.inCorrection = true;
+            // Any miss resets the div coin-decay back to the full 3.
+            if (updated.op === 'div') updated.reward = DIV_REWARD_INITIAL;
+            // Only sound the "reset" cue when there's actually a streak to
+            // break — first miss of a session is silent on the audio side
+            // (the visual shake + red border still signals the miss).
+            if (streak > 0) playStreakBreak();
+            setEnergyResetting(true);
+            setStreak(0);
+            // Re-enable transitions after the browser has painted the
+            // neutral background — next streak gain eases in smoothly.
+            setTimeout(() => setEnergyResetting(false), 60);
+            setDeck(prev => ({ ...prev, [updated.id]: updated }));
+            const nextQueue = [...queue];
+            nextQueue[0] = updated;
+            setQueue(nextQueue);
+            setFeedback('wrong');
+            setBreakdown({ steps: OPS[updated.op].strategy(updated.a, updated.b), idx: 0, reveal: false });
+            setInputValue('');
+        };
+
+        const completeCorrection = () => {
+            // Correction earns no coins this round (the card resets to its
+            // worth-N badge for next time), but it's still an "answer" — log
+            // it so the pace metric reflects time-cost of mistakes.
+            recordAnswer(0);
+            const nextQueue = [...queue];
+            const correctedItem = { ...nextQueue.shift(), inCorrection: false };
+            // Reinsert "a couple cards later" so the unaided retest happens soon.
+            nextQueue.splice(2, 0, correctedItem);
+            while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
+            setQueue(nextQueue);
+            setFeedback(null);
+            setBreakdown(null);
+            setInputValue('');
+        };
+
+        const handleSubmit = (e) => {
+            e.preventDefault();
+            if (!inputValue) return;
+            const userVal = parseInt(inputValue);
+
+            // Breakdown mode: each step is its own typed check.
+            if (breakdown) {
+                const step = breakdown.steps[breakdown.idx];
+                if (userVal === step.answer) {
+                    if (breakdown.idx + 1 >= breakdown.steps.length) {
+                        completeCorrection();
+                    } else {
+                        setBreakdown({ ...breakdown, idx: breakdown.idx + 1, attempts: 0, reveal: false });
+                        setInputValue('');
+                    }
+                } else {
+                    // Reveal the step's answer after two misses so she isn't stuck.
+                    const attempts = (breakdown.attempts || 0) + 1;
+                    setBreakdown({ ...breakdown, attempts, reveal: attempts >= 2 });
+                    setInputValue('');
+                    flashError();
+                }
+                return;
+            }
+
+            const currentProblem = queue[0];
+            const isCorrect = userVal === currentProblem.answer;
+            if (isCorrect) {
+                // First-try success
+                setFeedback('correct');
+                const updated = scheduleReview(currentProblem, 3);
+                const reward = getCoinReward(currentProblem);
+                // Decay div coin reward for next appearance: 3 → 2 → 1, floor at 1.
+                if (updated.op === 'div') {
+                    updated.reward = Math.max(DIV_REWARD_MIN, (currentProblem.reward ?? DIV_REWARD_INITIAL) - 1);
+                }
+                const ms = recordAnswer(reward);
+                const newStreak = streak + 1;
+                setStreak(newStreak);
+                const tier = getPraiseTier(newStreak);
+                showPraise(pickPraise(ms, paceEvents, newStreak), tier);
+                triggerHaptic(getHapticPattern(newStreak));
+                // Tier ≥ 1 shakes the word — hold the chime so it lands as a
+                // payoff right after the wobble. Tier 0 has no shake, so it
+                // fires immediately.
+                if (tier >= 1) {
+                    setTimeout(() => playChime(newStreak), PRAISE_SHAKE_MS);
+                } else {
+                    playChime(newStreak);
+                }
+                triggerCoinAnimation(reward);
+                setTimeout(() => {
+                    setCoins(prev => prev + reward);
+                    setDeck(prev => ({ ...prev, [updated.id]: updated }));
+                    const nextQueue = [...queue.slice(1)];
+                    while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
+                    setQueue(nextQueue);
+                    setFeedback(null);
+                    setInputValue('');
+                }, 1000);
+            } else {
+                enterBreakdown(currentProblem);
+            }
+        };
+
+        const handleIDontKnow = () => {
+            enterBreakdown(queue[0]);
+            inputRef.current?.focus();
+        };
+
+        const triggerCoinAnimation = (count) => {
+            const rect = inputRef.current?.getBoundingClientRect();
+            const walletRect = walletRef.current?.getBoundingClientRect();
+            if (!rect || !walletRect) return;
+            const newCoins = Array.from({ length: Math.min(count, 5) }).map((_, i) => ({
+                id: Math.random(),
+                startLeft: rect.left + rect.width / 2,
+                startTop: rect.top,
+                targetX: walletRect.left - (rect.left + rect.width / 2) + (walletRect.width / 2),
+                targetY: walletRect.top - rect.top + (walletRect.height / 2)
+            }));
+            setAnimatingCoins(prev => [...prev, ...newCoins]);
+            setTimeout(() => setAnimatingCoins(prev => prev.filter(c => !newCoins.find(nc => nc.id === c.id))), 1100);
+        };
+
+        if (queue.length === 0) return null;
+        const currentProblem = queue[0];
+
+        return (
+            <div className={`min-h-screen p-4 md:p-8 font-sans text-slate-800 ${energyResetting ? 'energy-no-transition' : 'energy-transition'}`}
+                 style={{ backgroundColor: getEnergyColor(streak) }}>
+                <div className="max-w-4xl mx-auto flex justify-between items-center mb-8 bg-white p-4 rounded-3xl shadow-sm border border-purple-200">
+                    <div className="flex items-center gap-2">
+                        <div className="bg-indigo-100 p-2 rounded-xl"><Icon name="Trophy" className="text-indigo-600" /></div>
+                        <div>
+                            <h1 className="font-bold text-lg leading-tight">Math</h1>
+                            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">v{VERSION}</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        {(() => {
+                            const pace = computePace(paceEvents);
+                            return (
+                                <div className="flex flex-col items-end bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-xl font-bold text-sm leading-tight border border-indigo-100">
+                                    <span className="text-base font-black">{pace === null ? '—' : pace.toFixed(1)}</span>
+                                    <span className="text-[10px] text-indigo-400 uppercase tracking-widest font-bold">c/min</span>
+                                </div>
+                            );
+                        })()}
+                        <div ref={walletRef} className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md transition-transform hover:scale-105">
+                            <Icon name="Wallet" className="text-yellow-900" />
+                            <span className="font-black text-2xl text-yellow-900">{coins}</span>
+                            <Icon name="Coins" className="text-yellow-700 animate-bounce" />
+                        </div>
+                    </div>
+                </div>
+
+                <main className="max-w-xl mx-auto">
+                    <div className={`bg-white rounded-[2.5rem] shadow-2xl p-8 md:p-12 border-b-[12px] border-slate-200 transition-all duration-300 relative overflow-hidden ${feedback === 'correct' ? 'scale-105 border-green-400' : feedback === 'wrong' ? 'shake border-red-400' : ''}`}>
+                        <div className="absolute top-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-yellow-100 text-yellow-700 px-4 py-1 rounded-full text-xs font-black uppercase tracking-tight">
+                            <Icon name="Coins" size={14} className="mt-[-2px]" /> 
+                            Worth {getCoinReward(currentProblem)} {getCoinReward(currentProblem) === 1 ? 'Coin' : 'Coins'}
+                        </div>
+
+                        <div className="relative">
+                            <div className={`font-black text-slate-700 flex items-center justify-center gap-4 ${breakdown ? 'text-4xl my-4' : 'text-7xl md:text-9xl my-8'}`}>
+                                {OPS[currentProblem.op].renderPrompt(currentProblem)}
+                                {breakdown && !OPS[currentProblem.op].selfContained && <span className="text-slate-400">= ?</span>}
+                            </div>
+                            {praise && (
+                                <div key={praise.id}
+                                     className="absolute left-1/2 top-1/2 pointer-events-none z-30 animate-praise"
+                                     style={{
+                                         '--tilt': `${praise.tilt}deg`,
+                                         '--peak': praise.tier >= 2 ? 1.5 : 1.25,
+                                     }}>
+                                    <span className={`praise-word text-6xl md:text-7xl font-black ${praise.color} ${praise.tier >= 1 ? 'praise-shake' : ''} ${praise.tier >= 3 ? 'praise-chromatic' : ''}`}>
+                                        {praise.word}
+                                    </span>
+                                    {praise.tier >= 2 && Array.from({ length: 8 }).map((_, i) => (
+                                        <span key={i} className="praise-spark"
+                                              style={{ '--angle': `${(i / 8) * 360}deg` }} />
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        {breakdown && (() => {
+                            const step = breakdown.steps[breakdown.idx];
+                            // Steps marked inline (e.g. div: "a × ? = product") already contain
+                            // their own '?'. Render the prompt with '?' or the answer in place.
+                            const stepLine = step.inline
+                                ? (breakdown.reveal
+                                    ? <span className="underline">{step.prompt.replace('?', step.answer)}</span>
+                                    : step.prompt)
+                                : <>{step.prompt} = {breakdown.reveal ? <span className="underline">{step.answer}</span> : '?'}</>;
+                            return (
+                                <div className="mb-6 p-4 bg-indigo-50 rounded-2xl border-2 border-indigo-200">
+                                    <p className="text-indigo-500 text-xs font-black uppercase tracking-widest mb-2">
+                                        {`Solving ${OPS[currentProblem.op].label(currentProblem.a, currentProblem.b)}`}
+                                        {breakdown.steps.length > 1 && ` — step ${breakdown.idx + 1} of ${breakdown.steps.length}`}
+                                    </p>
+                                    {breakdown.steps.slice(0, breakdown.idx).map((s, i) => (
+                                        <p key={i} className="text-slate-400 text-base font-bold">
+                                            {s.inline ? s.prompt.replace('?', s.answer) : `${s.prompt} = ${s.answer}`} ✓
+                                        </p>
+                                    ))}
+                                    {step.hint && (
+                                        <p className="text-indigo-600 text-sm italic mb-1">💡 {step.hint}</p>
+                                    )}
+                                    <p className="text-indigo-700 text-2xl font-black mt-1">{stepLine}</p>
+                                    {breakdown.reveal && <p className="text-indigo-400 text-xs font-medium mt-1">Type it to keep learning!</p>}
+                                </div>
+                            );
+                        })()}
+
+                        <form onSubmit={handleSubmit} className="relative z-10">
+                            <input ref={inputRef} type="number" inputMode="numeric" pattern="[0-9]*"
+                                   value={inputValue} onChange={handleInputChange}
+                                   placeholder={breakdown && breakdown.reveal ? breakdown.steps[breakdown.idx].answer : "?"} autoFocus
+                                   autoComplete="off" autoCorrect="off" spellCheck="false"
+                                   className={`w-full text-center text-6xl font-black p-6 rounded-3xl bg-slate-50 border-4 outline-none transition-all ${feedback === 'correct' ? 'border-green-500 bg-green-50 text-green-600' : stepError ? 'border-red-500 bg-red-50 text-red-600 shake' : breakdown ? 'border-indigo-300 focus:border-indigo-500' : 'border-slate-100 focus:border-indigo-400'}`} />
+
+                            <div className="mt-6 flex gap-3">
+                                <button type="submit" disabled={!inputValue || feedback === 'correct'} className="flex-[2] bg-slate-800 hover:bg-slate-900 disabled:bg-slate-200 text-white text-2xl font-black py-5 rounded-3xl shadow-lg transition-all">
+                                    {breakdown ? (breakdown.idx + 1 === breakdown.steps.length ? 'FINISH' : 'NEXT') : 'GO!'}
+                                </button>
+                                {!feedback && (
+                                    <button type="button" onClick={handleIDontKnow} className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold py-5 rounded-3xl flex items-center justify-center gap-2">
+                                        <Icon name="HelpCircle" size={18} /> IDK
+                                    </button>
+                                )}
+                            </div>
+                        </form>
+                    </div>
+                </main>
+
+                {animatingCoins.map(coin => (
+                    <div key={coin.id} className="fixed pointer-events-none z-[100] animate-coin-fly"
+                         style={{ left: coin.startLeft, top: coin.startTop, '--target-x': `${coin.targetX}px`, '--target-y': `${coin.targetY}px` }}>
+                        <svg className="w-10 h-10 drop-shadow-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <circle cx="8" cy="8" r="6" fill="#fbbf24" stroke="#d97706"/><path d="M8 5v6M5 8h6" stroke="#d97706" />
+                        </svg>
+                    </div>
+                ))}
+
+                <RoamingCat />
+            </div>
+        );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+</script>
+</body>
+</html>
