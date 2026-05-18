@@ -82,6 +82,26 @@
            perceived as instant, then transitions re-enable for next time. */
         .energy-transition { transition: background-color 600ms ease-out; }
         .energy-no-transition { transition: none; }
+
+        /* --- roaming cat ----------------------------------------------------
+           Purely decorative ambient pet. Lives in a bottom strip, pointer
+           pass-through, no effect on game state. */
+        @keyframes cat-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+        .cat-walking { animation: cat-bob 280ms ease-in-out infinite; }
+        @keyframes cat-breathe { 0%,100% { transform: scaleY(1); } 50% { transform: scaleY(1.04); } }
+        .cat-idle { animation: cat-breathe 2.6s ease-in-out infinite; transform-origin: 50% 100%; }
+        @keyframes cat-leg-f { 0%,100% { transform: rotate(14deg); } 50% { transform: rotate(-14deg); } }
+        @keyframes cat-leg-b { 0%,100% { transform: rotate(-14deg); } 50% { transform: rotate(14deg); } }
+        .cat-walking .cat-leg-1, .cat-walking .cat-leg-4 { animation: cat-leg-f 280ms ease-in-out infinite; }
+        .cat-walking .cat-leg-2, .cat-walking .cat-leg-3 { animation: cat-leg-b 280ms ease-in-out infinite; }
+        .cat-leg-1, .cat-leg-2, .cat-leg-3, .cat-leg-4 { transform-origin: 50% 0%; }
+        @keyframes cat-tail-sway { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(-9deg); } }
+        /* fill-box keeps the pivot on the tail's own root (where it meets the
+           body) instead of the whole 64-box corner, so it sways instead of
+           detaching. Sit's tail attaches on its lower-left, hence the override. */
+        .cat-tail { transform-box: fill-box; transform-origin: 100% 100%;
+                    animation: cat-tail-sway 1.8s ease-in-out infinite; }
+        .cat-tail-sit { transform-origin: 12% 88%; }
     </style>
 </head>
 <body class="antialiased bg-slate-50">
@@ -158,7 +178,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.18';
+    const VERSION = '1.23';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
@@ -677,6 +697,16 @@
         return { ...problem, stability, difficulty, reps: reps + 1, state, lastReview: now, nextReview, hasMistake };
     };
 
+    // --- roaming cat --------------------------------------------------------
+    // The cat ambles along a bottom strip of the viewport. Targets are in vw%,
+    // clamped so the 64px sprite never walks off either edge.
+    const CAT_MIN_X = 1;
+    const CAT_MAX_X = 88;
+    const pickCatTarget = () => {
+        const x = Math.random() * (CAT_MAX_X - CAT_MIN_X) + CAT_MIN_X;
+        return Math.min(CAT_MAX_X, Math.max(CAT_MIN_X, x));
+    };
+
     const runTests = () => {
         console.group("%c🧮 Math & Kittens: Corrected Logic Test Suite", "color: #6366f1; font-weight: bold; font-size: 1.2em;");
         let passed = 0; let failed = 0;
@@ -893,6 +923,14 @@
             && foursSteps[0].hint.includes("24"),
             "4 × ? = 24 → single skip-count step listing multiples of 4 up to 24");
 
+        // Roaming cat: every target stays on-screen.
+        let catBad = 0;
+        for (let i = 0; i < 300; i++) {
+            const t = pickCatTarget();
+            if (t < CAT_MIN_X || t > CAT_MAX_X || !Number.isFinite(t)) catBad++;
+        }
+        assert(catBad === 0, "cat targets stay within the on-screen strip");
+
         console.log(`%c\nTest Summary: ${passed} Passed, ${failed} Failed`, failed > 0 ? "color: #ef4444;" : "color: #10b981;");
         console.groupEnd();
     };
@@ -937,6 +975,178 @@
         return (totalCoins / totalMs) * 60_000;
     };
 
+    // --- roaming cat sprite -------------------------------------------------
+    // A small amber tabby drawn in a 64×64 viewBox, always facing right; the
+    // wrapper flips it for left-facing. Four poses share the same head/colours
+    // so the cat reads as one animal changing posture.
+    const CatSprite = ({ pose }) => {
+        const FUR = "#f59e0b", STRIPE = "#d97706", BELLY = "#fcd34d", EAR = "#fb7185";
+        if (pose === 'lie') {
+            return (
+                <svg viewBox="0 0 64 64" width="100%" height="100%">
+                    <path className="cat-tail" d="M19 50 C6 51 1 40 9 35 C12 33 15 38 11 42 C16 46 23 50 19 50 Z" fill={FUR} />
+                    <ellipse cx="34" cy="50" rx="22" ry="9" fill={FUR} />
+                    <ellipse cx="34" cy="53" rx="16" ry="5" fill={BELLY} />
+                    <path d="M22 47 L26 41 M30 47 L34 41 M38 47 L42 41" stroke={STRIPE} strokeWidth="2.5" strokeLinecap="round" />
+                    <circle cx="52" cy="44" r="9" fill={FUR} />
+                    <path d="M46 37 L44 31 L50 35 Z M58 37 L60 31 L54 35 Z" fill={FUR} />
+                    <path d="M47 35 L46 32 L49 34 Z M57 35 L58 32 L55 34 Z" fill={EAR} />
+                    <circle cx="50" cy="43" r="1.5" fill="#1f2937" />
+                    <circle cx="56" cy="43" r="1.5" fill="#1f2937" />
+                    <path d="M52 46 q1.5 1.5 3 0" stroke="#1f2937" strokeWidth="1.3" fill="none" strokeLinecap="round" />
+                </svg>
+            );
+        }
+        if (pose === 'sit') {
+            return (
+                <svg viewBox="0 0 64 64" width="100%" height="100%">
+                    <path className="cat-tail cat-tail-sit" d="M42 55 C57 56 61 43 51 38 C47 36 45 42 49 46 C45 49 39 52 42 55 Z" fill={FUR} />
+                    <path d="M22 56 Q22 30 34 28 Q46 30 46 56 Z" fill={FUR} />
+                    <ellipse cx="34" cy="50" rx="8" ry="9" fill={BELLY} />
+                    <path d="M27 56 a3 3 0 0 0 6 0 M35 56 a3 3 0 0 0 6 0" fill={FUR} />
+                    <circle cx="34" cy="22" r="11" fill={FUR} />
+                    <path d="M25 15 L21 5 L31 11 Z M43 15 L47 5 L37 11 Z" fill={FUR} />
+                    <path d="M26 13 L24 7 L29 11 Z M42 13 L44 7 L39 11 Z" fill={EAR} />
+                    <path d="M30 17 L34 14 L38 17" stroke={STRIPE} strokeWidth="2" strokeLinecap="round" fill="none" />
+                    <circle cx="30" cy="23" r="2" fill="#1f2937" />
+                    <circle cx="38" cy="23" r="2" fill="#1f2937" />
+                    <path d="M33 27 q1 1.5 2 0" stroke="#1f2937" strokeWidth="1.4" fill="none" strokeLinecap="round" />
+                    <path d="M24 26 L15 25 M24 28 L16 30 M40 26 L49 25 M40 28 L48 30" stroke="#9ca3af" strokeWidth="1" strokeLinecap="round" />
+                </svg>
+            );
+        }
+        // 'walk' and 'look' share a standing four-legged body. 'look' just
+        // holds still (handled by the wrapper class), so the kid sees it
+        // pause and glance around.
+        return (
+            <svg viewBox="0 0 64 64" width="100%" height="100%">
+                <path className="cat-tail" d="M19 43 C6 43 1 29 8 23 C11 21 15 25 12 29 C16 35 23 39 19 43 Z" fill={FUR} />
+                <rect className="cat-leg-1" x="16" y="42" width="5" height="15" rx="2.5" fill={STRIPE} />
+                <rect className="cat-leg-2" x="24" y="42" width="5" height="15" rx="2.5" fill={FUR} />
+                <rect className="cat-leg-3" x="38" y="42" width="5" height="15" rx="2.5" fill={STRIPE} />
+                <rect className="cat-leg-4" x="46" y="42" width="5" height="15" rx="2.5" fill={FUR} />
+                <ellipse cx="33" cy="38" rx="20" ry="11" fill={FUR} />
+                <path d="M22 32 L24 26 M30 31 L31 25 M38 31 L39 25 M46 33 L48 27" stroke={STRIPE} strokeWidth="2.5" strokeLinecap="round" />
+                <ellipse cx="33" cy="44" rx="14" ry="5" fill={BELLY} />
+                <circle cx="50" cy="28" r="10" fill={FUR} />
+                <path d="M42 21 L40 11 L49 17 Z M58 21 L60 11 L52 16 Z" fill={FUR} />
+                <path d="M43 19 L42 13 L47 17 Z M57 19 L58 13 L53 16 Z" fill={EAR} />
+                <circle cx="48" cy="28" r="2" fill="#1f2937" />
+                <circle cx="56" cy="28" r="2" fill="#1f2937" />
+                <path d="M51 32 q1.5 1.5 3 0" stroke="#1f2937" strokeWidth="1.4" fill="none" strokeLinecap="round" />
+                <path d="M44 30 L35 29 M44 32 L36 34 M60 30 L67 29 M60 32 L68 34" stroke="#9ca3af" strokeWidth="1" strokeLinecap="round" />
+            </svg>
+        );
+    };
+
+    // Self-contained ambient pet. Owns a tiny state machine: walk to a random
+    // spot, then idle in a pose (sit / lie / look) for a few seconds, repeat.
+    // No props, no game-state coupling — intentionally a small distraction.
+    // Event-driven ambient pet. She only shows up when the displayed
+    // coins/min pace ticks DOWN (App bumps `visitId`), strolls in from a
+    // screen edge, hangs around ~15s, then wanders back off. `suppressed`
+    // is true during correction mode: she never enters then, and if she's
+    // already on screen she leaves at once. No visual cue why she came.
+    const CAT_VISIT_MS = 15000;
+    const CAT_COOLDOWN_MS = 60000; // at most one visit per minute
+    const OFF_L = -18, OFF_R = 104; // off-screen parking spots (vw%)
+    const RoamingCat = ({ visitId, suppressed }) => {
+        const [x, setX] = useState(OFF_L);
+        const [facing, setFacing] = useState('right');
+        const [pose, setPose] = useState('sit');
+        const [walkMs, setWalkMs] = useState(0);
+        const [visible, setVisible] = useState(false);
+        const xRef = useRef(OFF_L);
+        const timers = useRef([]);
+        const fromLeftRef = useRef(true);
+        const leavingRef = useRef(false);
+
+        const addT = (fn, ms) => { const id = setTimeout(fn, ms); timers.current.push(id); return id; };
+        const clearAll = () => { timers.current.forEach(clearTimeout); timers.current = []; };
+
+        const goTo = (target, ms) => {
+            setFacing(target >= xRef.current ? 'right' : 'left');
+            setPose('walk');
+            setWalkMs(ms);
+            xRef.current = target;
+            setX(target);
+        };
+
+        const leave = () => {
+            if (leavingRef.current) return;
+            leavingRef.current = true;
+            clearAll();
+            const edge = fromLeftRef.current ? OFF_L : OFF_R;
+            const ms = Math.max(700, Math.abs(edge - xRef.current) * 65);
+            goTo(edge, ms);
+            addT(() => setVisible(false), ms + 90);
+        };
+        const leaveRef = useRef(leave);
+        leaveRef.current = leave;
+
+        // A pace-down event (new visitId). Ignored entirely while suppressed.
+        useEffect(() => {
+            if (visitId === 0 || suppressed) return;
+            clearAll();
+            // Already here and not on her way out: just extend the stay.
+            if (visible && !leavingRef.current) {
+                addT(() => leaveRef.current(), CAT_VISIT_MS);
+                return clearAll;
+            }
+            leavingRef.current = false;
+            const fromLeft = Math.random() < 0.5;
+            fromLeftRef.current = fromLeft;
+            xRef.current = fromLeft ? OFF_L : OFF_R;
+            setX(xRef.current);
+            setVisible(true);
+
+            const roam = () => {
+                if (leavingRef.current) return;
+                const target = (fromLeft ? 6 : 60) + Math.random() * 26;
+                const ms = Math.max(800, Math.abs(target - xRef.current) * 80);
+                goTo(target, ms);
+                addT(() => {
+                    if (leavingRef.current) return;
+                    const poses = ['sit', 'look', 'lie', 'sit'];
+                    setPose(poses[Math.floor(Math.random() * poses.length)]);
+                    if (Math.random() < 0.4) setFacing(f => (f === 'left' ? 'right' : 'left'));
+                    addT(roam, 2200 + Math.random() * 2600);
+                }, ms + 60);
+            };
+
+            const enter = fromLeft ? (10 + Math.random() * 12) : (66 + Math.random() * 14);
+            addT(() => {
+                goTo(enter, 1500);
+                addT(() => { setPose('sit'); addT(roam, 1500); }, 1560);
+            }, 40);
+            addT(() => leaveRef.current(), CAT_VISIT_MS);
+            return clearAll;
+        }, [visitId]);
+
+        // Correction mode opened while she's around → she leaves immediately.
+        useEffect(() => {
+            if (suppressed && visible) leaveRef.current();
+        }, [suppressed, visible]);
+
+        if (!visible) return null;
+        const moving = pose === 'walk';
+        return (
+            <div aria-hidden="true"
+                 className="fixed bottom-0 z-[5] pointer-events-none select-none"
+                 style={{
+                     left: `${x}vw`,
+                     width: 42, height: 42,
+                     transition: moving ? `left ${walkMs}ms linear` : 'none',
+                 }}>
+                <div style={{ transform: facing === 'left' ? 'scaleX(-1)' : 'none' }}>
+                    <div className={moving ? 'cat-walking' : 'cat-idle'}>
+                        <CatSprite pose={pose} />
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
     const App = () => {
         const initialState = useRef(loadSavedState()).current;
         const [coins, setCoins] = useState(initialState.coins);
@@ -960,6 +1170,12 @@
         // praise = { id, word, color, tilt, tier } | null. New id on every
         // pop so React remounts and the CSS animation restarts.
         const [praise, setPraise] = useState(null);
+        // Bumped whenever the *displayed* pace ticks down,
+        // which is the cat's only cue to visit.
+        const [catVisit, setCatVisit] = useState(0);
+        const prevPaceRef = useRef(null);
+        // Wall-clock of the last cat summon; gates the 60s cooldown.
+        const lastCatTriggerRef = useRef(0);
 
         const walletRef = useRef(null);
         const inputRef = useRef(null);
@@ -984,6 +1200,22 @@
         useEffect(() => {
             localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents }));
         }, [coins, deck, queue, paceEvents]);
+
+        // Summon the cat when the *displayed* (1-decimal)
+        // pace drops, e.g. 20.6 → 20.5. Never fires during correction so she
+        // doesn't appear then. First reading just seeds the baseline. A
+        // 60s cooldown caps her to at most one visit per minute.
+        useEffect(() => {
+            const p = computePace(paceEvents);
+            const r = p === null ? null : Number(p.toFixed(1));
+            const prev = prevPaceRef.current;
+            prevPaceRef.current = r;
+            if (prev !== null && r !== null && r < prev && !breakdown
+                && Date.now() - lastCatTriggerRef.current >= CAT_COOLDOWN_MS) {
+                lastCatTriggerRef.current = Date.now();
+                setCatVisit(v => v + 1);
+            }
+        }, [paceEvents, breakdown]);
 
         // Restart the card timer whenever the visible problem changes.
         useEffect(() => {
@@ -1332,6 +1564,8 @@
                         </svg>
                     </div>
                 ))}
+
+                <RoamingCat visitId={catVisit} suppressed={!!breakdown} />
             </div>
         );
     };
