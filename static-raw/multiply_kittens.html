@@ -40,14 +40,17 @@
             letter-spacing: 0.05em;
             display: inline-block;
         }
-        /* Tier 1+: a quick jiggle on the inner span; outer wrapper still pops. */
+        /* Tier 1+: a jiggle on the inner span; outer wrapper still pops.
+           Duration must stay in sync with PRAISE_SHAKE_MS in the script
+           (the chime is delayed to land right after the shake ends).
+           90ms × 5 = 450ms, comfortably inside the 500ms pop window. */
         @keyframes praise-shake {
             0%, 100% { transform: translateX(0); }
             25%      { transform: translateX(-4px); }
             50%      { transform: translateX(4px); }
             75%      { transform: translateX(-4px); }
         }
-        .praise-shake { animation: praise-shake 90ms ease-in-out 3; }
+        .praise-shake { animation: praise-shake 90ms ease-in-out 5; }
         /* Tier 3: chromatic-aberration text split + neon glow. Replaces the
            solid black stroke so the colours read; the wrapper drop-shadow
            still adds some weight. */
@@ -205,6 +208,10 @@
         if (streak >= 5) return 1;
         return 0;
     };
+    // Total duration of the tier ≥ 1 shake — MUST match the .praise-shake
+    // CSS rule (90ms × 5). The combo chime is held until the shake finishes
+    // so the sound lands as a payoff after the wobble, not on top of it.
+    const PRAISE_SHAKE_MS = 450;
 
     // Adaptive background energy: the page background lerps from neutral
     // slate-50 toward a vibrant teal-200 as the streak grows, hitting full
@@ -834,6 +841,11 @@
             "praise tier: 10..14 ⇒ tier 2 (bigger + sparks)");
         assert(getPraiseTier(15) === 3 && getPraiseTier(50) === 3,
             "praise tier: ≥ 15 ⇒ tier 3 (chromatic + glow)");
+        // Shake duration must match the .praise-shake CSS (90ms × 5) and
+        // stay inside the 500ms praise-pop window so the chime, which is
+        // delayed by PRAISE_SHAKE_MS, still lands before the word dissolves.
+        assert(PRAISE_SHAKE_MS === 90 * 5, "shake: PRAISE_SHAKE_MS stays in sync with the CSS (90ms × 5)");
+        assert(PRAISE_SHAKE_MS < 500, "shake: chime delay stays inside the praise-pop window");
 
         // Adaptive background energy.
         assert(getEnergyColor(0) === `rgb(${ENERGY_NEUTRAL.join(', ')})`,
@@ -1154,9 +1166,17 @@
                 const ms = recordAnswer(reward);
                 const newStreak = streak + 1;
                 setStreak(newStreak);
-                showPraise(pickPraise(ms, paceEvents, newStreak), getPraiseTier(newStreak));
+                const tier = getPraiseTier(newStreak);
+                showPraise(pickPraise(ms, paceEvents, newStreak), tier);
                 triggerHaptic(getHapticPattern(newStreak));
-                playChime(newStreak);
+                // Tier ≥ 1 shakes the word — hold the chime so it lands as a
+                // payoff right after the wobble. Tier 0 has no shake, so it
+                // fires immediately.
+                if (tier >= 1) {
+                    setTimeout(() => playChime(newStreak), PRAISE_SHAKE_MS);
+                } else {
+                    playChime(newStreak);
+                }
                 triggerCoinAnimation(reward);
                 setTimeout(() => {
                     setCoins(prev => prev + reward);
