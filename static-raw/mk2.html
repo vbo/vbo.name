@@ -95,8 +95,13 @@
         .cat-walking .cat-leg-1, .cat-walking .cat-leg-4 { animation: cat-leg-f 280ms ease-in-out infinite; }
         .cat-walking .cat-leg-2, .cat-walking .cat-leg-3 { animation: cat-leg-b 280ms ease-in-out infinite; }
         .cat-leg-1, .cat-leg-2, .cat-leg-3, .cat-leg-4 { transform-origin: 50% 0%; }
-        @keyframes cat-tail-sway { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(-16deg); } }
-        .cat-tail { animation: cat-tail-sway 1.8s ease-in-out infinite; transform-origin: 100% 100%; }
+        @keyframes cat-tail-sway { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(-9deg); } }
+        /* fill-box keeps the pivot on the tail's own root (where it meets the
+           body) instead of the whole 64-box corner, so it sways instead of
+           detaching. Sit's tail attaches on its lower-left, hence the override. */
+        .cat-tail { transform-box: fill-box; transform-origin: 100% 100%;
+                    animation: cat-tail-sway 1.8s ease-in-out infinite; }
+        .cat-tail-sit { transform-origin: 12% 88%; }
     </style>
 </head>
 <body class="antialiased bg-slate-50">
@@ -173,7 +178,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.19';
+    const VERSION = '1.20';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
@@ -978,8 +983,8 @@
         const FUR = "#f59e0b", STRIPE = "#d97706", BELLY = "#fcd34d", EAR = "#fb7185";
         if (pose === 'lie') {
             return (
-                <svg viewBox="0 0 64 64" width="64" height="64">
-                    <path className="cat-tail" d="M14 50 C4 48 2 38 9 36 C12 35 13 40 11 44 C16 46 16 50 14 50 Z" fill={FUR} />
+                <svg viewBox="0 0 64 64" width="100%" height="100%">
+                    <path className="cat-tail" d="M19 50 C6 51 1 40 9 35 C12 33 15 38 11 42 C16 46 23 50 19 50 Z" fill={FUR} />
                     <ellipse cx="34" cy="50" rx="22" ry="9" fill={FUR} />
                     <ellipse cx="34" cy="53" rx="16" ry="5" fill={BELLY} />
                     <path d="M22 47 L26 41 M30 47 L34 41 M38 47 L42 41" stroke={STRIPE} strokeWidth="2.5" strokeLinecap="round" />
@@ -994,8 +999,8 @@
         }
         if (pose === 'sit') {
             return (
-                <svg viewBox="0 0 64 64" width="64" height="64">
-                    <path className="cat-tail" d="M44 54 C56 56 58 44 50 40 C46 38 45 44 48 47 C44 49 40 51 44 54 Z" fill={FUR} />
+                <svg viewBox="0 0 64 64" width="100%" height="100%">
+                    <path className="cat-tail cat-tail-sit" d="M42 55 C57 56 61 43 51 38 C47 36 45 42 49 46 C45 49 39 52 42 55 Z" fill={FUR} />
                     <path d="M22 56 Q22 30 34 28 Q46 30 46 56 Z" fill={FUR} />
                     <ellipse cx="34" cy="50" rx="8" ry="9" fill={BELLY} />
                     <path d="M27 56 a3 3 0 0 0 6 0 M35 56 a3 3 0 0 0 6 0" fill={FUR} />
@@ -1014,8 +1019,8 @@
         // holds still (handled by the wrapper class), so the kid sees it
         // pause and glance around.
         return (
-            <svg viewBox="0 0 64 64" width="64" height="64">
-                <path className="cat-tail" d="M10 40 C0 36 2 24 10 26 C14 27 12 33 9 34 C12 37 13 41 10 40 Z" fill={FUR} />
+            <svg viewBox="0 0 64 64" width="100%" height="100%">
+                <path className="cat-tail" d="M19 43 C6 43 1 29 8 23 C11 21 15 25 12 29 C16 35 23 39 19 43 Z" fill={FUR} />
                 <rect className="cat-leg-1" x="16" y="42" width="5" height="15" rx="2.5" fill={STRIPE} />
                 <rect className="cat-leg-2" x="24" y="42" width="5" height="15" rx="2.5" fill={FUR} />
                 <rect className="cat-leg-3" x="38" y="42" width="5" height="15" rx="2.5" fill={STRIPE} />
@@ -1071,10 +1076,10 @@
         const moving = pose === 'walk';
         return (
             <div aria-hidden="true"
-                 className="fixed bottom-1 z-[5] pointer-events-none select-none"
+                 className="fixed bottom-0 z-[5] pointer-events-none select-none"
                  style={{
                      left: `${x}vw`,
-                     width: 64, height: 64,
+                     width: 42, height: 42,
                      transition: moving ? `left ${walkMs}ms linear` : 'none',
                  }}>
                 <div style={{ transform: facing === 'left' ? 'scaleX(-1)' : 'none' }}>
