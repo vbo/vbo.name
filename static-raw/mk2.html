@@ -178,7 +178,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.20';
+    const VERSION = '1.21';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
@@ -1042,37 +1042,92 @@
     // Self-contained ambient pet. Owns a tiny state machine: walk to a random
     // spot, then idle in a pose (sit / lie / look) for a few seconds, repeat.
     // No props, no game-state coupling — intentionally a small distraction.
-    const RoamingCat = () => {
-        const [x, setX] = useState(() => pickCatTarget());
+    // Event-driven ambient pet. She only shows up when the displayed
+    // coins/min pace ticks DOWN (App bumps `visitId`), strolls in from a
+    // screen edge, hangs around ~15s, then wanders back off. `suppressed`
+    // is true during correction mode: she never enters then, and if she's
+    // already on screen she leaves at once. No visual cue why she came.
+    const CAT_VISIT_MS = 15000;
+    const OFF_L = -18, OFF_R = 104; // off-screen parking spots (vw%)
+    const RoamingCat = ({ visitId, suppressed }) => {
+        const [x, setX] = useState(OFF_L);
         const [facing, setFacing] = useState('right');
         const [pose, setPose] = useState('sit');
         const [walkMs, setWalkMs] = useState(0);
-        const xRef = useRef(x);
-        const timer = useRef(null);
+        const [visible, setVisible] = useState(false);
+        const xRef = useRef(OFF_L);
+        const timers = useRef([]);
+        const fromLeftRef = useRef(true);
+        const leavingRef = useRef(false);
 
+        const addT = (fn, ms) => { const id = setTimeout(fn, ms); timers.current.push(id); return id; };
+        const clearAll = () => { timers.current.forEach(clearTimeout); timers.current = []; };
+
+        const goTo = (target, ms) => {
+            setFacing(target >= xRef.current ? 'right' : 'left');
+            setPose('walk');
+            setWalkMs(ms);
+            xRef.current = target;
+            setX(target);
+        };
+
+        const leave = () => {
+            if (leavingRef.current) return;
+            leavingRef.current = true;
+            clearAll();
+            const edge = fromLeftRef.current ? OFF_L : OFF_R;
+            const ms = Math.max(700, Math.abs(edge - xRef.current) * 65);
+            goTo(edge, ms);
+            addT(() => setVisible(false), ms + 90);
+        };
+        const leaveRef = useRef(leave);
+        leaveRef.current = leave;
+
+        // A pace-down event (new visitId). Ignored entirely while suppressed.
         useEffect(() => {
-            const idle = () => {
-                const poses = ['sit', 'look', 'lie', 'sit', 'look'];
-                setPose(poses[Math.floor(Math.random() * poses.length)]);
-                // Sometimes glance the other way while resting.
-                if (Math.random() < 0.45) setFacing(f => (f === 'left' ? 'right' : 'left'));
-                timer.current = setTimeout(walk, 2600 + Math.random() * 4200);
-            };
-            const walk = () => {
-                const target = pickCatTarget();
-                const dist = Math.abs(target - xRef.current);
-                const ms = Math.max(900, dist * 95); // ~95ms per vw% travelled
-                setFacing(target >= xRef.current ? 'right' : 'left');
-                setPose('walk');
-                setWalkMs(ms);
-                xRef.current = target;
-                setX(target);
-                timer.current = setTimeout(idle, ms + 60);
-            };
-            timer.current = setTimeout(walk, 1600);
-            return () => clearTimeout(timer.current);
-        }, []);
+            if (visitId === 0 || suppressed) return;
+            clearAll();
+            // Already here and not on her way out: just extend the stay.
+            if (visible && !leavingRef.current) {
+                addT(() => leaveRef.current(), CAT_VISIT_MS);
+                return clearAll;
+            }
+            leavingRef.current = false;
+            const fromLeft = Math.random() < 0.5;
+            fromLeftRef.current = fromLeft;
+            xRef.current = fromLeft ? OFF_L : OFF_R;
+            setX(xRef.current);
+            setVisible(true);
 
+            const roam = () => {
+                if (leavingRef.current) return;
+                const target = (fromLeft ? 6 : 60) + Math.random() * 26;
+                const ms = Math.max(800, Math.abs(target - xRef.current) * 80);
+                goTo(target, ms);
+                addT(() => {
+                    if (leavingRef.current) return;
+                    const poses = ['sit', 'look', 'lie', 'sit'];
+                    setPose(poses[Math.floor(Math.random() * poses.length)]);
+                    if (Math.random() < 0.4) setFacing(f => (f === 'left' ? 'right' : 'left'));
+                    addT(roam, 2200 + Math.random() * 2600);
+                }, ms + 60);
+            };
+
+            const enter = fromLeft ? (10 + Math.random() * 12) : (66 + Math.random() * 14);
+            addT(() => {
+                goTo(enter, 1500);
+                addT(() => { setPose('sit'); addT(roam, 1500); }, 1560);
+            }, 40);
+            addT(() => leaveRef.current(), CAT_VISIT_MS);
+            return clearAll;
+        }, [visitId]);
+
+        // Correction mode opened while she's around → she leaves immediately.
+        useEffect(() => {
+            if (suppressed && visible) leaveRef.current();
+        }, [suppressed, visible]);
+
+        if (!visible) return null;
         const moving = pose === 'walk';
         return (
             <div aria-hidden="true"
@@ -1114,6 +1169,10 @@
         // praise = { id, word, color, tilt, tier } | null. New id on every
         // pop so React remounts and the CSS animation restarts.
         const [praise, setPraise] = useState(null);
+        // mk2 experimental: bumped whenever the *displayed* pace ticks down,
+        // which is the cat's only cue to visit.
+        const [catVisit, setCatVisit] = useState(0);
+        const prevPaceRef = useRef(null);
 
         const walletRef = useRef(null);
         const inputRef = useRef(null);
@@ -1138,6 +1197,19 @@
         useEffect(() => {
             localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents }));
         }, [coins, deck, queue, paceEvents]);
+
+        // mk2 experimental: summon the cat when the *displayed* (1-decimal)
+        // pace drops, e.g. 20.6 → 20.5. Never fires during correction so she
+        // doesn't appear then. First reading just seeds the baseline.
+        useEffect(() => {
+            const p = computePace(paceEvents);
+            const r = p === null ? null : Number(p.toFixed(1));
+            const prev = prevPaceRef.current;
+            prevPaceRef.current = r;
+            if (prev !== null && r !== null && r < prev && !breakdown) {
+                setCatVisit(v => v + 1);
+            }
+        }, [paceEvents, breakdown]);
 
         // Restart the card timer whenever the visible problem changes.
         useEffect(() => {
@@ -1487,7 +1559,7 @@
                     </div>
                 ))}
 
-                <RoamingCat />
+                <RoamingCat visitId={catVisit} suppressed={!!breakdown} />
             </div>
         );
     };
