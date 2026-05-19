@@ -2,6 +2,16 @@
 
 Files here are copied verbatim into `public/` at build time (`hexo generate` doesn't touch them — see the `cpSync` step in `package.json`'s `build` script). Hexo's link validator (`npm run validate`) does check the copied output for broken links, but it doesn't parse JSX inside `<script type="text/babel">` blocks, so syntax errors in those land at runtime in the browser console.
 
+## Git: how work reaches the live site (Claude self-merges)
+
+The live site builds from `master`. The expected flow for Claude is:
+develop on the task branch → open a PR → **squash-merge that PR to
+`master` yourself** (no human reviewer is gating these). Don't stop at
+"pushed to the branch" and wait — that branch is invisible to the user.
+Do **not** `git push` directly to `master`; always go through a PR so the
+squash-merge convention (and the conflict-avoidance below) holds. Bundle
+any `CLAUDE.md`/workflow doc updates into the same PR before merging.
+
 ## Git: avoid the self-inflicted merge conflict
 
 The repo squash-merges PRs to `master`. After a squash, the commit on master is a **new SHA** with the same content as the feature-branch commit. If a new task is built on top of the old feature-branch tip, git's 3-way merge sees the same line (e.g. `VERSION = '1.13'`) edited on both sides — once by master's squash, once by the new work — and flags a conflict even though only one author is involved.
