@@ -178,7 +178,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.23';
+    const VERSION = '1.24';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
@@ -498,6 +498,59 @@
         if (problem.difficulty <= 4) return 1;
         if (problem.difficulty <= 7) return 2;
         return 3;
+    };
+
+    // --- practice picker model --------------------------------------------
+    // Kid-facing metadata for the selection screen. Division is intentionally
+    // NOT called "division" and never shows ÷ (same rule as the in-game
+    // prompt — it's framed as "find the missing number").
+    const OP_META = {
+        mul: { symbol: '×',  name: 'Times',   accent: 'fuchsia' },
+        add: { symbol: '+',  name: 'Plus',    accent: 'emerald' },
+        sub: { symbol: '−',  name: 'Minus',   accent: 'sky'     },
+        div: { symbol: '?',  name: 'Mystery', accent: 'amber'   },
+    };
+
+    // Total distinct problems each op can ever generate, derived by walking
+    // the SAME operand constraints the generators use, so the proficiency
+    // denominator can never drift from what's actually drawable.
+    const opUniverse = (op) => {
+        const ids = new Set();
+        if (op === 'mul' || op === 'div') {
+            for (let a = 2; a <= 12; a++)
+                for (let b = 2; b <= 12; b++) ids.add(OPS[op].idOf(a, b));
+        } else if (op === 'add') {
+            for (let a = 11; a <= 91; a++)
+                for (let b = 2; b <= 9; b++)
+                    if ((a % 10) + b > 10 && a + b <= 100) ids.add(OPS.add.idOf(a, b));
+        } else if (op === 'sub') {
+            for (let a = 12; a <= 99; a++)
+                for (let b = 2; b <= 9; b++) {
+                    const ones = a % 10;
+                    if (ones >= 1 && ones < b) ids.add(OPS.sub.idOf(a, b));
+                }
+        }
+        return ids.size;
+    };
+    const OP_UNIVERSE = Object.fromEntries(Object.keys(OPS).map(op => [op, opUniverse(op)]));
+
+    // FSRS stability (in this app's compressed units) at which a single fact
+    // counts as fully "internalized". Reachable after a few clean recalls;
+    // partial stability counts proportionally so progress moves every answer.
+    const MASTERY_STABILITY = 8;
+
+    // 0..1 share of an op's whole problem space the kid has internalised.
+    // Each known card contributes min(1, stability/MASTERY_STABILITY); unseen
+    // problems contribute 0. This is what the menu buttons highlight.
+    const opProficiency = (op, deck) => {
+        const total = OP_UNIVERSE[op] || 0;
+        if (!total) return 0;
+        let mastered = 0;
+        for (const c of Object.values(deck || {})) {
+            if (c.op !== op) continue;
+            mastered += Math.min(1, Math.max(0, (c.stability || 0) / MASTERY_STABILITY));
+        }
+        return Math.min(1, mastered / total);
     };
 
     // Decompose a × b into typed sub-steps the kid can solve, ending with the original answer.
@@ -923,6 +976,21 @@
             && foursSteps[0].hint.includes("24"),
             "4 × ? = 24 → single skip-count step listing multiples of 4 up to 24");
 
+        // Practice picker: universe counts match the generators' constraints.
+        assert(OP_UNIVERSE.mul === 66, "mul universe = 66 distinct commutative facts (2..12)");
+        assert(OP_UNIVERSE.div === 121, "div universe = 121 ordered facts (2..12 × 2..12)");
+        assert(OP_UNIVERSE.add > 0 && OP_UNIVERSE.sub > 0, "add/sub universes are non-empty");
+        assert(opProficiency('mul', {}) === 0, "empty deck ⇒ 0% proficiency");
+        const mathDeck = {
+            'mul:2x2': { op: 'mul', stability: MASTERY_STABILITY * 2 }, // capped at 1
+            'mul:3x3': { op: 'mul', stability: MASTERY_STABILITY / 2 }, // counts as 0.5
+            'add:73+9': { op: 'add', stability: MASTERY_STABILITY },    // ignored for mul
+        };
+        const mulProf = opProficiency('mul', mathDeck);
+        assert(Math.abs(mulProf - 1.5 / 66) < 1e-9,
+            "proficiency sums per-card mastery (capped at 1) over the op's universe");
+        assert(opProficiency('mul', mathDeck) <= 1, "proficiency never exceeds 100%");
+
         // Roaming cat: every target stays on-screen.
         let catBad = 0;
         for (let i = 0; i < 300; i++) {
@@ -1147,6 +1215,98 @@
         );
     };
 
+    // Full class strings (no runtime string-building) so the Tailwind Play
+    // CDN reliably generates every accent variant it needs.
+    const ACCENT = {
+        fuchsia: { text: 'text-fuchsia-500', tile: 'border-fuchsia-200 hover:border-fuchsia-400' },
+        emerald: { text: 'text-emerald-500', tile: 'border-emerald-200 hover:border-emerald-400' },
+        sky:     { text: 'text-sky-500',     tile: 'border-sky-200 hover:border-sky-400'       },
+        amber:   { text: 'text-amber-500',   tile: 'border-amber-200 hover:border-amber-400'   },
+    };
+    // Proficiency → progress-bar fill. Tiered so the colour itself signals
+    // how internalised the op is, independent of which op it is.
+    const profBar = (pct) =>
+        pct >= 0.8 ? 'bg-emerald-400'
+        : pct >= 0.5 ? 'bg-amber-400'
+        : pct >= 0.2 ? 'bg-sky-400'
+        : 'bg-slate-300';
+
+    // Selection page. One tile per op, each showing how much of that op's
+    // whole problem space the kid has internalised, plus a "Mix" tile that
+    // practises everything (the engine's original variety-biased behaviour).
+    const PracticeMenu = ({ deck, coins, onPick }) => {
+        const ops = Object.keys(OPS);
+        let mAll = 0, uAll = 0;
+        for (const op of ops) {
+            uAll += OP_UNIVERSE[op];
+            mAll += opProficiency(op, deck) * OP_UNIVERSE[op];
+        }
+        const overall = uAll ? mAll / uAll : 0;
+
+        const Bar = ({ pct }) => (
+            <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden mt-3">
+                <div className={`h-full rounded-full transition-all duration-500 ${profBar(pct)}`}
+                     style={{ width: `${Math.round(pct * 100)}%` }} />
+            </div>
+        );
+
+        return (
+            <div className="min-h-screen p-4 md:p-8 font-sans text-slate-800 bg-slate-50">
+                <div className="max-w-3xl mx-auto flex justify-between items-center mb-8 bg-white p-4 rounded-3xl shadow-sm border border-purple-200">
+                    <div className="flex items-center gap-2">
+                        <div className="bg-indigo-100 p-2 rounded-xl"><Icon name="Trophy" className="text-indigo-600" /></div>
+                        <div>
+                            <h1 className="font-bold text-base md:text-lg leading-tight">What do you want to practice?</h1>
+                            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold whitespace-nowrap">v{VERSION}</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md">
+                        <Icon name="Wallet" className="text-yellow-900" />
+                        <span className="font-black text-2xl text-yellow-900">{coins}</span>
+                        <Icon name="Coins" className="text-yellow-700" />
+                    </div>
+                </div>
+
+                <main className="max-w-3xl mx-auto grid grid-cols-1 sm:grid-cols-2 gap-5">
+                    {ops.map(op => {
+                        const meta = OP_META[op];
+                        const acc = ACCENT[meta.accent];
+                        const pct = opProficiency(op, deck);
+                        const strong = pct >= 0.8;
+                        return (
+                            <button key={op} onClick={() => onPick(op)}
+                                    className={`text-left bg-white rounded-[2rem] p-6 border-4 ${acc.tile} shadow-lg hover:shadow-2xl hover:scale-[1.02] transition-all ${strong ? 'ring-4 ring-emerald-300' : ''}`}>
+                                <div className="flex items-center justify-between">
+                                    <span className={`text-6xl font-black ${acc.text}`}>{meta.symbol}</span>
+                                    <span className="text-3xl font-black text-slate-700">{Math.round(pct * 100)}%</span>
+                                </div>
+                                <p className="mt-2 font-black text-xl text-slate-700">{meta.name}</p>
+                                <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">
+                                    {strong ? 'Super strong!' : 'mastered'}
+                                </p>
+                                <Bar pct={pct} />
+                            </button>
+                        );
+                    })}
+
+                    <button onClick={() => onPick(null)}
+                            className="sm:col-span-2 text-left bg-indigo-600 hover:bg-indigo-700 rounded-[2rem] p-6 shadow-lg hover:shadow-2xl hover:scale-[1.01] transition-all text-white">
+                        <div className="flex items-center justify-between">
+                            <span className="text-5xl font-black">🎲</span>
+                            <span className="text-3xl font-black">{Math.round(overall * 100)}%</span>
+                        </div>
+                        <p className="mt-2 font-black text-xl">Mix it up!</p>
+                        <p className="text-xs text-indigo-200 uppercase tracking-widest font-bold">a bit of everything</p>
+                        <div className="w-full h-3 bg-indigo-400/40 rounded-full overflow-hidden mt-3">
+                            <div className="h-full rounded-full bg-white transition-all duration-500"
+                                 style={{ width: `${Math.round(overall * 100)}%` }} />
+                        </div>
+                    </button>
+                </main>
+            </div>
+        );
+    };
+
     const App = () => {
         const initialState = useRef(loadSavedState()).current;
         const [coins, setCoins] = useState(initialState.coins);
@@ -1173,6 +1333,11 @@
         // Bumped whenever the *displayed* pace ticks down,
         // which is the cat's only cue to visit.
         const [catVisit, setCatVisit] = useState(0);
+        // 'menu' = practice picker, 'game' = solving. Start at the picker so
+        // the kid chooses what to drill. `practiceOp` null = mixed (original
+        // variety-biased behaviour); otherwise the queue is restricted to it.
+        const [screen, setScreen] = useState('menu');
+        const [practiceOp, setPracticeOp] = useState(null);
         const prevPaceRef = useRef(null);
         // Wall-clock of the last cat summon; gates the 60s cooldown.
         const lastCatTriggerRef = useRef(0);
@@ -1194,6 +1359,7 @@
                 setFeedback('wrong');
                 const p = queue[0];
                 setBreakdown({ steps: OPS[p.op].strategy(p.a, p.b), idx: 0, reveal: false });
+                setScreen('game'); // don't strand the kid on the picker mid-mistake
             }
         }, []);
 
@@ -1261,7 +1427,11 @@
 
         const getNextFromDeck = useCallback((currentQueue) => {
             const now = Date.now();
-            const ops = Object.keys(OPS);
+            // A chosen op pins the whole queue to it; null = all ops (mixed).
+            // With a single op the imbalance/variety logic below collapses to
+            // a no-op (rarestOps === ops), so FSRS-due ordering still holds.
+            const ops = practiceOp ? [practiceOp] : Object.keys(OPS);
+            const opSet = new Set(ops);
 
             // Count cards per registered op so under-represented ops get boosted.
             // Without this, a long-standing op (mul) keeps producing due cards
@@ -1280,7 +1450,7 @@
 
             if (!wantVariety) {
                 const dueCards = Object.values(deck)
-                    .filter(card => card.nextReview <= now)
+                    .filter(card => opSet.has(card.op) && card.nextReview <= now)
                     .sort((a, b) => a.nextReview - b.nextReview);
                 const card = dueCards.find(c => !currentQueue.some(q => q.id === c.id));
                 if (card) return card;
@@ -1301,7 +1471,7 @@
             const op = eligibleOps[0];
             const { a, b } = OPS[op].generate();
             return makeCard(op, a, b);
-        }, [deck]);
+        }, [deck, practiceOp]);
 
         // Only fill if empty and not just loaded from storage
         useEffect(() => {
@@ -1444,6 +1614,22 @@
             setTimeout(() => setAnimatingCoins(prev => prev.filter(c => !newCoins.find(nc => nc.id === c.id))), 1100);
         };
 
+        const startPractice = (op) => {
+            setPracticeOp(op);
+            // Drop any cards from a previous selection so the fill effect
+            // rebuilds the queue under the new op filter.
+            setQueue([]);
+            setBreakdown(null);
+            setFeedback(null);
+            setStreak(0);
+            setInputValue('');
+            setScreen('game');
+        };
+
+        if (screen === 'menu') {
+            return <PracticeMenu deck={deck} coins={coins} onPick={startPractice} />;
+        }
+
         if (queue.length === 0) return null;
         const currentProblem = queue[0];
 
@@ -1452,10 +1638,15 @@
                  style={{ backgroundColor: getEnergyColor(streak) }}>
                 <div className="max-w-4xl mx-auto flex justify-between items-center mb-8 bg-white p-4 rounded-3xl shadow-sm border border-purple-200">
                     <div className="flex items-center gap-2">
-                        <div className="bg-indigo-100 p-2 rounded-xl"><Icon name="Trophy" className="text-indigo-600" /></div>
-                        <div>
-                            <h1 className="font-bold text-lg leading-tight">Math</h1>
-                            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">v{VERSION}</p>
+                        <button onClick={() => setScreen('menu')} aria-label="Choose what to practice"
+                                className="bg-indigo-100 hover:bg-indigo-200 active:scale-95 p-2 rounded-xl transition-all">
+                            <Icon name="LayoutGrid" className="text-indigo-600" />
+                        </button>
+                        <div className="min-w-0">
+                            <h1 className="font-bold text-base md:text-lg leading-tight whitespace-nowrap">
+                                {practiceOp ? `${OP_META[practiceOp].symbol} ${OP_META[practiceOp].name}` : 'Mix'}
+                            </h1>
+                            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold whitespace-nowrap">v{VERSION}</p>
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
