@@ -90,6 +90,12 @@
                     <input type="radio" name="currency" id="cur-rub" value="RUB">
                     <label for="cur-rub">RUB</label>
                 </div>
+                <label id="amexRow" class="mt-2 flex items-center gap-2 hidden">
+                    <input type="checkbox" id="amex"
+                        class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="text-sm text-slate-700">Mit CHF Amex-Karte bezahlt — in CHF umrechnen</span>
+                </label>
+                <p id="amexPreview" class="text-xs text-slate-500 mt-1 hidden"></p>
             </div>
 
             <div>
@@ -145,11 +151,22 @@
         const amountEl = document.getElementById('amount');
         const noteEl = document.getElementById('note');
         const categoryEl = document.getElementById('category');
+        const amexRow = document.getElementById('amexRow');
+        const amexEl = document.getElementById('amex');
+        const amexPreviewEl = document.getElementById('amexPreview');
+
+        // EUR charged on a CHF Amex card: convert to CHF at the live rate
+        // plus a fixed card commission.
+        const AMEX_COMMISSION = 0.025;
 
         function todayISO() {
             const d = new Date();
             const tz = d.getTimezoneOffset() * 60000;
             return new Date(d - tz).toISOString().slice(0, 10);
+        }
+
+        function selectedCurrency() {
+            return document.querySelector('input[name="currency"]:checked').value;
         }
 
         function resetToDefaults() {
@@ -159,7 +176,54 @@
             document.querySelector(`input[name="currency"][value="${DEFAULTS.currency}"]`).checked = true;
             document.querySelector(`input[name="paidBy"][value="${DEFAULTS.paidBy}"]`).checked = true;
             dateEl.value = todayISO();
+            amexEl.checked = false;
+            syncAmexUI();
         }
+
+        // EUR->CHF rate cached per session (it barely moves within one).
+        let eurChfRate = null;
+        async function getEurChfRate() {
+            if (eurChfRate) return eurChfRate;
+            const res = await fetch('https://api.frankfurter.app/latest?from=EUR&to=CHF');
+            if (!res.ok) throw new Error('Wechselkurs nicht verfügbar');
+            const data = await res.json();
+            const rate = data && data.rates && data.rates.CHF;
+            if (!rate) throw new Error('Wechselkurs nicht verfügbar');
+            eurChfRate = { rate, date: data.date };
+            return eurChfRate;
+        }
+
+        function toChf(amountEur, rate) {
+            return Math.round(amountEur * rate * (1 + AMEX_COMMISSION) * 100) / 100;
+        }
+
+        async function syncAmexUI() {
+            const isEur = selectedCurrency() === 'EUR';
+            amexRow.classList.toggle('hidden', !isEur);
+            if (!isEur) amexEl.checked = false;
+            const active = isEur && amexEl.checked;
+            amexPreviewEl.classList.toggle('hidden', !active);
+            if (!active) { amexPreviewEl.textContent = ''; return; }
+            const eur = parseFloat(amountEl.value);
+            if (!Number.isFinite(eur) || eur <= 0) {
+                amexPreviewEl.textContent = 'Betrag in EUR eingeben…';
+                return;
+            }
+            amexPreviewEl.textContent = 'Wechselkurs lädt…';
+            try {
+                const { rate, date } = await getEurChfRate();
+                amexPreviewEl.textContent =
+                    `${eur} EUR → ${toChf(eur, rate).toFixed(2)} CHF `
+                    + `(Kurs ${rate} vom ${date} + 2,5%)`;
+            } catch (_) {
+                amexPreviewEl.textContent = 'Wechselkurs konnte nicht geladen werden.';
+            }
+        }
+
+        document.querySelectorAll('input[name="currency"]').forEach(
+            el => el.addEventListener('change', syncAmexUI));
+        amexEl.addEventListener('change', syncAmexUI);
+        amountEl.addEventListener('input', () => { if (amexEl.checked) syncAmexUI(); });
 
         resetToDefaults();
 
@@ -191,6 +255,14 @@
             };
 
             try {
+                if (amexEl.checked && payload.currency === 'EUR') {
+                    const eur = payload.amount;
+                    const { rate } = await getEurChfRate();
+                    payload.amount = toChf(eur, rate);
+                    payload.currency = 'CHF';
+                    payload.note = [payload.note, eur + ' EUR'].filter(Boolean).join(' ');
+                }
+
                 const res = await fetch(WEB_APP_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
