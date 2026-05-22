@@ -188,7 +188,7 @@
         async function getRateToChf(from) {
             if (rateCache[from]) return rateCache[from];
             const res = await fetch(
-                `https://api.frankfurter.app/latest?from=${from}&to=CHF`);
+                `https://api.frankfurter.dev/v1/latest?base=${from}&symbols=CHF`);
             if (!res.ok) throw new Error('Wechselkurs nicht verfügbar');
             const data = await res.json();
             const rate = data && data.rates && data.rates.CHF;
