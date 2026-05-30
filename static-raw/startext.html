@@ -196,7 +196,7 @@ const FIELD_TOTAL = 1500;   // minerals per base mineral field
 
 const C = {
   scv:      { hp: 60,   dmg: 5, atk: 1.5, cost: 50,  build: 12 },
-  cc:       { hp: 1500, supply: 10, trainCost: 50, trainTime: 12 },
+  cc:       { hp: 1500, supply: 10, trainCost: 50, trainTime: 12, queueMax: 5 },
   depot:    { hp: 400,  cost: 100, build: 25, supply: 8 },
   barracks: { hp: 1000, cost: 150, build: 46 },
 };
@@ -234,7 +234,7 @@ function init() {
 function spawnBase(owner, node) {
   state.buildings.push({
     id: idSeq++, owner, node, type: "cc",
-    hp: C.cc.hp, maxHp: C.cc.hp, construct: null, train: null,
+    hp: C.cc.hp, maxHp: C.cc.hp, construct: null, train: null, queued: 0,
   });
   for (let i = 0; i < 4; i++) newSCV(owner, node);
 }
@@ -271,9 +271,10 @@ function supplyCap(owner) {
   return cap;
 }
 function supplyUsed(owner) {
-  // Each SCV uses 1; an in-progress CC training reserves 1 so we never overshoot.
+  // Each SCV uses 1; the active + queued CC trainees reserve 1 each so we never overshoot.
   let used = state.units.filter(u => u.owner === owner).length;
-  for (const b of buildingsOf(owner)) if (b.type === "cc" && b.train) used++;
+  for (const b of buildingsOf(owner))
+    if (b.type === "cc") used += (b.train ? 1 : 0) + b.queued;
   return used;
 }
 const hasCompletedDepot = owner =>
@@ -322,6 +323,8 @@ function buildingStep() {
       if (b.train.progress >= b.train.total) {
         b.train = null;
         newSCV(b.owner, b.node);
+        // Start the next queued SCV (minerals/supply were already reserved on queue).
+        if (b.queued > 0) { b.queued--; b.train = { progress: 0, total: C.cc.trainTime }; }
       }
     }
   }
@@ -341,21 +344,29 @@ function unitStep() {
 }
 
 function combatStep() {
-  // Idle SCVs at a node holding enemies attack a random enemy object there.
+  // Idle SCVs at a node holding enemies auto-attack — focusing whatever can shoot back.
   for (const u of state.units) {
     if (u.task !== "idle" || u.node < 0) { u.atkCd = 0; continue; }
-    const targets = targetsAt(enemy(u.owner), u.node);
-    if (!targets.length) { u.atkCd = 0; continue; }
+    if (!targetsAt(enemy(u.owner), u.node).length) { u.atkCd = 0; continue; }
     u.atkCd -= 1;
     let guard = 0;
     while (u.atkCd <= 0 && guard++ < 3) {
-      const live = targetsAt(enemy(u.owner), u.node);
-      if (!live.length) break;
-      const t = live[(Math.random() * live.length) | 0];
+      const t = pickTarget(enemy(u.owner), u.node);
+      if (!t) break;
       t.hp -= C.scv.dmg;
       u.atkCd += C.scv.atk;
     }
   }
+}
+
+// Engine targeting (not player-controlled): prioritise enemies that can deal damage
+// back — i.e. idle (fighting) SCVs — and only then mop up miners, builders, buildings.
+function pickTarget(owner, node) {
+  const live = targetsAt(owner, node);
+  if (!live.length) return null;
+  const threats = live.filter(o => o.task === "idle"); // buildings/miners can't fight back
+  const pool = threats.length ? threats : live;
+  return pool[(Math.random() * pool.length) | 0];
 }
 
 // Enemy units (any task) + buildings present at a node — all are valid targets.
@@ -407,13 +418,18 @@ function endGame(result) {
 
 /* ------------------------------- Actions ----------------------------- */
 // All actions are validated again here so the UI can never force an illegal move.
-function trainSCV(owner) {
-  const cc = state.buildings.find(b => b.owner === owner && b.type === "cc" && !b.construct && !b.train);
+// Queue an SCV at the CC. Minerals + supply are reserved up front, so a queued
+// SCV is guaranteed to build. maxQueue lets the bot train only when truly idle.
+function queueSCV(owner, maxQueue = C.cc.queueMax) {
+  const cc = state.buildings.find(b => b.owner === owner && b.type === "cc" && !b.construct);
   if (!cc) return;
+  const inQueue = (cc.train ? 1 : 0) + cc.queued; // active + waiting
+  if (inQueue >= maxQueue) return;
   if (state.minerals[owner] < C.cc.trainCost) return;
   if (supplyUsed(owner) >= supplyCap(owner)) return;
   state.minerals[owner] -= C.cc.trainCost;
-  cc.train = { progress: 0, total: C.cc.trainTime };
+  if (!cc.train) cc.train = { progress: 0, total: C.cc.trainTime };
+  else cc.queued++;
 }
 
 function freeIdle(owner, node) {
@@ -483,7 +499,7 @@ function botEval() {
     startBuilding(BOT, home, "depot");
   }
   // Train SCVs whenever the CC is free and supply allows.
-  if (min() >= C.cc.trainCost && supplyUsed(BOT) < supplyCap(BOT)) trainSCV(BOT);
+  if (min() >= C.cc.trainCost && supplyUsed(BOT) < supplyCap(BOT)) queueSCV(BOT, 1);
   // Tech up to a Barracks once a depot is done.
   if (hasCompletedDepot(BOT) && min() >= C.barracks.cost && !hasBarracks(BOT) &&
       !state.buildings.some(b => b.owner === BOT && b.type === "barracks" && b.construct)) {
@@ -582,7 +598,7 @@ function appendForces(container, owner, node, interactive) {
     row.className = "row" + (interactive && b.type === "cc" ? "" : " static");
     let meta = "";
     if (b.construct) meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%${progBar(b.construct.progress, b.construct.total)}`;
-    else if (b.train) meta = `Training SCV ${Math.floor(b.train.progress / b.train.total * 100)}%${progBar(b.train.progress, b.train.total)}`;
+    else if (b.train) meta = `Training SCV ${Math.floor(b.train.progress / b.train.total * 100)}%${b.queued ? ` (+${b.queued} queued)` : ""}${progBar(b.train.progress, b.train.total)}`;
     else if (b.type === "cc") meta = `Idle · supply +${C.cc.supply}`;
     else meta = `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
     row.innerHTML = `${svgIcon(b.type)}<div class="body">
@@ -659,21 +675,23 @@ function renderSheet() {
   if (sel.kind === "cc") {
     const cc = state.buildings.find(b => b.id === sel.ref);
     if (!cc) { closeSheet(); return; }
-    const busy = cc.train || cc.construct;
+    const inQueue = (cc.train ? 1 : 0) + cc.queued; // active + waiting
+    const queueFull = inQueue >= C.cc.queueMax;
     const supplyOK = supplyUsed(HUMAN) < supplyCap(HUMAN);
     const afford = mineNow >= C.cc.trainCost;
-    const dis = busy || !supplyOK || !afford;
-    let note = busy ? "Busy training." : !supplyOK ? "Supply capped — build a Supply Depot."
+    const dis = cc.construct || queueFull || !supplyOK || !afford;
+    let note = cc.construct ? "Under construction." : queueFull ? `Queue full (${C.cc.queueMax} max).`
+      : !supplyOK ? "Supply capped — build a Supply Depot."
       : !afford ? "Not enough minerals." : "";
     sheet.innerHTML = `
       <h2>Command Center</h2>
-      <div class="sheet-sub">${NODE_NAMES[sel.node]} · HP ${Math.ceil(cc.hp)}/${cc.maxHp}</div>
+      <div class="sheet-sub">${NODE_NAMES[sel.node]} · HP ${Math.ceil(cc.hp)}/${cc.maxHp} · Queue ${inQueue}/${C.cc.queueMax}</div>
       <button class="act" ${dis ? "disabled" : ""} id="a-train">
         Train SCV <span class="cost">— ${C.cc.trainCost} min · ${C.cc.trainTime}s · +1 supply</span>
       </button>
       ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
       <button class="act-close" id="a-close">Close</button>`;
-    bind("a-train", () => { trainSCV(HUMAN); render(); });
+    bind("a-train", () => { queueSCV(HUMAN); refreshSheet(); });
   } else {
     // SCV group sheet.
     const node = sel.node;
