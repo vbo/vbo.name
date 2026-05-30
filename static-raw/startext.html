@@ -247,10 +247,14 @@ const MINE_RATE = 0.7;      // minerals per mining SCV per second
 const FIELD_TOTAL = 12000;  // 8 patches × 1500 — standard BW main base
 const SUPPLY_MAX = 200;     // BW hard cap
 
+// `range` drives the melee/ranged model: when two units fight, a unit must
+// "close the distance" before it can strike, waiting max(0, enemyRange - ownRange)
+// ticks. So a ranged unit (marine) lands free hits while a melee unit (SCV, range 0)
+// advances. Buildings have no range entry → treated as 0.
 const C = {
-  scv:     { hp: 60,  dmg: 5, atk: 1.5, cost: 50, build: 12 },
+  scv:     { hp: 60,  dmg: 5, atk: 1.5, cost: 50, build: 12, range: 0 }, // melee
   // Marine: BW stats — 40 HP, 6 dmg, 15-frame cooldown (~0.9 s at our tick rate)
-  marine:  { hp: 40,  dmg: 6, atk: 0.9, cost: 50, build: 24, queueMax: 5 },
+  marine:  { hp: 40,  dmg: 6, atk: 0.9, cost: 50, build: 24, queueMax: 5, range: 3 }, // ranged
   cc:      { hp: 1500, supply: 10, trainCost: 50, trainTime: 12, queueMax: 5 },
   depot:   { hp: 400,  cost: 100, build: 25, supply: 8 },
   barracks:{ hp: 1000, cost: 150, build: 46 },
@@ -311,13 +315,13 @@ function spawnBase(owner, node) {
 
 function newSCV(owner, node) {
   const u = { id: idSeq++, type: "scv", owner, node, task: "idle",
-    hp: C.scv.hp, maxHp: C.scv.hp, atkCd: 0, buildingId: null, transit: null };
+    hp: C.scv.hp, maxHp: C.scv.hp, atkCd: 0, engaged: 0, buildingId: null, transit: null };
   state.units.push(u); return u;
 }
 
 function newMarine(owner, node) {
   const u = { id: idSeq++, type: "marine", owner, node, task: "idle",
-    hp: C.marine.hp, maxHp: C.marine.hp, atkCd: 0, buildingId: null, transit: null };
+    hp: C.marine.hp, maxHp: C.marine.hp, atkCd: 0, engaged: 0, buildingId: null, transit: null };
   state.units.push(u); return u;
 }
 
@@ -465,11 +469,22 @@ function unitStep() {
   }
 }
 
+// A unit's weapon reach; buildings (no entry) and melee units are 0.
+const unitRange = u => (C[u.type] && C[u.type].range) || 0;
+
 function combatStep() {
   // Idle units (SCVs and Marines) auto-attack, focusing whatever can shoot back.
+  // Melee/ranged is modelled by a "closing the distance" delay: once engaged, a
+  // unit can't strike until it has spent max(0, enemyRange - ownRange) ticks
+  // closing, so a ranged unit lands free hits while a melee unit advances.
   for (const u of state.units) {
-    if (u.task !== "idle" || u.node < 0) { u.atkCd = 0; continue; }
-    if (!targetsAt(enemy(u.owner), u.node).length) { u.atkCd = 0; continue; }
+    if (u.task !== "idle" || u.node < 0) { u.atkCd = 0; u.engaged = 0; continue; }
+    const foes = targetsAt(enemy(u.owner), u.node);
+    if (!foes.length) { u.atkCd = 0; u.engaged = 0; continue; }
+    u.engaged = (u.engaged || 0) + 1;
+    const enemyRange = foes.reduce((m, o) => Math.max(m, unitRange(o)), 0);
+    const closeDelay = Math.max(0, enemyRange - unitRange(u));
+    if (u.engaged <= closeDelay) continue; // still closing — can't strike yet
     const cfg = u.type === "marine" ? C.marine : C.scv;
     u.atkCd -= 1;
     let guard = 0;
@@ -1413,6 +1428,37 @@ function runTests() {
       run(TRAVEL_TIME);
       eq(u.node, AWAY, "arrived at enemy base");
       eq(u.task, "idle", "arrives idle");
+    },
+    "melee/ranged: marine strikes first while the SCV closes the distance"() {
+      resetState(1);
+      state.buildings = []; // isolate the duel
+      const m = newMarine(HUMAN, AWAY); m.task = "idle";
+      const s = newSCV(BOT, AWAY);      s.task = "idle";
+      state.units = [m, s];
+      const mHp0 = m.hp, sHp0 = s.hp;
+      tick(); // tick 1: SCV is still closing (range 0 vs marine range 3 → delay 3)
+      ok(s.hp < sHp0, "marine damages the closing SCV");
+      eq(m.hp, mHp0, "SCV deals no damage while still closing");
+    },
+    "melee/ranged: SCV fights back once it has closed"() {
+      resetState(1);
+      state.buildings = [];
+      const m = newMarine(HUMAN, AWAY); m.task = "idle";
+      const s = newSCV(BOT, AWAY);      s.task = "idle";
+      state.units = [m, s];
+      const mHp0 = m.hp;
+      run(C.marine.range + 1); // past the closing window
+      ok(m.hp < mHp0, "SCV deals damage after closing the distance");
+    },
+    "melee/ranged: marine vs marine has no closing delay (symmetric)"() {
+      resetState(1);
+      state.buildings = [];
+      const a = newMarine(HUMAN, AWAY); a.task = "idle";
+      const b = newMarine(BOT, AWAY);   b.task = "idle";
+      state.units = [a, b];
+      const aHp0 = a.hp, bHp0 = b.hp;
+      tick();
+      ok(a.hp < aHp0 && b.hp < bHp0, "equal-range units trade from tick 1");
     },
     "fog: enemy buildings unknown until scouted, then remembered"() {
       resetState(1);
