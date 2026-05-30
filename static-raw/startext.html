@@ -791,6 +791,33 @@ function appendSeenBuildings(container, snap) {
   }
 }
 
+// Pure: describe a group of barracks as text segments. Completed and
+// under-construction barracks are reported *independently*, so newly-started
+// barracks stay visible even while finished ones are busy training.
+function barracksMeta(allRax, interactive) {
+  const readyRax = allRax.filter(b => !b.construct);
+  const underC = allRax.filter(b => b.construct);
+  const segs = [];
+  if (readyRax.length) {
+    if (interactive) {
+      const totalQ = readyRax.reduce((s, b) => s + (b.train ? 1 : 0) + (b.queued || 0), 0);
+      segs.push(totalQ ? `Training · ${totalQ} queued` : "Idle · tap to train");
+    } else {
+      const totHP = readyRax.reduce((s, b) => s + Math.ceil(b.hp), 0);
+      const totMax = readyRax.reduce((s, b) => s + b.maxHp, 0);
+      segs.push(`HP ${totHP}/${totMax}`);
+    }
+  }
+  if (underC.length) {
+    // Closest-to-done builder represents the in-construction group.
+    const lead = underC.slice().sort((a, b) =>
+      (b.construct.progress / b.construct.total) - (a.construct.progress / a.construct.total))[0];
+    const pct = Math.floor(lead.construct.progress / lead.construct.total * 100);
+    segs.push(`${underC.length} building… ${pct}%`);
+  }
+  return segs;
+}
+
 // Returns true if anything was rendered. `interactive` enables tap-to-order.
 function appendForces(container, owner, node, interactive) {
   let any = false;
@@ -845,23 +872,16 @@ function appendForces(container, owner, node, interactive) {
     const tappable = interactive && readyRax.length > 0;
     const row = document.createElement(tappable ? "button" : "div");
     row.className = "row" + (tappable ? "" : " static");
-    let meta;
-    if (!readyRax.length) {
-      const b0 = allRax[0];
-      meta = `Building… ${Math.floor(b0.construct.progress / b0.construct.total * 100)}%${interactive ? progBar(b0.construct.progress, b0.construct.total) : ""}`;
-    } else if (interactive) {
-      const totalQ = readyRax.reduce((s, b) => s + (b.train ? 1 : 0) + (b.queued || 0), 0);
-      if (totalQ) {
-        const lead = readyRax.filter(b => b.train).sort((a, b) => b.train.progress - a.train.progress).pop();
-        meta = `Training · ${totalQ} queued${lead ? progBar(lead.train.progress, lead.train.total) : ""}`;
-      } else {
-        meta = "Idle · tap to train Marines";
+    let meta = barracksMeta(allRax, interactive).join(" · ");
+    // Progress bar: prefer the leading trainee, else the leading builder.
+    const underC = allRax.filter(b => b.construct);
+    if (interactive) {
+      const trainLead = readyRax.filter(b => b.train).sort((a, b) => b.train.progress - a.train.progress)[0];
+      if (trainLead) meta += progBar(trainLead.train.progress, trainLead.train.total);
+      else if (underC.length) {
+        const bl = underC.slice().sort((a, b) => b.construct.progress - a.construct.progress)[0];
+        meta += progBar(bl.construct.progress, bl.construct.total);
       }
-    } else {
-      const totHP = allRax.reduce((s, b) => s + Math.ceil(b.hp), 0);
-      const totMax = allRax.reduce((s, b) => s + b.maxHp, 0);
-      meta = readyRax.length ? `HP ${totHP}/${totMax}` :
-        `Building… ${Math.floor(allRax[0].construct.progress / allRax[0].construct.total * 100)}%`;
     }
     row.innerHTML = `${svgIcon("barracks")}<div class="body">
         <div class="name">Barracks${allRax.length > 1 ? ` ×${allRax.length}` : ""}</div>
@@ -1241,6 +1261,24 @@ function runTests() {
       queueMarine(HUMAN, HOME, r1.id);
       queueMarine(HUMAN, HOME, r2.id);
       ok(r1.train && r2.train, "both barracks training at once");
+    },
+    "barracks group shows under-construction even when others are training (regression)"() {
+      const train = { progress: 5, total: C.marine.build };
+      const ready = [
+        { type: "barracks", hp: 1000, maxHp: 1000, construct: null, train, queued: 1 },
+        { type: "barracks", hp: 1000, maxHp: 1000, construct: null, train: null, queued: 0 },
+      ];
+      const building = [
+        { type: "barracks", hp: 500, maxHp: 1000, construct: { progress: 10, total: C.barracks.build } },
+        { type: "barracks", hp: 200, maxHp: 1000, construct: { progress: 3, total: C.barracks.build } },
+      ];
+      const segs = barracksMeta(ready.concat(building), true);
+      ok(segs.some(s => /building/.test(s)), "under-construction barracks reported alongside training");
+      ok(segs.some(s => /2 building/.test(s)), "counts both in-construction barracks");
+      ok(segs.some(s => /Training/.test(s)), "still reports the training ones");
+      // Only construction in progress → must still report it.
+      const onlyBuilding = barracksMeta(building, true);
+      ok(onlyBuilding.some(s => /2 building/.test(s)), "all-building group shows count");
     },
     "Marine and SCV deal their canon damage per hit"() {
       resetState(1);
