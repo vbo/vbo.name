@@ -299,6 +299,7 @@ function spawnBase(owner, node) {
   state.buildings.push({
     id: idSeq++, owner, node, type: "cc",
     hp: C.cc.hp, maxHp: C.cc.hp, construct: null, train: null, queued: 0,
+    rally: "mining", // newborn SCVs auto-mine by default; toggle to "idle" in the CC sheet
   });
   for (let i = 0; i < 4; i++) newSCV(owner, node);
 }
@@ -424,7 +425,9 @@ function buildingStep() {
       if (b.train.progress >= b.train.total) {
         b.train = null;
         if (b.type === "cc") {
-          newSCV(b.owner, b.node);
+          const scv = newSCV(b.owner, b.node);
+          // Rally: send the newborn to mine unless the patch is dry or rally is "idle".
+          if (b.rally === "mining" && state.field[b.node] > 0) scv.task = "mining";
           if (b.queued > 0) { b.queued--; b.train = { progress: 0, total: C.cc.trainTime }; }
         } else if (b.type === "barracks") {
           newMarine(b.owner, b.node);
@@ -960,6 +963,7 @@ function renderSheet() {
       : inQ >= C.cc.queueMax ? `Queue full (${C.cc.queueMax} max).`
       : !supplyOK ? "Supply capped — build a Supply Depot."
       : !afford ? `Need ${C.cc.trainCost} 💎.` : "";
+    const rallyMining = cc.rally === "mining";
     sheet.innerHTML = `
       <h2>Command Center</h2>
       <div class="sheet-sub">${NODE_NAMES[sel.node]} · HP ${Math.ceil(cc.hp)}/${cc.maxHp} · Queue ${inQ}/${C.cc.queueMax}</div>
@@ -967,8 +971,12 @@ function renderSheet() {
         Train SCV <span class="cost">— ${C.cc.trainCost} 💎 · ${C.cc.trainTime}s · +1 supply</span>
       </button>
       ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
+      <button class="act secondary" id="a-rally">
+        Rally: ${rallyMining ? "⛏️ Mine" : "🛑 Idle"} <span class="cost">— new SCVs ${rallyMining ? "go mining" : "stay idle"}</span>
+      </button>
       <button class="act-close" id="a-close">Close</button>`;
     bind("a-train", () => { queueSCV(HUMAN); refreshSheet(); });
+    bind("a-rally", () => { cc.rally = rallyMining ? "idle" : "mining"; refreshSheet(); });
 
   } else if (sel.kind === "barracks" || sel.kind === "barracks-group") {
     const allRax = buildingsOf(HUMAN, sel.node).filter(b => b.type === "barracks" && !b.construct);
@@ -1139,6 +1147,28 @@ function runTests() {
       eq(state.minerals.human, 0, "minerals spent on SCV");
       run(C.cc.trainTime);
       eq(unitsOf(HUMAN, HOME, null, "scv").length, 5, "SCV produced after 12s");
+    },
+    "CC rally=mining sends newborn SCVs to mine; rally=idle keeps them idle"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      const cc1 = cc(HUMAN);
+      eq(cc1.rally, "mining", "rally defaults to mining");
+      queueSCV(HUMAN);
+      run(C.cc.trainTime);
+      ok(unitsOf(HUMAN, HOME, "mining", "scv").length >= 1, "newborn auto-mines on rally=mining");
+      cc1.rally = "idle";
+      const idleBefore = unitsOf(HUMAN, HOME, "idle", "scv").length;
+      queueSCV(HUMAN);
+      run(C.cc.trainTime);
+      eq(unitsOf(HUMAN, HOME, "idle", "scv").length, idleBefore + 1, "newborn stays idle on rally=idle");
+    },
+    "CC rally=mining yields idle SCV when patch is dry"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      state.field[HOME] = 0; // dry
+      queueSCV(HUMAN);
+      run(C.cc.trainTime);
+      ok(unitsOf(HUMAN, HOME, "mining", "scv").length === 0, "no mining when field empty");
     },
     "CC queue caps at 5 and reserves supply"() {
       resetState(1);
