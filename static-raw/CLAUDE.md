@@ -41,3 +41,17 @@ Git's `--reapply-cherry-picks` detection automatically drops commits whose conte
 - `VERSION` (top of file) bumps by 0.01 on every merge to master so the kid can tell builds apart. Bump it as part of the change, not as a follow-up commit.
 - `runTests()` runs on page load and logs to the browser console. Add asserts when adding behaviour — there's no separate test runner.
 - Detailed architecture / scheduling / strategy notes live in the top-of-file block comment inside the HTML itself.
+
+## startext.html specifically
+
+- Single HTML file, no build step, no dependencies — vanilla JS mini-RTS.
+- The simulation is **DOM-free and deterministic**: `resetState(seed)` builds state, `tick()` advances it. All DOM/timer touches are guarded by `typeof document !== "undefined"`, and randomness goes through a seedable `rng()` (call `seedRng(n)`). This is what makes headless tests possible.
+- **Tests live in the same file** (`runTests()` near the bottom). Run them headless and autonomously:
+
+  ```
+  cd static-raw
+  sed -n '/<script>/,/<\/script>/p' startext.html | sed '1d;$d' | node -
+  ```
+
+  Prints `N passed, M failed` and exits non-zero on failure (~70ms). In a browser, open `startext.html?test` for the same report instead of the game.
+- **Add an assert in `runTests()` whenever you add behaviour.** Each test does `resetState(seed)` then drives `tick()`; helpers (`ok`/`eq`/`near`/`run`) are defined at the top of the function. Combat auto-targets *threats* (idle units) first, so isolate buildings/units in setup when testing a specific interaction.

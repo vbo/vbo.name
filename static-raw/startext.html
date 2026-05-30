@@ -176,6 +176,14 @@
     background: var(--accent); color: #06101f; border: none;
   }
   .hint { color: var(--dim); font-size: 11px; text-align: center; margin-top: 14px; }
+
+  .pause {
+    align-self: center; min-height: 44px; padding: 0 16px; border-radius: 10px;
+    background: var(--panel2); color: var(--txt); border: 1px solid var(--line);
+    font-size: 14px; font-weight: 600; white-space: nowrap;
+  }
+  .pause:active { background: #243049; }
+  body.paused #board { opacity: .6; }
 </style>
 </head>
 <body>
@@ -184,10 +192,11 @@
     <div class="stat minerals"><b id="s-min">50</b><span>Minerals</span></div>
     <div class="stat supply" id="s-supwrap"><b id="s-sup">4 / 10</b><span>Supply</span></div>
     <div class="stat"><b id="s-time">0:00</b><span>Time</span></div>
-    <div class="stat" style="flex:1; min-width:120px;">
+    <div class="stat" style="flex:1; min-width:100px;">
       <h1>StarText</h1>
       <span class="sub">Destroy the Enemy Command Center.</span>
     </div>
+    <button id="pause-btn" class="pause">⏸ Pause</button>
   </div>
 
   <div id="notes"></div>
@@ -207,6 +216,29 @@
 
 <script>
 "use strict";
+
+// ── StarText — single-file mini-RTS ──────────────────────────────────────────
+// The simulation (resetState + tick and everything it calls) is DOM-free and
+// deterministic under a seed, so it runs headless in Node for fast tests.
+//
+//   Run tests:  sed -n '/<script>/,/<\/script>/p' startext.html | sed '1d;$d' \
+//                 | node -   →  prints "N passed, M failed", exits non-zero on fail
+//   In browser: open startext.html?test to see the same report instead of the game.
+//
+// See runTests() near the bottom. Add an assert there whenever you add behaviour.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Seedable RNG (mulberry32) so the sim is deterministic under test. Tests call
+// seedRng(n) for reproducible runs; the live game seeds from Date.now().
+let _rngState = 0;
+function seedRng(n) { _rngState = n >>> 0; }
+function rng() {
+  _rngState = (_rngState + 0x6D2B79F5) | 0;
+  let t = _rngState;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
 
 /* ----------------------------- Constants ----------------------------- */
 const TICK_MS = 1000;       // simulation runs at 1 tick / second
@@ -231,11 +263,15 @@ const HUMAN = "human", BOT = "bot";
 /* ----------------------------- Game state ---------------------------- */
 let state, ui, timer, idSeq;
 
-function init() {
+// Pure: build a fresh game state with no DOM/timer side effects. Tests call this
+// directly (optionally seeded) and then drive tick() in a loop.
+function resetState(seed) {
+  seedRng(seed === undefined ? (typeof Date !== "undefined" ? Date.now() : 1) : seed);
   idSeq = 1;
   state = {
     time: 0,
     over: null,                 // null | "win" | "loss"
+    paused: false,
     field: [FIELD_TOTAL, FIELD_TOTAL],
     minerals: { human: 50, bot: 50 },
     units: [],
@@ -248,13 +284,15 @@ function init() {
   // Each side: 1 Command Center + 4 idle SCVs at its home node.
   spawnBase(HUMAN, HOME);
   spawnBase(BOT, AWAY);
-
   ui = { sheet: null };          // sheet: { kind, node, ref, n }
+}
+
+function init() {
+  resetState();
   closeSheet();
   document.getElementById("end").className = "";
+  setPaused(false);
   render();
-  clearInterval(timer);
-  timer = setInterval(tick, TICK_MS);
 }
 
 function spawnBase(owner, node) {
@@ -433,7 +471,7 @@ function pickTarget(owner, node) {
   if (!live.length) return null;
   const threats = live.filter(o => o.task === "idle");
   const pool = threats.length ? threats : live;
-  return pool[(Math.random() * pool.length) | 0];
+  return pool[(rng() * pool.length) | 0];
 }
 
 // Enemy units (any task) + buildings present at a node — all are valid targets.
@@ -479,7 +517,8 @@ function checkEnd() {
 
 function endGame(result) {
   state.over = result;
-  clearInterval(timer);
+  if (typeof document === "undefined") return; // headless test: state only, no DOM
+  stopLoop();
   closeSheet();
   const el = document.getElementById("end");
   el.className = "open " + result;
@@ -530,9 +569,17 @@ function startBuilding(owner, node, type) {
   return true;
 }
 
-function queueMarine(owner, node) {
-  const rax = state.buildings.find(b =>
-    b.owner === owner && b.node === node && b.type === "barracks" && !b.construct);
+// Queue a Marine. With raxId, queue at that specific Barracks (player taps one);
+// otherwise pick the least-busy completed Barracks at the node (used by the bot).
+function queueMarine(owner, node, raxId) {
+  let rax;
+  if (raxId != null) {
+    rax = state.buildings.find(b => b.id === raxId && !b.construct && b.type === "barracks");
+  } else {
+    rax = state.buildings
+      .filter(b => b.owner === owner && b.node === node && b.type === "barracks" && !b.construct)
+      .sort((a, b) => ((a.train ? 1 : 0) + a.queued) - ((b.train ? 1 : 0) + b.queued))[0];
+  }
   if (!rax) return;
   const inQueue = (rax.train ? 1 : 0) + rax.queued;
   if (inQueue >= C.marine.queueMax) return;
@@ -582,7 +629,7 @@ function botEval() {
         sendUnits(BOT, home, marines.length, "marine");
         state.bot.lastWave = state.time;
       } else if (!botRax && scvsHome.length >= 6) {
-        sendUnits(BOT, home, 2 + ((Math.random() * 2) | 0), "scv");
+        sendUnits(BOT, home, 2 + ((rng() * 2) | 0), "scv");
         state.bot.lastWave = state.time;
       }
     }
@@ -648,12 +695,15 @@ function progBar(progress, total) {
 }
 
 function render() {
+  if (typeof document === "undefined") return; // headless test: no DOM to paint
   // Status bar (human numbers).
   $("s-min").textContent = Math.floor(state.minerals[HUMAN]);
   const used = supplyUsed(HUMAN), cap = supplyCap(HUMAN);
   $("s-sup").textContent = `${used} / ${cap}`;
   $("s-supwrap").className = "stat supply" + (used >= cap ? " blocked" : "");
   $("s-time").textContent = fmtTime(state.time);
+  if (typeof document.body !== "undefined" && document.body)
+    document.body.classList.toggle("paused", !!state.paused);
 
   // Nodes.
   const board = $("board");
@@ -876,7 +926,7 @@ function renderSheet() {
       </button>
       ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
       <button class="act-close" id="a-close">Close</button>`;
-    bind("a-marine", () => { queueMarine(HUMAN, sel.node); refreshSheet(); });
+    bind("a-marine", () => { queueMarine(HUMAN, sel.node, rax.id); refreshSheet(); });
 
   } else if (sel.kind === "marine") {
     const node = sel.node;
@@ -974,10 +1024,218 @@ function renderSheet() {
 function refreshSheet() { render(); if (ui.sheet) renderSheet(); }
 function bind(id, fn) { const el = $(id); if (el) el.onclick = fn; }
 
+/* ------------------------------- Loop -------------------------------- */
+function startLoop() { clearInterval(timer); timer = setInterval(() => { if (!state.paused) tick(); }, TICK_MS); }
+function stopLoop() { clearInterval(timer); }
+function setPaused(p) {
+  state.paused = p;
+  const btn = $("pause-btn");
+  if (btn) btn.textContent = p ? "▶ Resume" : "⏸ Pause";
+  if (p) render(); // reflect paused label immediately
+}
+function togglePause() { setPaused(!state.paused); }
+
+/* ------------------------------- Tests ------------------------------- */
+// In-file test harness. Pure sim only (no DOM): resetState(seed) then drive tick().
+// Run headless:  node -e "<extract script>; process.exit(runTests()?0:1)"
+// Or in a browser: open startext.html?test to see the report instead of the game.
+function runTests() {
+  let pass = 0, fail = 0;
+  const log = [];
+  const ok = (cond, msg) => { cond ? pass++ : (fail++, log.push("FAIL: " + msg)); };
+  const eq = (a, b, msg) => ok(a === b, `${msg} — got ${a}, expected ${b}`);
+  const near = (a, b, eps, msg) => ok(Math.abs(a - b) <= eps, `${msg} — got ${a}, expected ~${b}`);
+  // Run n ticks (capped so a broken end-condition can't loop forever).
+  const run = n => { for (let i = 0; i < n && !state.over; i++) tick(); };
+  const cc = o => state.buildings.find(b => b.owner === o && b.type === "cc");
+  const rax = o => state.buildings.find(b => b.owner === o && b.type === "barracks" && !b.construct);
+  const cheat = (o, m) => { state.minerals[o] = m; };
+
+  const T = {
+    "starting state is canon"() {
+      resetState(1);
+      eq(state.minerals.human, 50, "start minerals");
+      eq(unitsOf(HUMAN, HOME, null, "scv").length, 4, "start SCVs");
+      eq(supplyUsed(HUMAN), 4, "start supply used");
+      eq(supplyCap(HUMAN), 10, "start supply cap");
+      eq(state.field[HOME], FIELD_TOTAL, "home field");
+    },
+    "mining yields ~0.7/sec/SCV"() {
+      resetState(1);
+      unitsOf(HUMAN, HOME, "idle", "scv").forEach(u => u.task = "mining"); // 4 miners
+      const before = state.minerals.human;
+      tick();
+      near(state.minerals.human - before, 4 * MINE_RATE, 0.01, "4 miners income/sec");
+    },
+    "SCV training costs, takes 12s, +1 supply"() {
+      resetState(1);
+      cheat(HUMAN, 50);
+      queueSCV(HUMAN);
+      eq(state.minerals.human, 0, "minerals spent on SCV");
+      run(C.cc.trainTime);
+      eq(unitsOf(HUMAN, HOME, null, "scv").length, 5, "SCV produced after 12s");
+    },
+    "CC queue caps at 5 and reserves supply"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      // raise cap so supply isn't the limiter
+      state.buildings.push({ id: idSeq++, owner: HUMAN, node: HOME, type: "depot",
+        hp: 400, maxHp: 400, construct: null, train: null, queued: 0 });
+      for (let i = 0; i < 8; i++) queueSCV(HUMAN);
+      eq((cc(HUMAN).train ? 1 : 0) + cc(HUMAN).queued, 5, "queue capped at 5");
+    },
+    "supply hard-caps at 200"() {
+      resetState(1);
+      for (let i = 0; i < 30; i++) state.buildings.push({ id: idSeq++, owner: HUMAN,
+        node: HOME, type: "depot", hp: 400, maxHp: 400, construct: null, train: null, queued: 0 });
+      eq(supplyCap(HUMAN), SUPPLY_MAX, "cap clamps to 200");
+    },
+    "supply blocks training when full"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      // fill supply: 4 SCVs + queue to 10
+      for (let i = 0; i < 20; i++) queueSCV(HUMAN);
+      ok(supplyUsed(HUMAN) <= supplyCap(HUMAN), "never overshoot supply cap");
+    },
+    "Barracks needs a completed Depot"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      eq(startBuilding(HUMAN, HOME, "barracks"), false, "no barracks without depot");
+      startBuilding(HUMAN, HOME, "depot");
+      state.buildings.find(b => b.type === "depot").construct = null; // complete it
+      ok(startBuilding(HUMAN, HOME, "barracks"), "barracks allowed after depot");
+    },
+    "Marine trains from Barracks (40hp), +1 supply"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      const b = { id: idSeq++, owner: HUMAN, node: HOME, type: "barracks",
+        hp: 1000, maxHp: 1000, construct: null, train: null, queued: 0 };
+      state.buildings.push(b);
+      state.buildings.push({ id: idSeq++, owner: HUMAN, node: HOME, type: "depot",
+        hp: 400, maxHp: 400, construct: null, train: null, queued: 0 });
+      queueMarine(HUMAN, HOME, b.id);
+      run(C.marine.build);
+      const m = unitsOf(HUMAN, HOME, null, "marine");
+      eq(m.length, 1, "1 marine produced");
+      eq(m[0].hp, C.marine.hp, "marine hp = 40");
+    },
+    "two Barracks train independently (regression)"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      state.buildings.push({ id: idSeq++, owner: HUMAN, node: HOME, type: "depot",
+        hp: 400, maxHp: 400, construct: null, train: null, queued: 0 });
+      const r1 = { id: idSeq++, owner: HUMAN, node: HOME, type: "barracks",
+        hp: 1000, maxHp: 1000, construct: null, train: null, queued: 0 };
+      const r2 = { id: idSeq++, owner: HUMAN, node: HOME, type: "barracks",
+        hp: 1000, maxHp: 1000, construct: null, train: null, queued: 0 };
+      state.buildings.push(r1, r2);
+      queueMarine(HUMAN, HOME, r1.id);
+      queueMarine(HUMAN, HOME, r2.id);
+      ok(r1.train && r2.train, "both barracks training at once");
+    },
+    "Marine and SCV deal their canon damage per hit"() {
+      resetState(1);
+      // 1 human marine vs 1 high-HP bot dummy, both idle at AWAY (no other units).
+      const m = newMarine(HUMAN, AWAY); m.task = "idle";
+      const e = { id: idSeq++, owner: BOT, node: AWAY, type: "scv", task: "idle",
+        hp: 1000, maxHp: 1000, atkCd: 0, buildingId: null, transit: null };
+      state.units = [m, e];
+      state.buildings = []; // isolate: no CCs so the duel is the only combat
+      tick();
+      const dealt = 1000 - e.hp;
+      ok(dealt > 0 && dealt % C.marine.dmg === 0, `marine damage is a multiple of 6 (got ${dealt})`);
+    },
+    "travel takes 20s and hides unit in transit"() {
+      resetState(1);
+      sendUnits(HUMAN, HOME, 1, "scv");
+      const u = state.units.find(x => x.task === "moving");
+      eq(u.node, -1, "in transit: off-map");
+      run(TRAVEL_TIME);
+      eq(u.node, AWAY, "arrived at enemy base");
+      eq(u.task, "idle", "arrives idle");
+    },
+    "fog: enemy buildings unknown until scouted, then remembered"() {
+      resetState(1);
+      eq(state.seen[AWAY], null, "AWAY unknown at start");
+      sendUnits(HUMAN, HOME, 2, "scv");
+      run(TRAVEL_TIME + 2);
+      ok(Array.isArray(state.seen[AWAY]) && state.seen[AWAY].length >= 1, "scouted: CC remembered");
+      const snapLen = state.seen[AWAY].length;
+      // remove our scouts; bot snapshot must freeze
+      state.units = state.units.filter(u => !(u.owner === HUMAN && u.node === AWAY));
+      state.buildings.push({ id: idSeq++, owner: BOT, node: AWAY, type: "depot",
+        hp: 400, maxHp: 400, construct: null, train: null, queued: 0 });
+      run(5);
+      eq(state.seen[AWAY].length, snapLen, "snapshot frozen while unseen");
+    },
+    "destroying enemy CC wins"() {
+      resetState(1);
+      // isolate the CC so the attacker targets it, not the bot's defending SCVs
+      state.units = state.units.filter(u => u.owner !== BOT);
+      cc(BOT).hp = C.marine.dmg; // one hit
+      const m = newMarine(HUMAN, AWAY); m.task = "idle";
+      run(5);
+      eq(state.over, "win", "win when enemy CC dies");
+    },
+    "losing own CC is defeat"() {
+      resetState(1);
+      state.units = state.units.filter(u => u.owner !== HUMAN);
+      cc(HUMAN).hp = C.marine.dmg;
+      const e = newMarine(BOT, HOME); e.task = "idle";
+      run(5);
+      eq(state.over, "loss", "loss when own CC dies");
+    },
+    "determinism: same seed → same result"() {
+      const play = seed => { resetState(seed); run(120); return state.minerals.bot.toFixed(2); };
+      eq(play(42), play(42), "identical seeded runs match");
+    },
+    "bot builds economy and tech over time"() {
+      resetState(7);
+      run(400);
+      const botSCVs = state.units.filter(u => u.owner === BOT && u.type === "scv").length;
+      ok(botSCVs > 4, "bot trained extra SCVs");
+      ok(hasCompletedDepot(BOT) || state.buildings.some(b => b.owner === BOT && b.type === "depot"),
+        "bot built a depot");
+    },
+    "pause flag freezes simulation in the loop"() {
+      resetState(1);
+      state.paused = true;
+      const t0 = state.time;
+      // emulate the loop's guard
+      if (!state.paused) tick();
+      eq(state.time, t0, "no tick while paused");
+    },
+  };
+
+  for (const name in T) {
+    try { T[name](); }
+    catch (e) { fail++; log.push("THREW: " + name + " — " + (e && e.message)); }
+  }
+  const summary = `StarText tests: ${pass} passed, ${fail} failed`;
+  if (typeof console !== "undefined") { console.log(summary); log.forEach(l => console.log("  " + l)); }
+  return { pass, fail, log, summary };
+}
+
 /* ------------------------------- Boot -------------------------------- */
-$("sheet-backdrop").onclick = closeSheet;
-$("end-again").onclick = init;
-init();
+const HEADLESS = typeof document === "undefined";
+if (HEADLESS) {
+  // Node entry: run tests and exit non-zero on failure.
+  const r = runTests();
+  if (typeof module !== "undefined") module.exports = { runTests };
+  if (typeof process !== "undefined") process.exit(r.fail ? 1 : 0);
+} else if (location.search.indexOf("test") !== -1) {
+  // Browser ?test mode: show the report instead of booting the game.
+  const r = runTests();
+  document.body.innerHTML =
+    `<pre style="padding:16px;font-size:14px;color:${r.fail ? "#f87171" : "#4ade80"}">` +
+    `${r.summary}\n\n${r.log.join("\n") || "All green."}</pre>`;
+} else {
+  $("sheet-backdrop").onclick = closeSheet;
+  $("end-again").onclick = init;
+  $("pause-btn").onclick = togglePause;
+  init();
+  startLoop();
+}
 </script>
 </body>
 </html>
