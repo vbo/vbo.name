@@ -969,9 +969,9 @@ function renderSheet() {
     sel.n = Math.min(Math.max(1, sel.n || 1), max);
     const n = sel.n;
     const other = node === HOME ? AWAY : HOME;
-    const depotOK = idleN >= 1 && mineNow >= C.depot.cost;
+    const depotOK = all.length >= 1 && mineNow >= C.depot.cost;
     const hasDepot = hasCompletedDepot(HUMAN);
-    const raxOK = idleN >= 1 && mineNow >= C.barracks.cost && hasDepot;
+    const raxOK = all.length >= 1 && mineNow >= C.barracks.cost && hasDepot;
 
     sheet.innerHTML = `
       <h2>SCVs at ${NODE_NAMES[node]}</h2>
@@ -1096,6 +1096,15 @@ function runTests() {
       // fill supply: 4 SCVs + queue to 10
       for (let i = 0; i < 20; i++) queueSCV(HUMAN);
       ok(supplyUsed(HUMAN) <= supplyCap(HUMAN), "never overshoot supply cap");
+    },
+    "mining SCV can be pulled to build (regression)"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      // set all SCVs to mining — no idle SCVs
+      unitsOf(HUMAN, HOME, null, "scv").forEach(u => u.task = "mining");
+      ok(startBuilding(HUMAN, HOME, "depot"), "startBuilding succeeds with only miners");
+      const builder = state.units.find(u => u.owner === HUMAN && u.task === "building");
+      ok(builder != null, "one SCV pulled off mining to build");
     },
     "Barracks needs a completed Depot"() {
       resetState(1);
