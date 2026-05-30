@@ -193,7 +193,7 @@
   <div id="notes"></div>
   <div id="board"></div>
   <div id="transit"></div>
-  <div class="hint">Tap your Command Center or SCV group to give orders.</div>
+  <div class="hint">Tap Command Center, Barracks, SCVs, or Marines to give orders.</div>
 </div>
 
 <div id="sheet-backdrop"></div>
@@ -212,13 +212,16 @@
 const TICK_MS = 1000;       // simulation runs at 1 tick / second
 const TRAVEL_TIME = 20;     // seconds to move between the two nodes
 const MINE_RATE = 0.7;      // minerals per mining SCV per second
-const FIELD_TOTAL = 1500;   // minerals per base mineral field
+const FIELD_TOTAL = 12000;  // 8 patches × 1500 — standard BW main base
+const SUPPLY_MAX = 200;     // BW hard cap
 
 const C = {
-  scv:      { hp: 60,   dmg: 5, atk: 1.5, cost: 50,  build: 12 },
-  cc:       { hp: 1500, supply: 10, trainCost: 50, trainTime: 12, queueMax: 5 },
-  depot:    { hp: 400,  cost: 100, build: 25, supply: 8 },
-  barracks: { hp: 1000, cost: 150, build: 46 },
+  scv:     { hp: 60,  dmg: 5, atk: 1.5, cost: 50, build: 12 },
+  // Marine: BW stats — 40 HP, 6 dmg, 15-frame cooldown (~0.9 s at our tick rate)
+  marine:  { hp: 40,  dmg: 6, atk: 0.9, cost: 50, build: 24, queueMax: 5 },
+  cc:      { hp: 1500, supply: 10, trainCost: 50, trainTime: 12, queueMax: 5 },
+  depot:   { hp: 400,  cost: 100, build: 25, supply: 8 },
+  barracks:{ hp: 1000, cost: 150, build: 46 },
 };
 
 const HOME = 0, AWAY = 1;           // node indices from the human's perspective
@@ -263,41 +266,49 @@ function spawnBase(owner, node) {
 }
 
 function newSCV(owner, node) {
-  const u = {
-    id: idSeq++, owner, node, task: "idle",
-    hp: C.scv.hp, maxHp: C.scv.hp,
-    atkCd: 0, buildingId: null,
-    transit: null, // { to, progress }
-  };
-  state.units.push(u);
-  return u;
+  const u = { id: idSeq++, type: "scv", owner, node, task: "idle",
+    hp: C.scv.hp, maxHp: C.scv.hp, atkCd: 0, buildingId: null, transit: null };
+  state.units.push(u); return u;
+}
+
+function newMarine(owner, node) {
+  const u = { id: idSeq++, type: "marine", owner, node, task: "idle",
+    hp: C.marine.hp, maxHp: C.marine.hp, atkCd: 0, buildingId: null, transit: null };
+  state.units.push(u); return u;
 }
 
 /* ----------------------------- Queries ------------------------------- */
-const unitsOf = (owner, node, task) => state.units.filter(u =>
-  u.owner === owner && u.node === node && (task ? u.task === task : true));
+const unitsOf = (owner, node, task, type) => state.units.filter(u =>
+  u.owner === owner && u.node === node &&
+  (task ? u.task === task : true) && (type ? u.type === type : true));
 const buildingsOf = (owner, node) => state.buildings.filter(b =>
   b.owner === owner && (node === undefined || b.node === node));
 const enemy = o => (o === HUMAN ? BOT : HUMAN);
 
-// Switchable SCVs at a node = those we can re-task or send (not building, not moving).
+// SCVs at a node that can be re-tasked or sent (not building, not moving).
 const controllable = (owner, node) => state.units.filter(u =>
-  u.owner === owner && u.node === node && (u.task === "idle" || u.task === "mining"));
+  u.owner === owner && u.node === node && u.type === "scv" &&
+  (u.task === "idle" || u.task === "mining"));
+// Idle marines at a node ready to be sent.
+const idleMarines = (owner, node) => state.units.filter(u =>
+  u.owner === owner && u.node === node && u.type === "marine" && u.task === "idle");
 
 function supplyCap(owner) {
   let cap = 0;
   for (const b of buildingsOf(owner)) {
-    if (b.construct) continue;                  // only completed buildings give supply
-    if (b.type === "cc") cap += C.cc.supply;
+    if (b.construct) continue;
+    if (b.type === "cc")    cap += C.cc.supply;
     if (b.type === "depot") cap += C.depot.supply;
   }
-  return cap;
+  return Math.min(cap, SUPPLY_MAX); // BW hard cap
 }
 function supplyUsed(owner) {
-  // Each SCV uses 1; the active + queued CC trainees reserve 1 each so we never overshoot.
+  // Every unit uses 1; active + queued trainees in CC and Barracks are reserved up front.
   let used = state.units.filter(u => u.owner === owner).length;
-  for (const b of buildingsOf(owner))
-    if (b.type === "cc") used += (b.train ? 1 : 0) + b.queued;
+  for (const b of buildingsOf(owner)) {
+    if (b.type === "cc" || b.type === "barracks")
+      used += (b.train ? 1 : 0) + (b.queued || 0);
+  }
   return used;
 }
 const hasCompletedDepot = owner =>
@@ -374,9 +385,13 @@ function buildingStep() {
       b.train.progress++;
       if (b.train.progress >= b.train.total) {
         b.train = null;
-        newSCV(b.owner, b.node);
-        // Start the next queued SCV (minerals/supply were already reserved on queue).
-        if (b.queued > 0) { b.queued--; b.train = { progress: 0, total: C.cc.trainTime }; }
+        if (b.type === "cc") {
+          newSCV(b.owner, b.node);
+          if (b.queued > 0) { b.queued--; b.train = { progress: 0, total: C.cc.trainTime }; }
+        } else if (b.type === "barracks") {
+          newMarine(b.owner, b.node);
+          if (b.queued > 0) { b.queued--; b.train = { progress: 0, total: C.marine.build }; }
+        }
       }
     }
   }
@@ -396,27 +411,27 @@ function unitStep() {
 }
 
 function combatStep() {
-  // Idle SCVs at a node holding enemies auto-attack — focusing whatever can shoot back.
+  // Idle units (SCVs and Marines) auto-attack, focusing whatever can shoot back.
   for (const u of state.units) {
     if (u.task !== "idle" || u.node < 0) { u.atkCd = 0; continue; }
     if (!targetsAt(enemy(u.owner), u.node).length) { u.atkCd = 0; continue; }
+    const cfg = u.type === "marine" ? C.marine : C.scv;
     u.atkCd -= 1;
     let guard = 0;
     while (u.atkCd <= 0 && guard++ < 3) {
       const t = pickTarget(enemy(u.owner), u.node);
       if (!t) break;
-      t.hp -= C.scv.dmg;
-      u.atkCd += C.scv.atk;
+      t.hp -= cfg.dmg;
+      u.atkCd += cfg.atk;
     }
   }
 }
 
-// Engine targeting (not player-controlled): prioritise enemies that can deal damage
-// back — i.e. idle (fighting) SCVs — and only then mop up miners, builders, buildings.
+// Engine targeting: prioritise enemies that can deal damage back (idle units = fighters).
 function pickTarget(owner, node) {
   const live = targetsAt(owner, node);
   if (!live.length) return null;
-  const threats = live.filter(o => o.task === "idle"); // buildings/miners can't fight back
+  const threats = live.filter(o => o.task === "idle");
   const pool = threats.length ? threats : live;
   return pool[(Math.random() * pool.length) | 0];
 }
@@ -440,14 +455,15 @@ function cleanupDead() {
   });
   // Remove dead units; a builder dying cancels its building (no refund).
   const deadBuilds = [];
-  let scvLost = 0;
+  let scvLost = 0, marineLost = 0;
   state.units = state.units.filter(u => {
     if (u.hp > 0) return true;
     if (u.buildingId) deadBuilds.push(u.buildingId);
-    if (u.owner === HUMAN) scvLost++;
+    if (u.owner === HUMAN) u.type === "marine" ? marineLost++ : scvLost++;
     return false;
   });
-  if (scvLost) notify(`Lost ${scvLost} SCV${scvLost > 1 ? "s" : ""}.`, "loss", 4);
+  if (scvLost)    notify(`Lost ${scvLost} SCV${scvLost > 1 ? "s" : ""}.`, "loss", 4);
+  if (marineLost) notify(`Lost ${marineLost} Marine${marineLost > 1 ? "s" : ""}.`, "loss", 4);
   if (deadBuilds.length) {
     state.buildings = state.buildings.filter(b =>
       !(deadBuilds.includes(b.id) && b.construct));
@@ -506,7 +522,7 @@ function startBuilding(owner, node, type) {
   const b = {
     id: idSeq++, owner, node, type,
     hp: cfg.hp, maxHp: cfg.hp,
-    construct: { progress: 0, total: cfg.build }, train: null,
+    construct: { progress: 0, total: cfg.build }, train: null, queued: 0,
   };
   state.buildings.push(b);
   scv.task = "building";
@@ -514,14 +530,28 @@ function startBuilding(owner, node, type) {
   return true;
 }
 
-function sendUnits(owner, node, n) {
-  const pool = controllable(owner, node);
-  // Send idle first, then miners.
-  pool.sort((a, b) => (a.task === "idle" ? 0 : 1) - (b.task === "idle" ? 0 : 1));
+function queueMarine(owner, node) {
+  const rax = state.buildings.find(b =>
+    b.owner === owner && b.node === node && b.type === "barracks" && !b.construct);
+  if (!rax) return;
+  const inQueue = (rax.train ? 1 : 0) + rax.queued;
+  if (inQueue >= C.marine.queueMax) return;
+  if (state.minerals[owner] < C.marine.cost) return;
+  if (supplyUsed(owner) >= supplyCap(owner)) return;
+  state.minerals[owner] -= C.marine.cost;
+  if (!rax.train) rax.train = { progress: 0, total: C.marine.build };
+  else rax.queued++;
+}
+
+function sendUnits(owner, node, n, unitType = "scv") {
+  const pool = unitType === "marine" ? idleMarines(owner, node) : controllable(owner, node);
+  // For SCVs, send idle ones before pulling miners off duty.
+  if (unitType === "scv") pool.sort((a, b) => (a.task === "idle" ? 0 : 1) - (b.task === "idle" ? 0 : 1));
+  const dest = node === HOME ? AWAY : HOME;
   for (const u of pool.slice(0, n)) {
     u.task = "moving";
-    u.node = -1; // off-map while crossing: not minable, not targetable, hidden by fog
-    u.transit = { to: node === HOME ? AWAY : HOME, progress: 0 };
+    u.node = -1; // off-map: not minable, not targetable, hidden from fog
+    u.transit = { to: dest, progress: 0 };
   }
 }
 
@@ -535,36 +565,56 @@ function botEval() {
   const home = AWAY;
   const min = () => state.minerals[BOT];
   const underAttack = state.units.some(u => u.owner === HUMAN && u.node === home);
+  const botRax = state.buildings.find(b =>
+    b.owner === BOT && b.type === "barracks" && !b.construct);
 
   if (underAttack) {
-    // Recall miners to idle so they defend the base.
-    unitsOf(BOT, home, "mining").forEach(u => u.task = "idle");
+    // Recall mining SCVs to defend; marines are already idle and auto-fight.
+    unitsOf(BOT, home, "mining", "scv").forEach(u => u.task = "idle");
   } else {
-    // Periodic attack wave: only commit if we have a healthy SCV count at home.
-    const atHome = state.units.filter(u => u.owner === BOT && u.node === home &&
-      (u.task === "idle" || u.task === "mining"));
-    if (state.time - state.bot.lastWave >= 60 && atHome.length >= 6) {
-      const n = 2 + ((Math.random() * 2) | 0); // 2–3
-      sendUnits(BOT, home, n);
-      state.bot.lastWave = state.time;
+    // Attack wave: prefer marines, fall back to SCV rush if no barracks yet.
+    const marines = idleMarines(BOT, home);
+    const scvsHome = state.units.filter(u => u.owner === BOT && u.node === home &&
+      u.type === "scv" && (u.task === "idle" || u.task === "mining"));
+    const waveDue = state.time - state.bot.lastWave >= 60;
+    if (waveDue) {
+      if (marines.length >= 3) {
+        sendUnits(BOT, home, marines.length, "marine");
+        state.bot.lastWave = state.time;
+      } else if (!botRax && scvsHome.length >= 6) {
+        sendUnits(BOT, home, 2 + ((Math.random() * 2) | 0), "scv");
+        state.bot.lastWave = state.time;
+      }
     }
   }
 
-  // Supply: pre-empt being blocked.
+  // Supply: build depots before getting blocked.
   if (supplyUsed(BOT) >= supplyCap(BOT) - 2 && min() >= C.depot.cost &&
       !state.buildings.some(b => b.owner === BOT && b.type === "depot" && b.construct)) {
     startBuilding(BOT, home, "depot");
   }
-  // Train SCVs whenever the CC is free and supply allows.
-  if (min() >= C.cc.trainCost && supplyUsed(BOT) < supplyCap(BOT)) queueSCV(BOT, 1);
-  // Tech up to a Barracks once a depot is done.
+
+  // SCV production: cap at 10 once barracks is running (shift investment to marines).
+  const botSCVs = state.units.filter(u => u.owner === BOT && u.type === "scv").length;
+  if (min() >= C.cc.trainCost && supplyUsed(BOT) < supplyCap(BOT) &&
+      (botSCVs < 10 || !botRax)) {
+    queueSCV(BOT, 1);
+  }
+
+  // Tech: rush to barracks once a depot is done.
   if (hasCompletedDepot(BOT) && min() >= C.barracks.cost && !hasBarracks(BOT) &&
       !state.buildings.some(b => b.owner === BOT && b.type === "barracks" && b.construct)) {
     startBuilding(BOT, home, "barracks");
   }
-  // Put any remaining idlers back on minerals — but never while defending.
+
+  // Pump marines continuously once barracks is up.
+  if (botRax && min() >= C.marine.cost && supplyUsed(BOT) < supplyCap(BOT)) {
+    queueMarine(BOT, home);
+  }
+
+  // Idle SCVs back to mining when safe.
   if (!underAttack && state.field[home] > 0)
-    unitsOf(BOT, home, "idle").forEach(u => u.task = "mining");
+    unitsOf(BOT, home, "idle", "scv").forEach(u => u.task = "mining");
 }
 
 /* ------------------------------ Rendering ---------------------------- */
@@ -581,6 +631,8 @@ function svgIcon(kind) {
     return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><path d="M4 18V8l8-4 8 4v10"/><path d="M9 18v-5h6v5"/></svg>`;
   if (kind === "scv")
     return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#ffd27a" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M12 5v3M12 16v3M5 12h3M16 12h3"/></svg>`;
+  if (kind === "marine")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#ff9a9a" stroke-width="2"><circle cx="12" cy="8" r="3"/><path d="M6 21v-1a6 6 0 0112 0v1"/><path d="M17 13l4 1.5-4 1.5"/></svg>`;
   if (kind === "mineral")
     return `<svg class="icon" viewBox="0 0 24 24" fill="#41d6ff" stroke="#0a1a22" stroke-width="1"><path d="M12 3l4 6-4 12-4-12z"/></svg>`;
   return "";
@@ -679,40 +731,63 @@ function appendForces(container, owner, node, interactive) {
   // Buildings.
   for (const b of buildingsOf(owner, node)) {
     any = true;
-    const row = document.createElement(interactive && b.type === "cc" ? "button" : "div");
-    row.className = "row" + (interactive && b.type === "cc" ? "" : " static");
+    const tappable = interactive && (b.type === "cc" || b.type === "barracks");
+    const row = document.createElement(tappable ? "button" : "div");
+    row.className = "row" + (tappable ? "" : " static");
     let meta = "";
-    if (b.construct) meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%${interactive ? progBar(b.construct.progress, b.construct.total) : ""}`;
-    else if (b.train && interactive) meta = `Training SCV ${Math.floor(b.train.progress / b.train.total * 100)}%${b.queued ? ` (+${b.queued} queued)` : ""}${progBar(b.train.progress, b.train.total)}`;
-    else if (b.type === "cc") meta = `${interactive ? "Idle · supply +" + C.cc.supply : "HP " + Math.ceil(b.hp) + "/" + b.maxHp}`;
-    else meta = `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
+    if (b.construct) {
+      meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%${interactive ? progBar(b.construct.progress, b.construct.total) : ""}`;
+    } else if (b.train && interactive) {
+      const label = b.type === "barracks" ? "Marine" : "SCV";
+      meta = `Training ${label} ${Math.floor(b.train.progress / b.train.total * 100)}%${b.queued ? ` (+${b.queued} queued)` : ""}${progBar(b.train.progress, b.train.total)}`;
+    } else if (b.type === "cc") {
+      meta = interactive ? `Idle · supply +${C.cc.supply}` : `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
+    } else if (b.type === "barracks") {
+      meta = interactive ? "Idle · tap to train Marines" : `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
+    } else {
+      meta = `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
+    }
     row.innerHTML = `${svgIcon(b.type)}<div class="body">
         <div class="name">${BUILDING_LABEL[b.type]}</div>
         <div class="meta">${meta}</div>
         ${hpBar(b.hp, b.maxHp)}
-      </div>${interactive && b.type === "cc" ? '<span class="chev">›</span>' : ""}`;
-    if (interactive && b.type === "cc")
-      row.onclick = () => openSheet({ kind: "cc", node, ref: b.id });
+      </div>${tappable ? '<span class="chev">›</span>' : ""}`;
+    if (tappable)
+      row.onclick = () => openSheet({ kind: b.type, node, ref: b.id });
     container.appendChild(row);
   }
-  // SCV group summary (by task, at this node).
-  const list = unitsOf(owner, node);
-  if (list.length) {
+  // SCV group.
+  const scvs = unitsOf(owner, node, null, "scv");
+  if (scvs.length) {
     any = true;
-    const mining = list.filter(u => u.task === "mining").length;
-    const idle = list.filter(u => u.task === "idle").length;
-    const building = list.filter(u => u.task === "building").length;
     const parts = [];
-    if (mining) parts.push(`${mining} mining`);
-    if (idle) parts.push(`${idle} idle`);
-    if (building) parts.push(`${building} building`);
+    const m = scvs.filter(u => u.task === "mining").length;
+    const i = scvs.filter(u => u.task === "idle").length;
+    const bl = scvs.filter(u => u.task === "building").length;
+    if (m) parts.push(`${m} mining`);
+    if (i) parts.push(`${i} idle`);
+    if (bl) parts.push(`${bl} building`);
     const row = document.createElement(interactive ? "button" : "div");
     row.className = "row" + (interactive ? "" : " static");
     row.innerHTML = `${svgIcon("scv")}<div class="body">
-        <div class="name">SCVs — ${list.length}</div>
+        <div class="name">SCVs — ${scvs.length}</div>
         <div class="meta">${parts.join(", ") || "—"}</div>
       </div>${interactive ? '<span class="chev">›</span>' : ""}`;
     if (interactive) row.onclick = () => openSheet({ kind: "scv", node, n: 1 });
+    container.appendChild(row);
+  }
+  // Marine group.
+  const marines = unitsOf(owner, node, null, "marine");
+  if (marines.length) {
+    any = true;
+    const idle = marines.filter(u => u.task === "idle").length;
+    const row = document.createElement(interactive ? "button" : "div");
+    row.className = "row" + (interactive ? "" : " static");
+    row.innerHTML = `${svgIcon("marine")}<div class="body">
+        <div class="name">Marines — ${marines.length}</div>
+        <div class="meta">${idle} ready</div>
+      </div>${interactive ? '<span class="chev">›</span>' : ""}`;
+    if (interactive) row.onclick = () => openSheet({ kind: "marine", node, n: 1 });
     container.appendChild(row);
   }
   return any;
@@ -733,8 +808,12 @@ function renderTransit() {
     const group = byDir[to];
     const avg = group.reduce((s, u) => s + u.transit.progress, 0) / group.length;
     const eta = Math.max(0, TRAVEL_TIME - Math.round(avg));
+    const scvN = group.filter(u => u.type === "scv").length;
+    const marN = group.filter(u => u.type === "marine").length;
+    const label = [scvN && `${scvN} SCV${scvN > 1 ? "s" : ""}`,
+                   marN && `${marN} Marine${marN > 1 ? "s" : ""}`].filter(Boolean).join(", ");
     html += `<div class="transit-row">
-        <div class="name">${group.length} SCV${group.length > 1 ? "s" : ""} → ${NODE_NAMES[to]}</div>
+        <div class="name">${label} → ${NODE_NAMES[to]}</div>
         <div class="meta">ETA ${eta}s</div>
         ${progBar(avg, TRAVEL_TIME)}
       </div>`;
@@ -760,63 +839,120 @@ function renderSheet() {
   if (sel.kind === "cc") {
     const cc = state.buildings.find(b => b.id === sel.ref);
     if (!cc) { closeSheet(); return; }
-    const inQueue = (cc.train ? 1 : 0) + cc.queued; // active + waiting
-    const queueFull = inQueue >= C.cc.queueMax;
+    const inQ = (cc.train ? 1 : 0) + cc.queued;
     const supplyOK = supplyUsed(HUMAN) < supplyCap(HUMAN);
     const afford = mineNow >= C.cc.trainCost;
-    const dis = cc.construct || queueFull || !supplyOK || !afford;
-    let note = cc.construct ? "Under construction." : queueFull ? `Queue full (${C.cc.queueMax} max).`
+    const dis = cc.construct || inQ >= C.cc.queueMax || !supplyOK || !afford;
+    const note = cc.construct ? "Under construction."
+      : inQ >= C.cc.queueMax ? `Queue full (${C.cc.queueMax} max).`
       : !supplyOK ? "Supply capped — build a Supply Depot."
-      : !afford ? "Not enough minerals." : "";
+      : !afford ? `Need ${C.cc.trainCost} 💎.` : "";
     sheet.innerHTML = `
       <h2>Command Center</h2>
-      <div class="sheet-sub">${NODE_NAMES[sel.node]} · HP ${Math.ceil(cc.hp)}/${cc.maxHp} · Queue ${inQueue}/${C.cc.queueMax}</div>
+      <div class="sheet-sub">${NODE_NAMES[sel.node]} · HP ${Math.ceil(cc.hp)}/${cc.maxHp} · Queue ${inQ}/${C.cc.queueMax}</div>
       <button class="act" ${dis ? "disabled" : ""} id="a-train">
         Train SCV <span class="cost">— ${C.cc.trainCost} 💎 · ${C.cc.trainTime}s · +1 supply</span>
       </button>
       ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
       <button class="act-close" id="a-close">Close</button>`;
     bind("a-train", () => { queueSCV(HUMAN); refreshSheet(); });
+
+  } else if (sel.kind === "barracks") {
+    const rax = state.buildings.find(b => b.id === sel.ref);
+    if (!rax) { closeSheet(); return; }
+    const inQ = (rax.train ? 1 : 0) + (rax.queued || 0);
+    const supplyOK = supplyUsed(HUMAN) < supplyCap(HUMAN);
+    const afford = mineNow >= C.marine.cost;
+    const dis = rax.construct || inQ >= C.marine.queueMax || !supplyOK || !afford;
+    const note = rax.construct ? "Under construction."
+      : inQ >= C.marine.queueMax ? `Queue full (${C.marine.queueMax} max).`
+      : !supplyOK ? "Supply capped — build a Supply Depot."
+      : !afford ? `Need ${C.marine.cost} 💎.` : "";
+    sheet.innerHTML = `
+      <h2>Barracks</h2>
+      <div class="sheet-sub">${NODE_NAMES[sel.node]} · HP ${Math.ceil(rax.hp)}/${rax.maxHp} · Queue ${inQ}/${C.marine.queueMax}</div>
+      <button class="act" ${dis ? "disabled" : ""} id="a-marine">
+        Train Marine <span class="cost">— ${C.marine.cost} 💎 · ${C.marine.build}s · +1 supply</span>
+      </button>
+      ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
+      <button class="act-close" id="a-close">Close</button>`;
+    bind("a-marine", () => { queueMarine(HUMAN, sel.node); refreshSheet(); });
+
+  } else if (sel.kind === "marine") {
+    const node = sel.node;
+    const pool = idleMarines(HUMAN, node);
+    const max = Math.max(1, pool.length);
+    sel.n = Math.min(Math.max(1, sel.n || pool.length), max);
+    const n = sel.n;
+    const other = node === HOME ? AWAY : HOME;
+    sheet.innerHTML = `
+      <h2>Marines at ${NODE_NAMES[node]}</h2>
+      <div class="sheet-sub">${pool.length} ready to move</div>
+      <button class="act" id="a-send-all-m" ${pool.length ? "" : "disabled"}>
+        ⚔️ Send ALL ${pool.length} → ${NODE_NAMES[other]}
+      </button>
+      <div class="stepper">
+        <button id="n-minus">−</button>
+        <div class="count" id="n-count">${n}</div>
+        <button id="n-plus">+</button>
+        <div class="label">selected</div>
+      </div>
+      <input type="range" id="n-range" min="1" max="${max}" value="${n}">
+      <button class="act secondary" id="a-send-m" ${pool.length ? "" : "disabled"}>
+        Send ${n} → ${NODE_NAMES[other]} <span class="cost">— ${TRAVEL_TIME}s travel</span>
+      </button>
+      <button class="act-close" id="a-close">Close</button>`;
+    const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
+    bind("n-minus", () => setN(sel.n - 1));
+    bind("n-plus", () => setN(sel.n + 1));
+    $("n-range").oninput = e => setN(parseInt(e.target.value, 10));
+    bind("a-send-all-m", () => { sendUnits(HUMAN, node, pool.length, "marine"); closeSheet(); render(); });
+    bind("a-send-m", () => { sendUnits(HUMAN, node, sel.n, "marine"); closeSheet(); render(); });
+
   } else {
     // SCV group sheet.
     const node = sel.node;
     const all = controllable(HUMAN, node);
-    const idle = unitsOf(HUMAN, node, "idle").length;
-    const mining = unitsOf(HUMAN, node, "mining").length;
+    const idleN = unitsOf(HUMAN, node, "idle", "scv").length;
+    const miningN = unitsOf(HUMAN, node, "mining", "scv").length;
     const max = Math.max(1, all.length);
     sel.n = Math.min(Math.max(1, sel.n || 1), max);
     const n = sel.n;
     const other = node === HOME ? AWAY : HOME;
-    const depotOK = idle >= 1 && mineNow >= C.depot.cost;
-    const rax = hasCompletedDepot(HUMAN);
-    const raxOK = idle >= 1 && mineNow >= C.barracks.cost && rax;
+    const depotOK = idleN >= 1 && mineNow >= C.depot.cost;
+    const hasDepot = hasCompletedDepot(HUMAN);
+    const raxOK = idleN >= 1 && mineNow >= C.barracks.cost && hasDepot;
 
     sheet.innerHTML = `
       <h2>SCVs at ${NODE_NAMES[node]}</h2>
-      <div class="sheet-sub">${all.length} available · ${mining} mining · ${idle} idle</div>
+      <div class="sheet-sub">${all.length} available · ${miningN} mining · ${idleN} idle</div>
+
+      <button class="act" id="a-send-all" ${all.length ? "" : "disabled"}>
+        Send ALL ${all.length} → ${NODE_NAMES[other]}
+      </button>
+      <button class="act secondary" id="a-mine-all" ${idleN ? "" : "disabled"}>
+        Set ALL ${idleN} idle → mining
+      </button>
+      <button class="act secondary" id="a-idle-all" ${miningN ? "" : "disabled"}>
+        Set ALL ${miningN} mining → idle
+      </button>
 
       <div class="stepper">
         <button id="n-minus">−</button>
         <div class="count" id="n-count">${n}</div>
         <button id="n-plus">+</button>
-        <div class="label">SCVs selected<br>(for send / re-task)</div>
+        <div class="label">SCVs<br>selected</div>
       </div>
       <input type="range" id="n-range" min="1" max="${max}" value="${n}">
+      <button class="act secondary" id="a-send" ${all.length ? "" : "disabled"}>
+        Send ${n} → ${NODE_NAMES[other]} <span class="cost">— ${TRAVEL_TIME}s travel</span>
+      </button>
 
-      <button class="act" id="a-send" ${all.length ? "" : "disabled"}>
-        Send ${n} to ${NODE_NAMES[other]} <span class="cost">— ${TRAVEL_TIME}s travel</span>
-      </button>
-      <button class="act secondary" id="a-mine" ${idle ? "" : "disabled"}>
-        Set ${Math.min(n, idle) || n} to mining
-      </button>
-      <button class="act secondary" id="a-idle" ${mining ? "" : "disabled"}>
-        Set ${Math.min(n, mining) || n} to idle
-      </button>
       <button class="act secondary" id="a-depot" ${depotOK ? "" : "disabled"}>
         Build Supply Depot <span class="cost">— ${C.depot.cost} 💎 · ${C.depot.build}s</span>
       </button>
       <button class="act secondary" id="a-rax" ${raxOK ? "" : "disabled"}>
-        Build Barracks <span class="cost">— ${C.barracks.cost} 💎 · ${C.barracks.build}s${rax ? "" : " · needs Depot"}</span>
+        Build Barracks <span class="cost">— ${C.barracks.cost} 💎 · ${C.barracks.build}s${hasDepot ? "" : " · needs Depot"}</span>
       </button>
       <button class="act-close" id="a-close">Close</button>`;
 
@@ -825,9 +961,10 @@ function renderSheet() {
     bind("n-plus", () => setN(sel.n + 1));
     $("n-range").oninput = e => setN(parseInt(e.target.value, 10));
 
-    bind("a-send", () => { sendUnits(HUMAN, node, sel.n); closeSheet(); render(); });
-    bind("a-mine", () => { setTask(HUMAN, node, sel.n, "idle", "mining"); refreshSheet(); });
-    bind("a-idle", () => { setTask(HUMAN, node, sel.n, "mining", "idle"); refreshSheet(); });
+    bind("a-send-all", () => { sendUnits(HUMAN, node, all.length, "scv"); closeSheet(); render(); });
+    bind("a-mine-all", () => { setTask(HUMAN, node, idleN, "idle", "mining"); refreshSheet(); });
+    bind("a-idle-all", () => { setTask(HUMAN, node, miningN, "mining", "idle"); refreshSheet(); });
+    bind("a-send", () => { sendUnits(HUMAN, node, sel.n, "scv"); closeSheet(); render(); });
     bind("a-depot", () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); });
     bind("a-rax", () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
   }
