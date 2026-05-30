@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>StarText — Mini RTS</title>
+<style>
+  :root {
+    --bg: #0c1018;
+    --panel: #161c28;
+    --panel2: #1d2533;
+    --line: #2a3445;
+    --txt: #d7e0ec;
+    --dim: #8090a4;
+    --accent: #4ea1ff;
+    --mineral: #41d6ff;
+    --good: #4ade80;
+    --bad: #f87171;
+    --warn: #fbbf24;
+    --enemy: #ff7a7a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--txt);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 16px; line-height: 1.35;
+    overscroll-behavior: none;
+  }
+  #app { max-width: 1000px; margin: 0 auto; padding: 8px 8px 96px; }
+
+  /* Top status bar */
+  #statusbar {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; gap: 8px; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 10px 12px; margin-bottom: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  .stat { display: flex; flex-direction: column; min-width: 70px; }
+  .stat b { font-size: 18px; }
+  .stat span { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+  .stat.minerals b { color: var(--mineral); }
+  .stat.supply.blocked b { color: var(--warn); }
+
+  h1 { font-size: 15px; margin: 0; letter-spacing: .04em; }
+  .sub { color: var(--dim); font-size: 12px; }
+
+  /* Board */
+  #board { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  @media (min-width: 720px) { #board { grid-template-columns: 1fr 1fr; } }
+
+  .node {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px;
+  }
+  .node.home { border-color: #2f4a6b; }
+  .node.away { border-color: #5a2f3a; }
+  .node-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .node-head .field { font-size: 12px; color: var(--mineral); }
+
+  .section-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 10px 0 4px;
+  }
+  .force-mine .section-label { color: var(--accent); }
+  .force-enemy .section-label { color: var(--enemy); }
+
+  .row {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px; margin-bottom: 6px;
+    min-height: 48px; width: 100%; text-align: left;
+    color: var(--txt); font: inherit; cursor: pointer;
+  }
+  .row.static { cursor: default; }
+  .row .icon { width: 26px; height: 26px; flex: 0 0 26px; }
+  .row .body { flex: 1; min-width: 0; }
+  .row .name { font-weight: 600; font-size: 14px; }
+  .row .meta { font-size: 12px; color: var(--dim); }
+  .row .chev { color: var(--dim); font-size: 18px; }
+  button.row:active { background: #243049; }
+
+  .bar { height: 6px; background: #0a0f17; border-radius: 4px; overflow: hidden; margin-top: 5px; }
+  .bar > i { display: block; height: 100%; border-radius: 4px; }
+  .bar.hp > i { background: var(--good); }
+  .bar.hp.mid > i { background: var(--warn); }
+  .bar.hp.low > i { background: var(--bad); }
+  .bar.prog > i { background: var(--accent); }
+
+  .unknown {
+    color: var(--dim); font-style: italic; font-size: 13px;
+    padding: 12px; text-align: center;
+    background: var(--panel2); border: 1px dashed var(--line); border-radius: 10px;
+  }
+
+  /* Transit */
+  #transit { margin-top: 10px; }
+  .transit-row {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px; margin-bottom: 6px;
+  }
+  .transit-row .name { font-size: 14px; font-weight: 600; }
+  .transit-row .meta { font-size: 12px; color: var(--dim); }
+
+  /* Action sheet */
+  #sheet-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.55);
+    display: none; z-index: 20;
+  }
+  #sheet-backdrop.open { display: block; }
+  #sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 21;
+    background: var(--panel); border-top: 1px solid var(--line);
+    border-radius: 16px 16px 0 0; padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+    transform: translateY(100%); transition: transform .18s ease-out;
+    max-width: 1000px; margin: 0 auto;
+  }
+  #sheet.open { transform: translateY(0); }
+  #sheet h2 { font-size: 16px; margin: 0 0 2px; }
+  #sheet .sheet-sub { color: var(--dim); font-size: 12px; margin-bottom: 12px; }
+
+  .stepper { display: flex; align-items: center; gap: 12px; margin: 8px 0 4px; }
+  .stepper button {
+    width: 48px; height: 48px; border-radius: 12px; font-size: 24px;
+    background: var(--panel2); color: var(--txt); border: 1px solid var(--line);
+  }
+  .stepper button:active { background: #243049; }
+  .stepper .count { font-size: 22px; font-weight: 700; min-width: 40px; text-align: center; }
+  .stepper .label { color: var(--dim); font-size: 12px; }
+  input[type=range] { width: 100%; height: 40px; }
+
+  .act {
+    display: block; width: 100%; min-height: 50px; margin-top: 8px;
+    border-radius: 12px; font-size: 15px; font-weight: 600;
+    background: var(--accent); color: #06101f; border: none;
+  }
+  .act.secondary { background: var(--panel2); color: var(--txt); border: 1px solid var(--line); }
+  .act:disabled { opacity: .4; }
+  .act:active:not(:disabled) { filter: brightness(.9); }
+  .act .cost { font-weight: 400; font-size: 12px; opacity: .8; }
+  .act-close { background: transparent; color: var(--dim); border: none; font-size: 14px; margin-top: 12px; width: 100%; padding: 10px; }
+
+  /* End screen */
+  #end {
+    position: fixed; inset: 0; z-index: 30; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(6,9,15,.94); text-align: center; padding: 24px;
+  }
+  #end.open { display: flex; }
+  #end .big { font-size: 40px; font-weight: 800; margin-bottom: 6px; }
+  #end.win .big { color: var(--good); }
+  #end.loss .big { color: var(--bad); }
+  #end p { color: var(--dim); margin: 4px 0 24px; }
+  #end button {
+    min-height: 54px; padding: 0 28px; border-radius: 14px; font-size: 17px; font-weight: 700;
+    background: var(--accent); color: #06101f; border: none;
+  }
+  .hint { color: var(--dim); font-size: 11px; text-align: center; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="statusbar">
+    <div class="stat minerals"><b id="s-min">50</b><span>Minerals</span></div>
+    <div class="stat supply" id="s-supwrap"><b id="s-sup">4 / 10</b><span>Supply</span></div>
+    <div class="stat"><b id="s-time">0:00</b><span>Time</span></div>
+    <div class="stat" style="flex:1; min-width:120px;">
+      <h1>StarText</h1>
+      <span class="sub">Destroy the Enemy Command Center.</span>
+    </div>
+  </div>
+
+  <div id="board"></div>
+  <div id="transit"></div>
+  <div class="hint">Tap your Command Center or SCV group to give orders.</div>
+</div>
+
+<div id="sheet-backdrop"></div>
+<div id="sheet"></div>
+
+<div id="end">
+  <div class="big" id="end-big">Victory</div>
+  <p id="end-msg"></p>
+  <button id="end-again">Play again</button>
+</div>
+
+<script>
+"use strict";
+
+/* ----------------------------- Constants ----------------------------- */
+const TICK_MS = 1000;       // simulation runs at 1 tick / second
+const TRAVEL_TIME = 20;     // seconds to move between the two nodes
+const MINE_RATE = 0.7;      // minerals per mining SCV per second
+const FIELD_TOTAL = 1500;   // minerals per base mineral field
+
+const C = {
+  scv:      { hp: 60,   dmg: 5, atk: 1.5, cost: 50,  build: 12 },
+  cc:       { hp: 1500, supply: 10, trainCost: 50, trainTime: 12 },
+  depot:    { hp: 400,  cost: 100, build: 25, supply: 8 },
+  barracks: { hp: 1000, cost: 150, build: 46 },
+};
+
+const HOME = 0, AWAY = 1;           // node indices from the human's perspective
+const NODE_NAMES = ["Your Base", "Enemy Base"];
+const HUMAN = "human", BOT = "bot";
+
+/* ----------------------------- Game state ---------------------------- */
+let state, ui, timer, idSeq;
+
+function init() {
+  idSeq = 1;
+  state = {
+    time: 0,
+    over: null,                 // null | "win" | "loss"
+    field: [FIELD_TOTAL, FIELD_TOTAL],
+    minerals: { human: 50, bot: 50 },
+    units: [],
+    buildings: [],
+    bot: { lastEval: 0, lastWave: 30 }, // first wave can come after ~90s
+  };
+  // Each side: 1 Command Center + 4 idle SCVs at its home node.
+  spawnBase(HUMAN, HOME);
+  spawnBase(BOT, AWAY);
+
+  ui = { sheet: null };          // sheet: { kind, node, ref, n }
+  closeSheet();
+  document.getElementById("end").className = "";
+  render();
+  clearInterval(timer);
+  timer = setInterval(tick, TICK_MS);
+}
+
+function spawnBase(owner, node) {
+  state.buildings.push({
+    id: idSeq++, owner, node, type: "cc",
+    hp: C.cc.hp, maxHp: C.cc.hp, construct: null, train: null,
+  });
+  for (let i = 0; i < 4; i++) newSCV(owner, node);
+}
+
+function newSCV(owner, node) {
+  const u = {
+    id: idSeq++, owner, node, task: "idle",
+    hp: C.scv.hp, maxHp: C.scv.hp,
+    atkCd: 0, buildingId: null,
+    transit: null, // { to, progress }
+  };
+  state.units.push(u);
+  return u;
+}
+
+/* ----------------------------- Queries ------------------------------- */
+const unitsOf = (owner, node, task) => state.units.filter(u =>
+  u.owner === owner && u.node === node && (task ? u.task === task : true));
+const buildingsOf = (owner, node) => state.buildings.filter(b =>
+  b.owner === owner && (node === undefined || b.node === node));
+const enemy = o => (o === HUMAN ? BOT : HUMAN);
+
+// Switchable SCVs at a node = those we can re-task or send (not building, not moving).
+const controllable = (owner, node) => state.units.filter(u =>
+  u.owner === owner && u.node === node && (u.task === "idle" || u.task === "mining"));
+
+function supplyCap(owner) {
+  let cap = 0;
+  for (const b of buildingsOf(owner)) {
+    if (b.construct) continue;                  // only completed buildings give supply
+    if (b.type === "cc") cap += C.cc.supply;
+    if (b.type === "depot") cap += C.depot.supply;
+  }
+  return cap;
+}
+function supplyUsed(owner) {
+  // Each SCV uses 1; an in-progress CC training reserves 1 so we never overshoot.
+  let used = state.units.filter(u => u.owner === owner).length;
+  for (const b of buildingsOf(owner)) if (b.type === "cc" && b.train) used++;
+  return used;
+}
+const hasCompletedDepot = owner =>
+  state.buildings.some(b => b.owner === owner && b.type === "depot" && !b.construct);
+const hasBarracks = owner =>
+  state.buildings.some(b => b.owner === owner && b.type === "barracks");
+
+/* ----------------------------- Simulation ---------------------------- */
+function tick() {
+  if (state.over) return;
+  state.time++;
+
+  mineStep();
+  buildingStep();
+  unitStep();
+  combatStep();
+  cleanupDead();
+  if (state.time - state.bot.lastEval >= 3) { botEval(); state.bot.lastEval = state.time; }
+
+  checkEnd();
+  render();
+}
+
+function mineStep() {
+  for (const u of state.units) {
+    if (u.task !== "mining") continue;
+    if (state.field[u.node] <= 0) { u.task = "idle"; continue; }
+    const got = Math.min(MINE_RATE, state.field[u.node]);
+    state.field[u.node] -= got;
+    state.minerals[u.owner] += got;
+  }
+}
+
+function buildingStep() {
+  for (const b of state.buildings) {
+    if (b.construct) {
+      b.construct.progress++;
+      if (b.construct.progress >= b.construct.total) {
+        b.construct = null;
+        const scv = state.units.find(u => u.buildingId === b.id);
+        if (scv) { scv.task = "idle"; scv.buildingId = null; }
+      }
+    }
+    if (b.train) {
+      b.train.progress++;
+      if (b.train.progress >= b.train.total) {
+        b.train = null;
+        newSCV(b.owner, b.node);
+      }
+    }
+  }
+}
+
+function unitStep() {
+  for (const u of state.units) {
+    if (u.task === "moving") {
+      u.transit.progress++;
+      if (u.transit.progress >= TRAVEL_TIME) {
+        u.node = u.transit.to;
+        u.task = "idle";
+        u.transit = null;
+      }
+    }
+  }
+}
+
+function combatStep() {
+  // Idle SCVs at a node holding enemies attack a random enemy object there.
+  for (const u of state.units) {
+    if (u.task !== "idle" || u.node < 0) { u.atkCd = 0; continue; }
+    const targets = targetsAt(enemy(u.owner), u.node);
+    if (!targets.length) { u.atkCd = 0; continue; }
+    u.atkCd -= 1;
+    let guard = 0;
+    while (u.atkCd <= 0 && guard++ < 3) {
+      const live = targetsAt(enemy(u.owner), u.node);
+      if (!live.length) break;
+      const t = live[(Math.random() * live.length) | 0];
+      t.hp -= C.scv.dmg;
+      u.atkCd += C.scv.atk;
+    }
+  }
+}
+
+// Enemy units (any task) + buildings present at a node — all are valid targets.
+function targetsAt(owner, node) {
+  const us = state.units.filter(u => u.owner === owner && u.node === node && u.hp > 0);
+  const bs = state.buildings.filter(b => b.owner === owner && b.node === node && b.hp > 0);
+  return us.concat(bs);
+}
+
+function cleanupDead() {
+  // Remove dead buildings; free or cancel anything tied to them.
+  state.buildings = state.buildings.filter(b => {
+    if (b.hp > 0) return true;
+    const scv = state.units.find(u => u.buildingId === b.id);
+    if (scv) { scv.task = "idle"; scv.buildingId = null; }
+    return false;
+  });
+  // Remove dead units; a builder dying cancels its building (no refund).
+  const deadBuilds = [];
+  state.units = state.units.filter(u => {
+    if (u.hp > 0) return true;
+    if (u.buildingId) deadBuilds.push(u.buildingId);
+    return false;
+  });
+  if (deadBuilds.length) {
+    state.buildings = state.buildings.filter(b =>
+      !(deadBuilds.includes(b.id) && b.construct));
+  }
+}
+
+function checkEnd() {
+  const humanCC = state.buildings.some(b => b.owner === HUMAN && b.type === "cc");
+  const botCC = state.buildings.some(b => b.owner === BOT && b.type === "cc");
+  if (!botCC) endGame("win");
+  else if (!humanCC) endGame("loss");
+}
+
+function endGame(result) {
+  state.over = result;
+  clearInterval(timer);
+  closeSheet();
+  const el = document.getElementById("end");
+  el.className = "open " + result;
+  document.getElementById("end-big").textContent = result === "win" ? "Victory!" : "Defeat";
+  document.getElementById("end-msg").textContent = result === "win"
+    ? "You destroyed the Enemy Command Center."
+    : "Your Command Center was destroyed.";
+}
+
+/* ------------------------------- Actions ----------------------------- */
+// All actions are validated again here so the UI can never force an illegal move.
+function trainSCV(owner) {
+  const cc = state.buildings.find(b => b.owner === owner && b.type === "cc" && !b.construct && !b.train);
+  if (!cc) return;
+  if (state.minerals[owner] < C.cc.trainCost) return;
+  if (supplyUsed(owner) >= supplyCap(owner)) return;
+  state.minerals[owner] -= C.cc.trainCost;
+  cc.train = { progress: 0, total: C.cc.trainTime };
+}
+
+function freeIdle(owner, node) {
+  // Get an idle SCV, pulling one off mining if necessary.
+  let scv = unitsOf(owner, node, "idle")[0];
+  if (!scv) { scv = unitsOf(owner, node, "mining")[0]; if (scv) scv.task = "idle"; }
+  return scv;
+}
+
+function startBuilding(owner, node, type) {
+  const cfg = type === "depot" ? C.depot : C.barracks;
+  if (state.minerals[owner] < cfg.cost) return false;
+  if (type === "barracks" && !hasCompletedDepot(owner)) return false;
+  const scv = freeIdle(owner, node);
+  if (!scv) return false;
+  state.minerals[owner] -= cfg.cost;
+  const b = {
+    id: idSeq++, owner, node, type,
+    hp: cfg.hp, maxHp: cfg.hp,
+    construct: { progress: 0, total: cfg.build }, train: null,
+  };
+  state.buildings.push(b);
+  scv.task = "building";
+  scv.buildingId = b.id;
+  return true;
+}
+
+function sendUnits(owner, node, n) {
+  const pool = controllable(owner, node);
+  // Send idle first, then miners.
+  pool.sort((a, b) => (a.task === "idle" ? 0 : 1) - (b.task === "idle" ? 0 : 1));
+  for (const u of pool.slice(0, n)) {
+    u.task = "moving";
+    u.node = -1; // off-map while crossing: not minable, not targetable, hidden by fog
+    u.transit = { to: node === HOME ? AWAY : HOME, progress: 0 };
+  }
+}
+
+function setTask(owner, node, n, from, to) {
+  const pool = unitsOf(owner, node, from).slice(0, n);
+  for (const u of pool) u.task = to;
+}
+
+/* -------------------------------- Bot -------------------------------- */
+function botEval() {
+  const home = AWAY;
+  const min = () => state.minerals[BOT];
+  const underAttack = state.units.some(u => u.owner === HUMAN && u.node === home);
+
+  if (underAttack) {
+    // Recall miners to idle so they defend the base.
+    unitsOf(BOT, home, "mining").forEach(u => u.task = "idle");
+  } else {
+    // Periodic attack wave: only commit if we have a healthy SCV count at home.
+    const atHome = state.units.filter(u => u.owner === BOT && u.node === home &&
+      (u.task === "idle" || u.task === "mining"));
+    if (state.time - state.bot.lastWave >= 60 && atHome.length >= 6) {
+      const n = 2 + ((Math.random() * 2) | 0); // 2–3
+      sendUnits(BOT, home, n);
+      state.bot.lastWave = state.time;
+    }
+  }
+
+  // Supply: pre-empt being blocked.
+  if (supplyUsed(BOT) >= supplyCap(BOT) - 2 && min() >= C.depot.cost &&
+      !state.buildings.some(b => b.owner === BOT && b.type === "depot" && b.construct)) {
+    startBuilding(BOT, home, "depot");
+  }
+  // Train SCVs whenever the CC is free and supply allows.
+  if (min() >= C.cc.trainCost && supplyUsed(BOT) < supplyCap(BOT)) trainSCV(BOT);
+  // Tech up to a Barracks once a depot is done.
+  if (hasCompletedDepot(BOT) && min() >= C.barracks.cost && !hasBarracks(BOT) &&
+      !state.buildings.some(b => b.owner === BOT && b.type === "barracks" && b.construct)) {
+    startBuilding(BOT, home, "barracks");
+  }
+  // Put any remaining idlers back on minerals — but never while defending.
+  if (!underAttack && state.field[home] > 0)
+    unitsOf(BOT, home, "idle").forEach(u => u.task = "mining");
+}
+
+/* ------------------------------ Rendering ---------------------------- */
+const $ = id => document.getElementById(id);
+const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks" };
+
+function svgIcon(kind) {
+  if (kind === "cc")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><rect x="3" y="9" width="18" height="11" rx="1"/><path d="M7 9V6h10v3M12 13v3"/></svg>`;
+  if (kind === "depot")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><rect x="4" y="8" width="16" height="10" rx="2"/><path d="M4 12h16"/></svg>`;
+  if (kind === "barracks")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><path d="M4 18V8l8-4 8 4v10"/><path d="M9 18v-5h6v5"/></svg>`;
+  if (kind === "scv")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#ffd27a" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M12 5v3M12 16v3M5 12h3M16 12h3"/></svg>`;
+  if (kind === "mineral")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="#41d6ff" stroke="#0a1a22" stroke-width="1"><path d="M12 3l4 6-4 12-4-12z"/></svg>`;
+  return "";
+}
+
+function hpBar(hp, maxHp) {
+  const p = Math.max(0, hp / maxHp);
+  const cls = p > 0.5 ? "" : p > 0.25 ? "mid" : "low";
+  return `<div class="bar hp ${cls}"><i style="width:${(p * 100).toFixed(0)}%"></i></div>`;
+}
+function progBar(progress, total) {
+  return `<div class="bar prog"><i style="width:${((progress / total) * 100).toFixed(0)}%"></i></div>`;
+}
+
+function render() {
+  // Status bar (human numbers).
+  $("s-min").textContent = Math.floor(state.minerals[HUMAN]);
+  const used = supplyUsed(HUMAN), cap = supplyCap(HUMAN);
+  $("s-sup").textContent = `${used} / ${cap}`;
+  $("s-supwrap").className = "stat supply" + (used >= cap ? " blocked" : "");
+  $("s-time").textContent = fmtTime(state.time);
+
+  // Nodes.
+  const board = $("board");
+  board.innerHTML = "";
+  board.appendChild(renderNode(HOME));
+  board.appendChild(renderNode(AWAY));
+
+  renderTransit();
+  if (ui.sheet) renderSheet();
+}
+
+function renderNode(node) {
+  const el = document.createElement("div");
+  el.className = "node " + (node === HOME ? "home" : "away");
+  const fieldLeft = Math.ceil(state.field[node]);
+  el.innerHTML = `<div class="node-head">
+      <h1>${NODE_NAMES[node]}</h1>
+      <span class="field">◆ ${fieldLeft} min left</span>
+    </div>`;
+
+  // --- Your forces (always visible) ---
+  const mine = document.createElement("div");
+  mine.className = "force-mine";
+  mine.innerHTML = `<div class="section-label">Your forces</div>`;
+  appendForces(mine, HUMAN, node, true);
+  el.appendChild(mine);
+
+  // --- Enemy forces (fog of war) ---
+  const present = state.units.some(u => u.owner === HUMAN && u.node === node) ||
+                  state.buildings.some(b => b.owner === HUMAN && b.node === node);
+  const en = document.createElement("div");
+  en.className = "force-enemy";
+  en.innerHTML = `<div class="section-label">Enemy forces</div>`;
+  if (present) {
+    const had = appendForces(en, BOT, node, false);
+    if (!had) en.innerHTML += `<div class="unknown">No enemy presence.</div>`;
+  } else {
+    en.innerHTML += `<div class="unknown">Unknown — no scouts here.</div>`;
+  }
+  el.appendChild(en);
+  return el;
+}
+
+// Returns true if anything was rendered. `interactive` enables tap-to-order.
+function appendForces(container, owner, node, interactive) {
+  let any = false;
+  // Buildings.
+  for (const b of buildingsOf(owner, node)) {
+    any = true;
+    const row = document.createElement(interactive && b.type === "cc" ? "button" : "div");
+    row.className = "row" + (interactive && b.type === "cc" ? "" : " static");
+    let meta = "";
+    if (b.construct) meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%${progBar(b.construct.progress, b.construct.total)}`;
+    else if (b.train) meta = `Training SCV ${Math.floor(b.train.progress / b.train.total * 100)}%${progBar(b.train.progress, b.train.total)}`;
+    else if (b.type === "cc") meta = `Idle · supply +${C.cc.supply}`;
+    else meta = `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
+    row.innerHTML = `${svgIcon(b.type)}<div class="body">
+        <div class="name">${BUILDING_LABEL[b.type]}</div>
+        <div class="meta">${meta}</div>
+        ${hpBar(b.hp, b.maxHp)}
+      </div>${interactive && b.type === "cc" ? '<span class="chev">›</span>' : ""}`;
+    if (interactive && b.type === "cc")
+      row.onclick = () => openSheet({ kind: "cc", node, ref: b.id });
+    container.appendChild(row);
+  }
+  // SCV group summary (by task, at this node).
+  const list = unitsOf(owner, node);
+  if (list.length) {
+    any = true;
+    const mining = list.filter(u => u.task === "mining").length;
+    const idle = list.filter(u => u.task === "idle").length;
+    const building = list.filter(u => u.task === "building").length;
+    const parts = [];
+    if (mining) parts.push(`${mining} mining`);
+    if (idle) parts.push(`${idle} idle`);
+    if (building) parts.push(`${building} building`);
+    const row = document.createElement(interactive ? "button" : "div");
+    row.className = "row" + (interactive ? "" : " static");
+    row.innerHTML = `${svgIcon("scv")}<div class="body">
+        <div class="name">SCVs — ${list.length}</div>
+        <div class="meta">${parts.join(", ") || "—"}</div>
+      </div>${interactive ? '<span class="chev">›</span>' : ""}`;
+    if (interactive) row.onclick = () => openSheet({ kind: "scv", node, n: 1 });
+    container.appendChild(row);
+  }
+  return any;
+}
+
+function renderTransit() {
+  const wrap = $("transit");
+  // Fog: only the player's own units are visible while crossing the map.
+  const mine = state.units.filter(u => u.owner === HUMAN && u.task === "moving");
+  if (!mine.length) { wrap.innerHTML = ""; return; }
+  const byDir = {};
+  for (const u of mine) {
+    const k = u.transit.to;
+    (byDir[k] = byDir[k] || []).push(u);
+  }
+  let html = `<div class="section-label">In transit</div>`;
+  for (const to in byDir) {
+    const group = byDir[to];
+    const avg = group.reduce((s, u) => s + u.transit.progress, 0) / group.length;
+    const eta = Math.max(0, TRAVEL_TIME - Math.round(avg));
+    html += `<div class="transit-row">
+        <div class="name">${group.length} SCV${group.length > 1 ? "s" : ""} → ${NODE_NAMES[to]}</div>
+        <div class="meta">ETA ${eta}s</div>
+        ${progBar(avg, TRAVEL_TIME)}
+      </div>`;
+  }
+  wrap.innerHTML = html;
+}
+
+/* ---------------------------- Action sheet --------------------------- */
+function openSheet(sel) { ui.sheet = sel; renderSheet(); }
+function closeSheet() {
+  ui.sheet = null;
+  $("sheet").className = "";
+  $("sheet-backdrop").className = "";
+}
+
+function renderSheet() {
+  const sel = ui.sheet;
+  const sheet = $("sheet");
+  $("sheet-backdrop").className = "open";
+  sheet.className = "open";
+  const mineNow = Math.floor(state.minerals[HUMAN]);
+
+  if (sel.kind === "cc") {
+    const cc = state.buildings.find(b => b.id === sel.ref);
+    if (!cc) { closeSheet(); return; }
+    const busy = cc.train || cc.construct;
+    const supplyOK = supplyUsed(HUMAN) < supplyCap(HUMAN);
+    const afford = mineNow >= C.cc.trainCost;
+    const dis = busy || !supplyOK || !afford;
+    let note = busy ? "Busy training." : !supplyOK ? "Supply capped — build a Supply Depot."
+      : !afford ? "Not enough minerals." : "";
+    sheet.innerHTML = `
+      <h2>Command Center</h2>
+      <div class="sheet-sub">${NODE_NAMES[sel.node]} · HP ${Math.ceil(cc.hp)}/${cc.maxHp}</div>
+      <button class="act" ${dis ? "disabled" : ""} id="a-train">
+        Train SCV <span class="cost">— ${C.cc.trainCost} min · ${C.cc.trainTime}s · +1 supply</span>
+      </button>
+      ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
+      <button class="act-close" id="a-close">Close</button>`;
+    bind("a-train", () => { trainSCV(HUMAN); render(); });
+  } else {
+    // SCV group sheet.
+    const node = sel.node;
+    const all = controllable(HUMAN, node);
+    const idle = unitsOf(HUMAN, node, "idle").length;
+    const mining = unitsOf(HUMAN, node, "mining").length;
+    const max = Math.max(1, all.length);
+    sel.n = Math.min(Math.max(1, sel.n || 1), max);
+    const n = sel.n;
+    const other = node === HOME ? AWAY : HOME;
+    const depotOK = idle >= 1 && mineNow >= C.depot.cost;
+    const rax = hasCompletedDepot(HUMAN);
+    const raxOK = idle >= 1 && mineNow >= C.barracks.cost && rax;
+
+    sheet.innerHTML = `
+      <h2>SCVs at ${NODE_NAMES[node]}</h2>
+      <div class="sheet-sub">${all.length} available · ${mining} mining · ${idle} idle</div>
+
+      <div class="stepper">
+        <button id="n-minus">−</button>
+        <div class="count" id="n-count">${n}</div>
+        <button id="n-plus">+</button>
+        <div class="label">SCVs selected<br>(for send / re-task)</div>
+      </div>
+      <input type="range" id="n-range" min="1" max="${max}" value="${n}">
+
+      <button class="act" id="a-send" ${all.length ? "" : "disabled"}>
+        Send ${n} to ${NODE_NAMES[other]} <span class="cost">— ${TRAVEL_TIME}s travel</span>
+      </button>
+      <button class="act secondary" id="a-mine" ${idle ? "" : "disabled"}>
+        Set ${Math.min(n, idle) || n} to mining
+      </button>
+      <button class="act secondary" id="a-idle" ${mining ? "" : "disabled"}>
+        Set ${Math.min(n, mining) || n} to idle
+      </button>
+      <button class="act secondary" id="a-depot" ${depotOK ? "" : "disabled"}>
+        Build Supply Depot <span class="cost">— ${C.depot.cost} min · ${C.depot.build}s</span>
+      </button>
+      <button class="act secondary" id="a-rax" ${raxOK ? "" : "disabled"}>
+        Build Barracks <span class="cost">— ${C.barracks.cost} min · ${C.barracks.build}s${rax ? "" : " · needs Depot"}</span>
+      </button>
+      <button class="act-close" id="a-close">Close</button>`;
+
+    const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
+    bind("n-minus", () => setN(sel.n - 1));
+    bind("n-plus", () => setN(sel.n + 1));
+    $("n-range").oninput = e => setN(parseInt(e.target.value, 10));
+
+    bind("a-send", () => { sendUnits(HUMAN, node, sel.n); closeSheet(); render(); });
+    bind("a-mine", () => { setTask(HUMAN, node, sel.n, "idle", "mining"); refreshSheet(); });
+    bind("a-idle", () => { setTask(HUMAN, node, sel.n, "mining", "idle"); refreshSheet(); });
+    bind("a-depot", () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); });
+    bind("a-rax", () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
+  }
+  bind("a-close", closeSheet);
+}
+
+function refreshSheet() { render(); if (ui.sheet) renderSheet(); }
+function bind(id, fn) { const el = $(id); if (el) el.onclick = fn; }
+
+/* ------------------------------- Boot -------------------------------- */
+$("sheet-backdrop").onclick = closeSheet;
+$("end-again").onclick = init;
+init();
+</script>
+</body>
+</html>
