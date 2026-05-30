@@ -74,6 +74,7 @@
     color: var(--txt); font: inherit; cursor: pointer;
   }
   .row.static { cursor: default; }
+  .row.seen { opacity: .6; border-style: dashed; }
   .row .icon { width: 26px; height: 26px; flex: 0 0 26px; }
   .row .body { flex: 1; min-width: 0; }
   .row .name { font-weight: 600; font-size: 14px; }
@@ -102,6 +103,24 @@
   }
   .transit-row .name { font-size: 14px; font-weight: 600; }
   .transit-row .meta { font-size: 12px; color: var(--dim); }
+
+  /* Notifications */
+  #notes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  #notes:empty { display: none; }
+  .note {
+    padding: 11px 14px; border-radius: 10px; font-weight: 600; font-size: 14px;
+    text-align: center; box-shadow: 0 4px 14px rgba(0,0,0,.45);
+  }
+  .note.loss { background: #3a1d24; border: 1px solid var(--bad); color: #ffd7d7; }
+  .note.alert {
+    background: #5a1414; border: 1px solid #ff5a5a; color: #fff;
+    font-size: 17px; letter-spacing: .03em;
+    animation: alertpulse .7s ease-in-out infinite alternate;
+  }
+  @keyframes alertpulse {
+    from { box-shadow: 0 0 0 0 rgba(255,70,70,.65); }
+    to   { box-shadow: 0 0 0 9px rgba(255,70,70,0); }
+  }
 
   /* Action sheet */
   #sheet-backdrop {
@@ -171,6 +190,7 @@
     </div>
   </div>
 
+  <div id="notes"></div>
   <div id="board"></div>
   <div id="transit"></div>
   <div class="hint">Tap your Command Center or SCV group to give orders.</div>
@@ -217,6 +237,9 @@ function init() {
     minerals: { human: 50, bot: 50 },
     units: [],
     buildings: [],
+    notes: [],                  // transient on-screen notifications
+    underAttack: false,         // edge-trigger for the "under attack" alert
+    seen: [null, null],         // per-node last-seen enemy buildings (null = never scouted)
     bot: { lastEval: 0, lastWave: 30 }, // first wave can come after ~90s
   };
   // Each side: 1 Command Center + 4 idle SCVs at its home node.
@@ -286,16 +309,45 @@ const hasBarracks = owner =>
 function tick() {
   if (state.over) return;
   state.time++;
+  state.notes = state.notes.filter(n => n.until > state.time); // expire old toasts
 
   mineStep();
   buildingStep();
   unitStep();
   combatStep();
   cleanupDead();
+  alertStep();
+  fogStep();
   if (state.time - state.bot.lastEval >= 3) { botEval(); state.bot.lastEval = state.time; }
 
   checkEnd();
   render();
+}
+
+function notify(text, kind, ttl = 5) {
+  state.notes.push({ id: idSeq++, text, kind, until: state.time + ttl });
+}
+
+// Fire a prominent alert the moment enemies first appear at Your Base (edge-triggered,
+// so it re-fires for each fresh wave rather than spamming every tick).
+function alertStep() {
+  const enemyHome = state.units.some(u => u.owner === BOT && u.node === HOME);
+  if (enemyHome && !state.underAttack) notify("⚠️ UNDER ATTACK at Your Base!", "alert", 6);
+  state.underAttack = enemyHome;
+}
+
+// Fog memory: while we have a unit/building at a node, remember a frozen snapshot of
+// the enemy *buildings* there. Units are never remembered — only seen when present.
+function fogStep() {
+  for (const node of [HOME, AWAY]) {
+    const present = state.units.some(u => u.owner === HUMAN && u.node === node) ||
+                    state.buildings.some(b => b.owner === HUMAN && b.node === node);
+    if (!present) continue;
+    state.seen[node] = state.buildings
+      .filter(b => b.owner === BOT && b.node === node)
+      .map(b => ({ type: b.type, hp: b.hp, maxHp: b.maxHp,
+                   construct: b.construct ? { ...b.construct } : null }));
+  }
 }
 
 function mineStep() {
@@ -382,15 +434,20 @@ function cleanupDead() {
     if (b.hp > 0) return true;
     const scv = state.units.find(u => u.buildingId === b.id);
     if (scv) { scv.task = "idle"; scv.buildingId = null; }
+    if (b.owner === HUMAN && b.type !== "cc") // CC loss is the defeat screen
+      notify(`💥 Your ${BUILDING_LABEL[b.type]} was destroyed!`, "loss", 6);
     return false;
   });
   // Remove dead units; a builder dying cancels its building (no refund).
   const deadBuilds = [];
+  let scvLost = 0;
   state.units = state.units.filter(u => {
     if (u.hp > 0) return true;
     if (u.buildingId) deadBuilds.push(u.buildingId);
+    if (u.owner === HUMAN) scvLost++;
     return false;
   });
+  if (scvLost) notify(`Lost ${scvLost} SCV${scvLost > 1 ? "s" : ""}.`, "loss", 4);
   if (deadBuilds.length) {
     state.buildings = state.buildings.filter(b =>
       !(deadBuilds.includes(b.id) && b.construct));
@@ -553,6 +610,7 @@ function render() {
   board.appendChild(renderNode(AWAY));
 
   renderTransit();
+  $("notes").innerHTML = state.notes.map(n => `<div class="note ${n.kind}">${n.text}</div>`).join("");
   if (ui.sheet) renderSheet();
 }
 
@@ -562,7 +620,7 @@ function renderNode(node) {
   const fieldLeft = Math.ceil(state.field[node]);
   el.innerHTML = `<div class="node-head">
       <h1>${NODE_NAMES[node]}</h1>
-      <span class="field">◆ ${fieldLeft} min left</span>
+      <span class="field">💎 ${fieldLeft} left</span>
     </div>`;
 
   // --- Your forces (always visible) ---
@@ -577,15 +635,42 @@ function renderNode(node) {
                   state.buildings.some(b => b.owner === HUMAN && b.node === node);
   const en = document.createElement("div");
   en.className = "force-enemy";
-  en.innerHTML = `<div class="section-label">Enemy forces</div>`;
   if (present) {
+    en.innerHTML = `<div class="section-label">Enemy forces</div>`;
     const had = appendForces(en, BOT, node, false);
     if (!had) en.innerHTML += `<div class="unknown">No enemy presence.</div>`;
   } else {
-    en.innerHTML += `<div class="unknown">Unknown — no scouts here.</div>`;
+    // Out of sight: show the last-seen buildings (no units) or "Unknown" if never scouted.
+    en.innerHTML = `<div class="section-label">Enemy forces — last seen</div>`;
+    const snap = state.seen[node];
+    if (snap == null) {
+      en.innerHTML = `<div class="section-label">Enemy forces</div>` +
+        `<div class="unknown">Unknown — no scouts here.</div>`;
+    } else if (snap.length === 0) {
+      en.innerHTML += `<div class="unknown">Last seen: no buildings.</div>`;
+    } else {
+      appendSeenBuildings(en, snap);
+    }
   }
   el.appendChild(en);
   return el;
+}
+
+// Render remembered (frozen) enemy buildings from a fog snapshot — info only, dimmed.
+function appendSeenBuildings(container, snap) {
+  for (const b of snap) {
+    const row = document.createElement("div");
+    row.className = "row static seen";
+    const meta = b.construct
+      ? `Was building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%`
+      : `Last seen · HP ${Math.ceil(b.hp)}/${b.maxHp}`;
+    row.innerHTML = `${svgIcon(b.type)}<div class="body">
+        <div class="name">${BUILDING_LABEL[b.type]}</div>
+        <div class="meta">${meta}</div>
+        ${hpBar(b.hp, b.maxHp)}
+      </div>`;
+    container.appendChild(row);
+  }
 }
 
 // Returns true if anything was rendered. `interactive` enables tap-to-order.
@@ -687,7 +772,7 @@ function renderSheet() {
       <h2>Command Center</h2>
       <div class="sheet-sub">${NODE_NAMES[sel.node]} · HP ${Math.ceil(cc.hp)}/${cc.maxHp} · Queue ${inQueue}/${C.cc.queueMax}</div>
       <button class="act" ${dis ? "disabled" : ""} id="a-train">
-        Train SCV <span class="cost">— ${C.cc.trainCost} min · ${C.cc.trainTime}s · +1 supply</span>
+        Train SCV <span class="cost">— ${C.cc.trainCost} 💎 · ${C.cc.trainTime}s · +1 supply</span>
       </button>
       ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
       <button class="act-close" id="a-close">Close</button>`;
@@ -728,10 +813,10 @@ function renderSheet() {
         Set ${Math.min(n, mining) || n} to idle
       </button>
       <button class="act secondary" id="a-depot" ${depotOK ? "" : "disabled"}>
-        Build Supply Depot <span class="cost">— ${C.depot.cost} min · ${C.depot.build}s</span>
+        Build Supply Depot <span class="cost">— ${C.depot.cost} 💎 · ${C.depot.build}s</span>
       </button>
       <button class="act secondary" id="a-rax" ${raxOK ? "" : "disabled"}>
-        Build Barracks <span class="cost">— ${C.barracks.cost} min · ${C.barracks.build}s${rax ? "" : " · needs Depot"}</span>
+        Build Barracks <span class="cost">— ${C.barracks.cost} 💎 · ${C.barracks.build}s${rax ? "" : " · needs Depot"}</span>
       </button>
       <button class="act-close" id="a-close">Close</button>`;
 
