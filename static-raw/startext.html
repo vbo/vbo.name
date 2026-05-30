@@ -682,9 +682,9 @@ function appendForces(container, owner, node, interactive) {
     const row = document.createElement(interactive && b.type === "cc" ? "button" : "div");
     row.className = "row" + (interactive && b.type === "cc" ? "" : " static");
     let meta = "";
-    if (b.construct) meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%${progBar(b.construct.progress, b.construct.total)}`;
-    else if (b.train) meta = `Training SCV ${Math.floor(b.train.progress / b.train.total * 100)}%${b.queued ? ` (+${b.queued} queued)` : ""}${progBar(b.train.progress, b.train.total)}`;
-    else if (b.type === "cc") meta = `Idle · supply +${C.cc.supply}`;
+    if (b.construct) meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%${interactive ? progBar(b.construct.progress, b.construct.total) : ""}`;
+    else if (b.train && interactive) meta = `Training SCV ${Math.floor(b.train.progress / b.train.total * 100)}%${b.queued ? ` (+${b.queued} queued)` : ""}${progBar(b.train.progress, b.train.total)}`;
+    else if (b.type === "cc") meta = `${interactive ? "Idle · supply +" + C.cc.supply : "HP " + Math.ceil(b.hp) + "/" + b.maxHp}`;
     else meta = `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
     row.innerHTML = `${svgIcon(b.type)}<div class="body">
         <div class="name">${BUILDING_LABEL[b.type]}</div>
