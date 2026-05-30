@@ -627,48 +627,64 @@ function botEval() {
     if (humanTotal <= 3) state.bot.waveInterval = Math.min(120, iv + 8); // player struggling → ease off
   }
 
+  // "Skilled" = adaptive difficulty has ramped the bot up against a strong player.
+  const skilled = state.bot.waveInterval <= 60;
+
   if (underAttack) {
     // Recall mining SCVs to defend; marines are already idle and auto-fight.
     unitsOf(BOT, home, "mining", "scv").forEach(u => u.task = "idle");
   } else {
-    // Attack wave: prefer marines, fall back to SCV rush if no barracks yet.
+    // Attack with the *surplus* once we have an overwhelming army, always keeping a
+    // home reserve so a player deathball can't roll an undefended base. (Feeding
+    // small waves to their death was what made the old bot a pushover.)
     const marines = idleMarines(BOT, home);
-    const scvsHome = state.units.filter(u => u.owner === BOT && u.node === home &&
-      u.type === "scv" && (u.task === "idle" || u.task === "mining"));
+    const attackAt = skilled ? 16 : 24; // army size that triggers an attack
+    const reserve  = skilled ? 8  : 14; // marines always held back to defend
     const waveDue = state.time - state.bot.lastWave >= state.bot.waveInterval;
-    const minWave = state.bot.waveInterval <= 60 ? 4 : 3;
-    if (waveDue) {
-      if (marines.length >= minWave) {
-        sendUnits(BOT, home, marines.length, "marine");
-        state.bot.lastWave = state.time;
-      } else if (!botRax && scvsHome.length >= 6) {
-        sendUnits(BOT, home, 2 + ((rng() * 2) | 0), "scv");
+    if (waveDue && marines.length >= attackAt) {
+      sendUnits(BOT, home, marines.length - reserve, "marine");
+      state.bot.lastWave = state.time;
+    } else if (waveDue && !botRax) {
+      // No barracks yet: an early SCV poke, only if it won't gut mining.
+      const scvsHome = state.units.filter(u => u.owner === BOT && u.node === home &&
+        u.type === "scv" && (u.task === "idle" || u.task === "mining"));
+      if (scvsHome.length >= 8) {
+        sendUnits(BOT, home, 3, "scv");
         state.bot.lastWave = state.time;
       }
     }
   }
 
-  // Supply: build depots before getting blocked.
-  if (supplyUsed(BOT) >= supplyCap(BOT) - 2 && min() >= C.depot.cost &&
+  // Supply: build depots with a healthy buffer so production never stalls.
+  if (supplyUsed(BOT) >= supplyCap(BOT) - 4 && supplyCap(BOT) < SUPPLY_MAX &&
+      min() >= C.depot.cost &&
       !state.buildings.some(b => b.owner === BOT && b.type === "depot" && b.construct)) {
     startBuilding(BOT, home, "depot");
   }
 
-  // SCV production: cap at 10 once barracks is running (shift investment to marines).
+  // Economy: keep SCVs coming (bigger cap than before so the army is funded).
   const botSCVs = state.units.filter(u => u.owner === BOT && u.type === "scv").length;
+  const scvCap = skilled ? 18 : 12;
   if (min() >= C.cc.trainCost && supplyUsed(BOT) < supplyCap(BOT) &&
-      (botSCVs < 10 || !botRax)) {
+      (botSCVs < scvCap || !botRax)) {
     queueSCV(BOT, 1);
   }
 
-  // Tech: build barracks (no depot prerequisite).
-  if (min() >= C.barracks.cost && !hasBarracks(BOT)) {
+  // Tech: expand barracks over time so marine output scales with the player's.
+  const raxCount = state.buildings.filter(b => b.owner === BOT && b.type === "barracks").length;
+  const raxTarget = skilled ? Math.min(6, 1 + Math.floor(state.time / 60))
+                            : Math.min(3, 1 + Math.floor(state.time / 120));
+  const raxBuilding = state.buildings.some(b => b.owner === BOT && b.type === "barracks" && b.construct);
+  if (raxCount < raxTarget && min() >= C.barracks.cost && !raxBuilding) {
     startBuilding(BOT, home, "barracks");
   }
 
-  // Pump marines continuously once barracks is up.
-  if (botRax && min() >= C.marine.cost && supplyUsed(BOT) < supplyCap(BOT)) {
+  // Pump marines from every idle barracks (one top-up per barracks per eval).
+  let guard = raxCount;
+  while (botRax && min() >= C.marine.cost && supplyUsed(BOT) < supplyCap(BOT) && guard-- > 0) {
+    const before = min();
     queueMarine(BOT, home);
+    if (min() === before) break; // all barracks queues full
   }
 
   // Idle SCVs back to mining when safe.
@@ -1343,6 +1359,30 @@ function runTests() {
       ok(botSCVs > 4, "bot trained extra SCVs");
       ok(hasCompletedDepot(BOT) || state.buildings.some(b => b.owner === BOT && b.type === "depot"),
         "bot built a depot");
+    },
+    "bot scales to multiple barracks and a standing army"() {
+      resetState(7);
+      run(600);
+      const rax = state.buildings.filter(b => b.owner === BOT && b.type === "barracks").length;
+      ok(rax >= 2, `bot expands barracks (got ${rax})`);
+      const marines = state.units.filter(u => u.owner === BOT && u.type === "marine").length;
+      ok(marines >= 8, `bot fields a real marine army (got ${marines})`);
+    },
+    "bot keeps a home reserve instead of feeding its whole army"() {
+      resetState(7);
+      run(600);
+      // Once it has attacked, it must still hold defenders at home.
+      const homeMarines = state.units.filter(u =>
+        u.owner === BOT && u.node === AWAY && u.type === "marine").length;
+      ok(homeMarines >= 1, `bot defends its base (home marines ${homeMarines})`);
+    },
+    "bot defends an 18-marine deathball after macroing"() {
+      resetState(7);
+      run(600); // let the bot build its economy/army
+      // Player masses 18 marines and sends them at the bot's base.
+      for (let i = 0; i < 18; i++) { const m = newMarine(HUMAN, AWAY); m.task = "idle"; }
+      run(120);
+      ok(state.over !== "win", "an 18-marine push alone does not instantly win");
     },
     "pause flag freezes simulation in the loop"() {
       resetState(1);
