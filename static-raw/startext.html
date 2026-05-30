@@ -279,7 +279,11 @@ function resetState(seed) {
     notes: [],                  // transient on-screen notifications
     underAttack: false,         // edge-trigger for the "under attack" alert
     seen: [null, null],         // per-node last-seen enemy buildings (null = never scouted)
-    bot: { lastEval: 0, lastWave: 30, waveInterval: 90 }, // adaptive; starts at 90s between waves
+    bot: {
+      lastEval: 0, lastWave: 30, waveInterval: 90, // adaptive; starts at 90s between waves
+      enemyArmy: 0,    // player army size last *scouted* at HOME (no cheating: only seen counts)
+      scoutTime: null, // tick of that last sighting; null = never scouted
+    },
   };
   // Each side: 1 Command Center + 4 idle SCVs at its home node.
   spawnBase(HUMAN, HOME);
@@ -631,25 +635,62 @@ function botEval() {
   const skilled = state.bot.waveInterval <= 60;
 
   if (underAttack) {
-    // Recall mining SCVs to defend; marines are already idle and auto-fight.
-    unitsOf(BOT, home, "mining", "scv").forEach(u => u.task = "idle");
+    // Marines defend automatically (they're idle and auto-fight). Only pull SCVs
+    // off mining when the marines alone can't hold — and only enough to cover the
+    // shortfall, always keeping a core of miners so income never fully stops.
+    // (Throwing the whole worker line at every attack was what killed the bot's
+    // economy: it lost all SCVs in wave 1 and couldn't rebuild for wave 2.)
+    const attackers = state.units.filter(u =>
+      u.owner === HUMAN && u.node === home && u.hp > 0).length;
+    const defenders = idleMarines(BOT, home).length;
+    const miners = unitsOf(BOT, home, "mining", "scv");
+    const KEEP_MINING = 6; // protect income: never conscript below this many miners
+    if (defenders < attackers) {
+      const need = Math.min(attackers - defenders, Math.max(0, miners.length - KEEP_MINING));
+      miners.slice(0, need).forEach(u => u.task = "idle");
+    } else {
+      // Marines have it covered — return any panicked SCVs to mining.
+      if (state.field[home] > 0)
+        unitsOf(BOT, home, "idle", "scv").forEach(u => u.task = "mining");
+    }
   } else {
-    // Attack with the *surplus* once we have an overwhelming army, always keeping a
-    // home reserve so a player deathball can't roll an undefended base. (Feeding
-    // small waves to their death was what made the old bot a pushover.)
+    // Not under attack. Decide whether to commit an attack based on *scouted*
+    // intel — the bot sends a lone marine to see the player's army, then only
+    // pushes when it clearly outnumbers what it saw. This stops it from feeding
+    // its whole army into a turtle and going broke. (No cheating: enemyArmy is
+    // only updated when a bot unit is physically at the player's base.)
     const marines = idleMarines(BOT, home);
-    const attackAt = skilled ? 16 : 24; // army size that triggers an attack
-    const reserve  = skilled ? 8  : 14; // marines always held back to defend
+    const reserve = skilled ? 8 : 14; // marines held back to defend
     const waveDue = state.time - state.bot.lastWave >= state.bot.waveInterval;
-    if (waveDue && marines.length >= attackAt) {
-      sendUnits(BOT, home, marines.length - reserve, "marine");
-      state.bot.lastWave = state.time;
-    } else if (waveDue && !botRax) {
+
+    // Update intel whenever any bot unit stands at the player's base.
+    if (state.units.some(u => u.owner === BOT && u.node === HOME)) {
+      state.bot.enemyArmy = state.units.filter(u => u.owner === HUMAN && u.node === HOME &&
+        (u.type === "marine" || u.type === "scv")).length;
+      state.bot.scoutTime = state.time;
+    }
+    const intelFresh = state.bot.scoutTime != null && state.time - state.bot.scoutTime <= 120;
+    const scoutOut = state.units.some(u =>
+      u.owner === BOT && u.node < 0 && u.task === "moving"); // a unit already en route
+
+    if (!botRax) {
       // No barracks yet: an early SCV poke, only if it won't gut mining.
       const scvsHome = state.units.filter(u => u.owner === BOT && u.node === home &&
         u.type === "scv" && (u.task === "idle" || u.task === "mining"));
-      if (scvsHome.length >= 8) {
+      if (waveDue && scvsHome.length >= 8) {
         sendUnits(BOT, home, 3, "scv");
+        state.bot.lastWave = state.time;
+      }
+    } else if (!intelFresh && !scoutOut && marines.length > reserve) {
+      // Intel is stale: spend one marine to scout the player's strength.
+      sendUnits(BOT, home, 1, "marine");
+    } else if (waveDue && intelFresh) {
+      // Commit only with a striking force that clearly beats the scouted defense
+      // (and is meaningfully large), always keeping the home reserve.
+      const strike = marines.length - reserve;
+      const needed = Math.max(12, Math.ceil(state.bot.enemyArmy * 1.4) + 4);
+      if (strike >= needed) {
+        sendUnits(BOT, home, strike, "marine");
         state.bot.lastWave = state.time;
       }
     }
@@ -1402,6 +1443,57 @@ function runTests() {
       for (let i = 0; i < 18; i++) { const m = newMarine(HUMAN, AWAY); m.task = "idle"; }
       run(120);
       ok(state.over !== "win", "an 18-marine push alone does not instantly win");
+    },
+    "bot won't commit a big attack without fresh scouted intel"() {
+      resetState(1);
+      cheat(BOT, 0); // freeze economy so botEval only makes the attack decision
+      state.bot.lastWave = -999; // wave is due
+      state.bot.scoutTime = null; // never scouted
+      // big idle army + a barracks so the attack branch is reachable
+      state.buildings.push({ id: idSeq++, owner: BOT, node: AWAY, type: "barracks",
+        hp: 1000, maxHp: 1000, construct: null, train: null, queued: 0 });
+      for (let i = 0; i < 30; i++) { const m = newMarine(BOT, AWAY); m.task = "idle"; }
+      botEval();
+      const committed = state.units.filter(u =>
+        u.owner === BOT && u.type === "marine" && (u.task === "moving" || u.node === HOME)).length;
+      ok(committed <= 1, `no mass attack without intel (committed ${committed})`);
+    },
+    "bot attacks once intel shows it clearly outnumbers the player"() {
+      resetState(1);
+      cheat(BOT, 0);
+      state.bot.lastWave = -999;
+      state.bot.scoutTime = state.time; // fresh intel
+      state.bot.enemyArmy = 4;          // player looks weak
+      state.buildings.push({ id: idSeq++, owner: BOT, node: AWAY, type: "barracks",
+        hp: 1000, maxHp: 1000, construct: null, train: null, queued: 0 });
+      for (let i = 0; i < 30; i++) { const m = newMarine(BOT, AWAY); m.task = "idle"; }
+      botEval();
+      const committed = state.units.filter(u =>
+        u.owner === BOT && u.type === "marine" && (u.task === "moving" || u.node === HOME)).length;
+      ok(committed >= 12, `commits a real strike vs a weak scouted army (committed ${committed})`);
+    },
+    "defending bot keeps SCVs mining when marines suffice"() {
+      resetState(1);
+      state.minerals.bot = 0; // stop botEval from building/consuming SCVs
+      unitsOf(BOT, AWAY, null, "scv").forEach(u => u.task = "mining");
+      const miners = unitsOf(BOT, AWAY, "mining", "scv").length;
+      for (let i = 0; i < 5; i++) { const m = newMarine(BOT, AWAY); m.task = "idle"; }   // defenders
+      for (let i = 0; i < 2; i++) { const a = newMarine(HUMAN, AWAY); a.task = "idle"; } // attackers
+      botEval();
+      eq(unitsOf(BOT, AWAY, "mining", "scv").length, miners,
+        "miners untouched when marines outnumber attackers");
+    },
+    "defending bot pulls only the shortfall and keeps a mining core"() {
+      resetState(1);
+      state.minerals.bot = 0;
+      for (let i = 0; i < 6; i++) newSCV(BOT, AWAY);              // 10 SCVs total
+      unitsOf(BOT, AWAY, null, "scv").forEach(u => u.task = "mining");
+      const m = newMarine(BOT, AWAY); m.task = "idle";           // 1 defender
+      for (let i = 0; i < 5; i++) { const a = newMarine(HUMAN, AWAY); a.task = "idle"; } // 5 attackers
+      botEval();
+      // need = min(5-1, 10-6) = 4 pulled; a 6-miner core stays on the minerals.
+      eq(unitsOf(BOT, AWAY, "mining", "scv").length, 6, "keeps a 6-miner income core");
+      eq(unitsOf(BOT, AWAY, "idle", "scv").length, 4, "pulls exactly the 4-SCV shortfall");
     },
     "pause flag freezes simulation in the loop"() {
       resetState(1);
