@@ -791,19 +791,38 @@ function renderNode(node) {
 }
 
 // Render remembered (frozen) enemy buildings from a fog snapshot — info only, dimmed.
+// Grouped like live forces (CC individual; depots and barracks collapsed) so a big
+// enemy base doesn't become an overwhelming wall of rows.
 function appendSeenBuildings(container, snap) {
-  for (const b of snap) {
+  const mkRow = (icon, name, meta, hp, maxHp) => {
     const row = document.createElement("div");
     row.className = "row static seen";
+    row.innerHTML = `${svgIcon(icon)}<div class="body">
+        <div class="name">${name}</div>
+        <div class="meta">${meta}</div>
+        ${hp != null ? hpBar(hp, maxHp) : ""}
+      </div>`;
+    container.appendChild(row);
+  };
+
+  // Command Centers — individual (there's normally just one).
+  for (const b of snap.filter(b => b.type === "cc")) {
     const meta = b.construct
       ? `Was building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%`
       : `Last seen · HP ${Math.ceil(b.hp)}/${b.maxHp}`;
-    row.innerHTML = `${svgIcon(b.type)}<div class="body">
-        <div class="name">${BUILDING_LABEL[b.type]}</div>
-        <div class="meta">${meta}</div>
-        ${hpBar(b.hp, b.maxHp)}
-      </div>`;
-    container.appendChild(row);
+    mkRow("cc", "Command Center", meta, b.hp, b.maxHp);
+  }
+
+  // Supply Depots and Barracks — one summary row each.
+  for (const [type, label] of [["depot", "Supply Depot"], ["barracks", "Barracks"]]) {
+    const group = snap.filter(b => b.type === type);
+    if (!group.length) continue;
+    const underC = group.filter(b => b.construct).length;
+    const done = group.length - underC;
+    const parts = [];
+    if (done) parts.push(`${done} seen`);
+    if (underC) parts.push(`${underC} building`);
+    mkRow(type, `${label}${group.length > 1 ? ` ×${group.length}` : ""}`, parts.join(" · ") || "Last seen");
   }
 }
 
