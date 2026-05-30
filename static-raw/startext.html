@@ -279,6 +279,7 @@ function resetState(seed) {
     notes: [],                  // transient on-screen notifications
     underAttack: false,         // edge-trigger for the "under attack" alert
     seen: [null, null],         // per-node last-seen enemy buildings (null = never scouted)
+    seenUnits: [null, null],    // per-node last-seen enemy units {time,marines,scvs} (fades after a few s)
     bot: {
       lastEval: 0, lastWave: 30, waveInterval: 90, // adaptive; starts at 90s between waves
       enemyArmy: 0,    // player army size last *scouted* at HOME (no cheating: only seen counts)
@@ -390,8 +391,11 @@ function alertStep() {
   state.underAttack = enemyHome;
 }
 
+const SEEN_UNITS_TTL = 5; // seconds a last-seen enemy unit count lingers after we lose vision
+
 // Fog memory: while we have a unit/building at a node, remember a frozen snapshot of
-// the enemy *buildings* there. Units are never remembered — only seen when present.
+// the enemy *buildings* there. Enemy unit counts are also captured but only linger a
+// few seconds (SEEN_UNITS_TTL) so a scout that dies still reports what it saw.
 function fogStep() {
   for (const node of [HOME, AWAY]) {
     const present = state.units.some(u => u.owner === HUMAN && u.node === node) ||
@@ -401,6 +405,12 @@ function fogStep() {
       .filter(b => b.owner === BOT && b.node === node)
       .map(b => ({ type: b.type, hp: b.hp, maxHp: b.maxHp,
                    construct: b.construct ? { ...b.construct } : null }));
+    const foes = state.units.filter(u => u.owner === BOT && u.node === node);
+    state.seenUnits[node] = {
+      time: state.time,
+      marines: foes.filter(u => u.type === "marine").length,
+      scvs: foes.filter(u => u.type === "scv").length,
+    };
   }
 }
 
@@ -788,10 +798,14 @@ function render() {
 function renderNode(node) {
   const el = document.createElement("div");
   el.className = "node " + (node === HOME ? "home" : "away");
-  const fieldLeft = Math.ceil(state.field[node]);
+  const present = state.units.some(u => u.owner === HUMAN && u.node === node) ||
+                  state.buildings.some(b => b.owner === HUMAN && b.node === node);
+  // Mineral field is the enemy's economy — only readable while we have vision there.
+  // (Our own base is always visible.) Otherwise it stays hidden behind the fog.
+  const fieldStr = present ? `💎 ${Math.ceil(state.field[node])} left` : "💎 ?";
   el.innerHTML = `<div class="node-head">
       <h1>${NODE_NAMES[node]}</h1>
-      <span class="field">💎 ${fieldLeft} left</span>
+      <span class="field">${fieldStr}</span>
     </div>`;
 
   // --- Your forces (always visible) ---
@@ -802,8 +816,6 @@ function renderNode(node) {
   el.appendChild(mine);
 
   // --- Enemy forces (fog of war) ---
-  const present = state.units.some(u => u.owner === HUMAN && u.node === node) ||
-                  state.buildings.some(b => b.owner === HUMAN && b.node === node);
   const en = document.createElement("div");
   en.className = "force-enemy";
   let showEnemy = false;
@@ -818,17 +830,42 @@ function renderNode(node) {
     if (snap == null) {
       en.innerHTML = `<div class="section-label">Enemy forces</div>` +
         `<div class="unknown">Unknown — no scouts here.</div>`;
-    } else if (snap.length === 0) {
-      en.innerHTML = `<div class="section-label">Enemy forces — last seen</div>` +
-        `<div class="unknown">Last seen: no buildings.</div>`;
     } else {
       en.innerHTML = `<div class="section-label">Enemy forces — last seen</div>`;
-      appendSeenBuildings(en, snap);
+      if (snap.length) appendSeenBuildings(en, snap);
+      // Recently-seen enemy units linger briefly so a scout that dies still reports
+      // what it saw — giving you a few seconds to read the army size.
+      const seenU = appendSeenUnits(en, state.seenUnits[node]);
+      if (!snap.length && !seenU)
+        en.innerHTML += `<div class="unknown">Last seen: no forces.</div>`;
     }
     showEnemy = true;
   }
   if (showEnemy) el.appendChild(en);
   return el;
+}
+
+// Render a fading last-seen enemy unit count (marines/SCVs). Returns true if shown.
+// Within SEEN_UNITS_TTL of the sighting; older intel is dropped (units move, so a
+// stale count would be misleading — unlike buildings, which stay put).
+function appendSeenUnits(container, snap) {
+  if (!snap || state.time - snap.time > SEEN_UNITS_TTL) return false;
+  if (!snap.marines && !snap.scvs) return false;
+  const age = state.time - snap.time;
+  const rows = [
+    snap.marines && ["marine", `Marines — ~${snap.marines}`],
+    snap.scvs && ["scv", `SCVs — ~${snap.scvs}`],
+  ].filter(Boolean);
+  for (const [icon, name] of rows) {
+    const row = document.createElement("div");
+    row.className = "row static seen";
+    row.innerHTML = `${svgIcon(icon)}<div class="body">
+        <div class="name">${name}</div>
+        <div class="meta">Last seen ${age}s ago</div>
+      </div>`;
+    container.appendChild(row);
+  }
+  return true;
 }
 
 // Render remembered (frozen) enemy buildings from a fog snapshot — info only, dimmed.
@@ -1390,6 +1427,21 @@ function runTests() {
         hp: 400, maxHp: 400, construct: null, train: null, queued: 0 });
       run(5);
       eq(state.seen[AWAY].length, snapLen, "snapshot frozen while unseen");
+    },
+    "fog: enemy unit counts captured on sight, then expire after TTL"() {
+      resetState(1);
+      eq(state.seenUnits[AWAY], null, "no unit intel before scouting");
+      // bot has some marines at home; scout them
+      for (let i = 0; i < 7; i++) { const m = newMarine(BOT, AWAY); m.task = "idle"; }
+      const scout = newSCV(HUMAN, AWAY); scout.task = "idle";
+      fogStep();
+      ok(state.seenUnits[AWAY] && state.seenUnits[AWAY].marines === 7, "marine count captured");
+      // scout leaves; intel lingers briefly then expires
+      scout.node = -1; scout.task = "moving"; scout.transit = { to: HOME, progress: 0 };
+      const seenAt = state.seenUnits[AWAY].time;
+      ok(state.time - seenAt <= SEEN_UNITS_TTL, "intel fresh right after sighting");
+      state.time = seenAt + SEEN_UNITS_TTL + 1;
+      ok(state.time - state.seenUnits[AWAY].time > SEEN_UNITS_TTL, "intel stale past TTL");
     },
     "destroying enemy CC wins"() {
       resetState(1);
