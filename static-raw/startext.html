@@ -330,6 +330,11 @@ const EXPANSION_GAS   = 5000;  // gas at each expansion
 // alert, and — crucially — lets a lone scout record what it sees (fogStep runs every
 // tick) before it gets cut down.
 const ENGAGE_DELAY = 5;
+// A unit born straight into a fight has no distance to close, so it sidesteps the
+// windup: its engaged counter starts past any possible closeDelay. Transit and the
+// no-foes case both reset engaged to 0, so units that march in (or armies meeting
+// fresh) still pay the symmetric closing windup.
+const WARMED_ENGAGED = 999;
 const DWELL_TIME  = 10; // seconds spent at each intermediate node in "move" mode (explore + fight window)
 
 // `range` adds asymmetry on top of that windup: a unit waits an *extra*
@@ -771,10 +776,15 @@ function buildingStep() {
         b.train = null;
         if (unitType === "scv") {
           const scv = newSCV(b.owner, b.node);
+          scv.engaged = WARMED_ENGAGED; // born here — fights immediately if attacked
           if (b.rally === "mining" && state.field[b.node] > 0) scv.task = "mining";
         } else {
           // marine or firebat — same spawn + rally logic
           const unit = unitType === "firebat" ? newFirebat(b.owner, b.node) : newMarine(b.owner, b.node);
+          // Born at the node: skip the closing windup (no distance to cover). If it
+          // rallies elsewhere, the transit leg resets engaged so it pays the windup
+          // on arrival like any other marching unit.
+          unit.engaged = WARMED_ENGAGED;
           if (typeof b.rally === "number" && b.rally !== b.node) {
             const path = bfsPathVisited(b.owner, b.node, b.rally, state.map.adj, state.map.n);
             if (path && path.length > 1) {
@@ -868,6 +878,9 @@ function combatStep() {
   // Closing the distance: once engaged, a unit can't strike until it has spent
   // ENGAGE_DELAY + max(0, enemyRange - ownRange) ticks closing — a shared windup
   // when the forces meet, plus a ranged bonus so marines fire while melee advances.
+  // Units born straight into a fight skip this (engaged starts at WARMED_ENGAGED),
+  // so defenders spawning mid-battle trade blows immediately instead of being shot
+  // for free during a windup the already-engaged attackers have long since paid.
   // Firebats hit up to `splash` targets per swing (good against crowds).
   for (const u of state.units) {
     if ((u.task !== "idle" && u.task !== "bunker") || u.node < 0) { u.atkCd = 0; u.engaged = 0; continue; }
@@ -2812,6 +2825,35 @@ function runTests() {
       const aHp0 = a.hp, bHp0 = b.hp;
       tick();
       ok(a.hp < aHp0 && b.hp < bHp0, "equal-range units trade symmetrically after engage delay");
+    },
+    "windup: a unit born into a fight strikes immediately; an arriving one waits"() {
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.units = [];
+      // HUMAN barracks one tick from popping a marine, with an already-engaged
+      // BOT attacker standing on the node.
+      const rax = { id: idSeq++, owner: HUMAN, node: HOME, type: "barracks",
+        hp: C.barracks.hp, maxHp: C.barracks.hp, construct: null,
+        train: { progress: C.marine.build - 1, total: C.marine.build, unitType: "marine" },
+        queued: 0, queuedFirebats: 0, loaded: undefined, research: null, rally: null };
+      state.buildings.push(rax);
+      const attacker = newMarine(BOT, HOME); attacker.task = "idle"; attacker.engaged = WARMED_ENGAGED;
+      const attHp0 = attacker.hp;
+      buildingStep(); // marine is born this tick
+      const born = state.units.find(u => u.owner === HUMAN && u.type === "marine");
+      ok(born && born.task === "idle" && born.node === HOME, "marine born at the contested node");
+      combatStep(); // first combat tick after birth
+      ok(attacker.hp < attHp0, "born defender deals damage on its first combat tick (no windup)");
+
+      // Contrast: a marine that just *arrived* (engaged = 0) cannot strike yet.
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.units = [];
+      const arriver = newMarine(HUMAN, HOME); arriver.task = "idle"; arriver.engaged = 0;
+      const foe = newMarine(BOT, HOME); foe.task = "idle"; foe.engaged = WARMED_ENGAGED;
+      const foeHp0 = foe.hp;
+      combatStep();
+      eq(foe.hp, foeHp0, "freshly arrived unit is still closing — no damage on first tick");
     },
     "firebat: splash hits a second target when multiple enemies present"() {
       resetState(1);
