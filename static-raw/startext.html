@@ -1264,16 +1264,29 @@ function renderGraph(visible) {
     if (id === ui.selectedNode) cls += " selected";
     const army = state.units.filter(u => u.owner === HUMAN && u.node === id).length;
     const below = army ? `<text class="ncount" x="${cx}" y="${(+cy + 12).toFixed(1)}">▲${army}</text>` : "";
+    const hasMin = state.field[id] > 0;
+    const hasGas = state.gasField[id] > 0;
+    let resRow = "";
+    if (hasMin || hasGas) {
+      const ry = (+cy + 9.8).toFixed(1);
+      if (hasMin && hasGas)
+        resRow = `<circle cx="${(+cx - 1.8).toFixed(1)}" cy="${ry}" r="1.4" fill="#41d6ff"/>` +
+                 `<circle cx="${(+cx + 1.8).toFixed(1)}" cy="${ry}" r="1.4" fill="#4ade80"/>`;
+      else if (hasMin)
+        resRow = `<circle cx="${cx}" cy="${ry}" r="1.4" fill="#41d6ff"/>`;
+      else
+        resRow = `<circle cx="${cx}" cy="${ry}" r="1.4" fill="#4ade80"/>`;
+    }
     nodes += `<g class="gnode ${cls}" data-id="${id}">
         <circle cx="${cx}" cy="${cy}" r="7"/>
         <text class="glyph" x="${cx}" y="${(+cy + 2.3).toFixed(1)}">${nodeLetter(id)}</text>
-        ${below}
+        ${resRow}${below}
       </g>`;
   }
 
   wrap.innerHTML =
     `<svg viewBox="0 0 100 ${H}" preserveAspectRatio="xMidYMid meet" role="img">${edges}${nodes}</svg>` +
-    `<div class="map-legend">Tap a node to focus · <b style="color:var(--accent)">blue</b> your base · <b style="color:var(--enemy)">red</b> enemy base · dashed = unexplored · ▲ your forces</div>`;
+    `<div class="map-legend">Tap a node to focus · <b style="color:var(--accent)">blue</b> your base · <b style="color:var(--enemy)">red</b> enemy · dashed = unexplored · ▲ forces · <b style="color:#41d6ff">●</b> minerals · <b style="color:#4ade80">●</b> gas</div>`;
   wrap.querySelectorAll(".gnode").forEach(g =>
     g.onclick = () => { ui.selectedNode = +g.dataset.id; render(); });
   return wrap;
