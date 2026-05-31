@@ -385,6 +385,7 @@ function resetState(seed) {
     map,
     field, gasField,
     visited,
+    labels: new Array(n).fill(null),  // display names, assigned in the order you discover nodes
     minerals: { human: 50, bot: 50 },
     gas:      { human: 0,  bot: 0  },    // gas collected (future: spent on advanced units)
     units: [],
@@ -944,6 +945,15 @@ const $ = id => document.getElementById(id);
 const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks", refinery: "Refinery" };
 
+// Display name for a node, assigned the first time the player sees it. Naming by
+// discovery order (rather than the underlying node id) means the labels never hint
+// at how many unseen nodes exist beyond the explored frontier.
+function nodeName(node) {
+  if (state.labels[node] == null)
+    state.labels[node] = "Sector " + String.fromCharCode(65 + state.labels.filter(Boolean).length);
+  return state.labels[node];
+}
+
 function svgIcon(kind) {
   if (kind === "cc")
     return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><rect x="3" y="9" width="18" height="11" rx="1"/><path d="M7 9V6h10v3M12 13v3"/></svg>`;
@@ -985,12 +995,14 @@ function render() {
   if (typeof document.body !== "undefined" && document.body)
     document.body.classList.toggle("paused", !!state.paused);
 
-  // Nodes — ordered by distance from your base (your base first, enemy base last).
+  // Nodes — you only see what you've explored plus the immediate neighbours of
+  // explored nodes (the frontier). The rest of the map stays hidden, so its shape
+  // is revealed only as you scout outward. Ordered by distance from your base.
   const board = $("board");
   board.innerHTML = "";
-  const order = [...Array(state.map.n).keys()]
+  const visible = [...reachableSet(HUMAN)]
     .sort((a, b) => state.map.dist[HOME][a] - state.map.dist[HOME][b] || a - b);
-  for (const node of order) board.appendChild(renderNode(node));
+  for (const node of visible) board.appendChild(renderNode(node));
 
   renderTransit();
   $("notes").innerHTML = state.notes.map(n => `<div class="note ${n.kind}">${n.text}</div>`).join("");
@@ -1019,12 +1031,16 @@ function renderNode(node) {
   } else if (isResourceNode && enemyBaseKnown) {
     resStr = "💎 ? · ⛽ ?";
   }
-  const neighbours = state.map.adj[node].map(j => NODE_NAMES[j]).join(", ");
+  // Paths are only known for nodes you've actually visited — an unexplored frontier
+  // node shows that it exists, but not what it connects to.
+  const pathsLine = visited
+    ? `<div class="paths">↔ ${state.map.adj[node].map(nodeName).join(", ")}</div>`
+    : `<div class="paths">↔ ?</div>`;
   el.innerHTML = `<div class="node-head">
-      <h1>${NODE_NAMES[node]} ${badge}</h1>
+      <h1>${nodeName(node)} ${badge}</h1>
       <span class="field" style="color:var(--dim)">${resStr}</span>
     </div>
-    <div class="paths">↔ ${neighbours}</div>`;
+    ${pathsLine}`;
 
   // --- Your forces (only when you have something here) ---
   const mine = document.createElement("div");
@@ -1319,7 +1335,7 @@ function renderTransit() {
     const label = [scvN && `${scvN} SCV${scvN > 1 ? "s" : ""}`,
                    marN && `${marN} Marine${marN > 1 ? "s" : ""}`].filter(Boolean).join(", ");
     html += `<div class="transit-row">
-        <div class="name">${label} → ${NODE_NAMES[to]}</div>
+        <div class="name">${label} → ${nodeName(to)}</div>
         <div class="meta">ETA ${eta}s</div>
         ${progBar(avg, total)}
       </div>`;
@@ -1348,7 +1364,7 @@ function destButtonsHtml(node, n, poolLen) {
     const eta = hopDist(node, d) * EDGE_TIME;
     const enemyWard = d === AWAY ? " ⚔️" : "";
     return `<button class="act secondary" id="dest-${d}" ${poolLen ? "" : "disabled"}>
-        Send ${n} → ${NODE_NAMES[d]}${enemyWard} <span class="cost">— ${eta}s travel</span>
+        Send ${n} → ${nodeName(d)}${enemyWard} <span class="cost">— ${eta}s travel</span>
       </button>`;
   }).join("");
 }
@@ -1377,7 +1393,7 @@ function renderSheet() {
     const rallyMining = cc.rally === "mining";
     sheet.innerHTML = `
       <h2>Command Center</h2>
-      <div class="sheet-sub">${NODE_NAMES[sel.node]} · HP ${Math.ceil(cc.hp)}/${cc.maxHp} · Queue ${inQ}/${C.cc.queueMax}</div>
+      <div class="sheet-sub">${nodeName(sel.node)} · HP ${Math.ceil(cc.hp)}/${cc.maxHp} · Queue ${inQ}/${C.cc.queueMax}</div>
       <button class="act" ${dis ? "disabled" : ""} id="a-train">
         Train SCV <span class="cost">— ${C.cc.trainCost} 💎 · ${C.cc.trainTime}s · +1 supply</span>
       </button>
@@ -1405,7 +1421,7 @@ function renderSheet() {
     const label = allRax.length > 1 ? `Barracks ×${allRax.length}` : "Barracks";
     sheet.innerHTML = `
       <h2>${label}</h2>
-      <div class="sheet-sub">${NODE_NAMES[sel.node]} · ${totalQ} training${trainingRax.length ? ` · next ready in ${eta}s` : ""}</div>
+      <div class="sheet-sub">${nodeName(sel.node)} · ${totalQ} training${trainingRax.length ? ` · next ready in ${eta}s` : ""}</div>
       <button class="act" ${dis ? "disabled" : ""} id="a-marine">
         Train Marine <span class="cost">— ${C.marine.cost} 💎 · ${C.marine.build}s · +1 supply</span>
       </button>
@@ -1420,7 +1436,7 @@ function renderSheet() {
     sel.n = Math.min(Math.max(1, sel.n || pool.length), max);
     const n = sel.n;
     sheet.innerHTML = `
-      <h2>Marines at ${NODE_NAMES[node]}</h2>
+      <h2>Marines at ${nodeName(node)}</h2>
       <div class="sheet-sub">${pool.length} ready · pick a destination</div>
       <div class="stepper">
         <button id="n-minus">−</button>
@@ -1458,7 +1474,7 @@ function renderSheet() {
 
     const isResourceNode = node === HOME || node === AWAY;
     sheet.innerHTML = `
-      <h2>SCVs at ${NODE_NAMES[node]}</h2>
+      <h2>SCVs at ${nodeName(node)}</h2>
       <div class="sheet-sub">${all.length} available · ${miningN} mining (${minSatPct}% sat)${gasN ? ` · ${gasN} gas (${gasSatPct}% sat)` : ""} · ${idleN} idle</div>
 
       <div class="stepper">
