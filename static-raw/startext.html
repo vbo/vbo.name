@@ -1264,8 +1264,8 @@ function renderGraph(visible) {
     if (id === ui.selectedNode) cls += " selected";
     const army = state.units.filter(u => u.owner === HUMAN && u.node === id).length;
     const below = army ? `<text class="ncount" x="${cx}" y="${(+cy + 12).toFixed(1)}">▲${army}</text>` : "";
-    const hasMin = state.field[id] > 0;
-    const hasGas = state.gasField[id] > 0;
+    const hasMin = visited && state.field[id] > 0;
+    const hasGas = visited && state.gasField[id] > 0;
     let resRow = "";
     if (hasMin || hasGas) {
       const ry = (+cy + 9.8).toFixed(1);
