@@ -287,15 +287,21 @@ const GAS_TOTAL = 5000;     // gas units per geyser
 const GAS_RATE  = 0.55;     // gas per collecting SCV per second at full efficiency
 const GAS_OPT   = 4;        // SCVs for 100% gas utilisation (capped — extras waste time)
 
-// `range` drives the melee/ranged model: when two units fight, a unit must
-// "close the distance" before it can strike, waiting max(0, enemyRange - ownRange)
-// ticks. So a ranged unit (marine) lands free hits while a melee unit (SCV, range 0)
-// advances. Buildings have no range entry → treated as 0.
+// Combat windup: when two forces first meet at a node they spend ENGAGE_DELAY
+// seconds closing the distance before any blows land. This represents the armies
+// marching toward each other, gives you a few seconds to react to an "under attack"
+// alert, and — crucially — lets a lone scout record what it sees (fogStep runs every
+// tick) before it gets cut down.
+const ENGAGE_DELAY = 5;
+
+// `range` adds asymmetry on top of that windup: a unit waits an *extra*
+// max(0, enemyRange - ownRange) ticks, so a ranged unit (marine) lands free hits
+// while a melee unit (SCV, range 0) is still closing. Buildings have no range → 0.
 const C = {
   scv:      { hp: 60,  dmg: 5, atk: 1.5, cost: 50, build: 12, range: 0 }, // melee
   // Marine: BW stats — 40 HP, 6 dmg, 15-frame cooldown (~0.9 s at our tick rate)
   marine:   { hp: 40,  dmg: 6, atk: 0.9, cost: 50, build: 24, queueMax: 5, range: 3 }, // ranged
-  cc:       { hp: 1500, supply: 10, trainCost: 50, trainTime: 12, queueMax: 5 },
+  cc:       { hp: 1500, supply: 10, trainCost: 50, trainTime: 12, queueMax: 5, cost: 400, build: 60 },
   depot:    { hp: 400,  cost: 100, build: 25, supply: 8 },
   barracks: { hp: 1000, cost: 150, build: 46 },
   refinery: { hp: 500,  cost: 75,  build: 20 }, // builds on the geyser; no train queue
@@ -677,16 +683,16 @@ const unitRange = u => (C[u.type] && C[u.type].range) || 0;
 
 function combatStep() {
   // Idle units (SCVs and Marines) auto-attack, focusing whatever can shoot back.
-  // Melee/ranged is modelled by a "closing the distance" delay: once engaged, a
-  // unit can't strike until it has spent max(0, enemyRange - ownRange) ticks
-  // closing, so a ranged unit lands free hits while a melee unit advances.
+  // Closing the distance: once engaged, a unit can't strike until it has spent
+  // ENGAGE_DELAY + max(0, enemyRange - ownRange) ticks closing — a shared windup
+  // when the forces meet, plus a ranged bonus so marines fire while melee advances.
   for (const u of state.units) {
     if (u.task !== "idle" || u.node < 0) { u.atkCd = 0; u.engaged = 0; continue; }
     const foes = targetsAt(enemy(u.owner), u.node);
     if (!foes.length) { u.atkCd = 0; u.engaged = 0; continue; }
     u.engaged = (u.engaged || 0) + 1;
     const enemyRange = foes.reduce((m, o) => Math.max(m, unitRange(o)), 0);
-    const closeDelay = Math.max(0, enemyRange - unitRange(u));
+    const closeDelay = ENGAGE_DELAY + Math.max(0, enemyRange - unitRange(u));
     if (u.engaged <= closeDelay) continue; // still closing — can't strike yet
     const cfg = u.type === "marine" ? C.marine : C.scv;
     u.atkCd -= 1;
@@ -727,7 +733,7 @@ function cleanupDead() {
       state.units.filter(u => u.owner === b.owner && u.node === b.node && u.task === "gas")
         .forEach(u => u.task = "idle");
     }
-    if (b.owner === HUMAN && b.type !== "cc") // CC loss is the defeat screen
+    if (b.owner === HUMAN)
       notify(`💥 Your ${BUILDING_LABEL[b.type]} was destroyed!`, "loss", 6);
     return false;
   });
@@ -749,10 +755,10 @@ function cleanupDead() {
 }
 
 function checkEnd() {
-  const humanCC = state.buildings.some(b => b.owner === HUMAN && b.type === "cc");
-  const botCC = state.buildings.some(b => b.owner === BOT && b.type === "cc");
-  if (!botCC) endGame("win");
-  else if (!humanCC) endGame("loss");
+  const humanBuildings = state.buildings.some(b => b.owner === HUMAN);
+  const botBuildings = state.buildings.some(b => b.owner === BOT);
+  if (!botBuildings) endGame("win");
+  else if (!humanBuildings) endGame("loss");
 }
 
 function endGame(result) {
@@ -764,8 +770,8 @@ function endGame(result) {
   el.className = "open " + result;
   document.getElementById("end-big").textContent = result === "win" ? "Victory!" : "Defeat";
   document.getElementById("end-msg").textContent = result === "win"
-    ? "You destroyed the Enemy Command Center."
-    : "Your Command Center was destroyed.";
+    ? "You destroyed all enemy buildings."
+    : "All your buildings were destroyed.";
 }
 
 /* ------------------------------- Actions ----------------------------- */
@@ -1577,6 +1583,7 @@ function renderSheet() {
     const max = Math.max(1, all.length);
     sel.n = Math.min(Math.max(1, sel.n || 1), max);
     const n = sel.n;
+    const ccOK        = all.length >= 1 && mineNow >= C.cc.cost;
     const depotOK     = all.length >= 1 && mineNow >= C.depot.cost;
     const raxOK       = all.length >= 1 && mineNow >= C.barracks.cost;
     const hasRef      = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "refinery" && !b.construct);
@@ -1617,6 +1624,9 @@ function renderSheet() {
         <button class="act secondary" id="a-ref" ${refOK ? "" : "disabled"}>
           Build Refinery <span class="cost">— ${C.refinery.cost} 💎 · ${C.refinery.build}s · unlock gas</span>
         </button>` : ""}
+        <button class="act secondary" id="a-cc" ${ccOK ? "" : "disabled"}>
+          Build Command Center <span class="cost">— ${C.cc.cost} 💎 · ${C.cc.build}s · +${C.cc.supply} supply</span>
+        </button>
         <button class="act-close" id="a-back">‹ Back</button>`;
     } else if (tab === "mine") {
       title = `Mine & Gas · ${nodeName(node)}`;
@@ -1658,6 +1668,7 @@ function renderSheet() {
       const rng = $("n-range"); if (rng) rng.oninput = e => setN(parseInt(e.target.value, 10));
       bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "scv", dest); closeSheet(); render(); });
     } else if (tab === "build") {
+      bind("a-cc",    () => { startBuilding(HUMAN, node, "cc"); refreshSheet(); });
       bind("a-depot", () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); });
       bind("a-rax",   () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
       bind("a-ref",   () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); });
@@ -1789,6 +1800,32 @@ function runTests() {
       cheat(HUMAN, 9999);
       ok(startBuilding(HUMAN, HOME, "barracks"), "barracks allowed without depot");
     },
+    "Command Center can be built for 400 minerals"() {
+      resetState(1);
+      cheat(HUMAN, 399);
+      ok(!startBuilding(HUMAN, HOME, "cc"), "can't afford at 399");
+      cheat(HUMAN, 400);
+      ok(startBuilding(HUMAN, HOME, "cc"), "builds CC with exactly 400 minerals");
+      const newCC = state.buildings.find(b => b.owner === HUMAN && b.type === "cc" && b.construct);
+      ok(newCC != null, "new CC starts under construction");
+      eq(state.minerals.human, 0, "400 deducted");
+      run(C.cc.build);
+      ok(!newCC.construct, "CC completes after build time");
+    },
+    "win requires all enemy buildings destroyed, not just CC"() {
+      resetState(1);
+      state.units = []; // no combat — drive checkEnd directly via tick
+      // Remove bot CC; give bot a depot so it still has a building
+      state.buildings = state.buildings.filter(b => !(b.owner === BOT && b.type === "cc"));
+      state.buildings.push({ id: idSeq++, owner: BOT, node: AWAY, type: "depot",
+        hp: 400, maxHp: 400, construct: null, train: null, queued: 0 });
+      tick();
+      ok(state.over !== "win", "CC gone but depot keeps the bot alive");
+      // Destroy the last bot building — game must end
+      state.buildings = state.buildings.filter(b => b.owner !== BOT);
+      tick();
+      eq(state.over, "win", "no bot buildings left → win");
+    },
     "setTask with unitType=scv does not affect marines"() {
       resetState(1);
       cheat(HUMAN, 9999);
@@ -1851,6 +1888,7 @@ function runTests() {
         hp: 1000, maxHp: 1000, atkCd: 0, buildingId: null, transit: null };
       state.units = [m, e];
       state.buildings = []; // isolate: no CCs so the duel is the only combat
+      m.engaged = ENGAGE_DELAY + 1; // pre-close the windup so the first tick lands a hit
       tick();
       const dealt = 1000 - e.hp;
       ok(dealt > 0 && dealt % C.marine.dmg === 0, `marine damage is a multiple of 6 (got ${dealt})`);
@@ -1917,8 +1955,11 @@ function runTests() {
       const m = newMarine(HUMAN, AWAY); m.task = "idle";
       const s = newSCV(BOT, AWAY);      s.task = "idle";
       state.units = [m, s];
+      // Pre-advance both past the shared ENGAGE_DELAY windup so we test the asymmetric portion.
+      // Marine closeDelay = ENGAGE_DELAY, SCV closeDelay = ENGAGE_DELAY + range(3) = 8.
+      m.engaged = ENGAGE_DELAY; s.engaged = ENGAGE_DELAY;
       const mHp0 = m.hp, sHp0 = s.hp;
-      tick(); // tick 1: SCV is still closing (range 0 vs marine range 3 → delay 3)
+      tick(); // first asymmetric tick: marine fires, SCV is still closing (engaged=6 ≤ 8)
       ok(s.hp < sHp0, "marine damages the closing SCV");
       eq(m.hp, mHp0, "SCV deals no damage while still closing");
     },
@@ -1929,7 +1970,7 @@ function runTests() {
       const m = newMarine(HUMAN, AWAY); m.task = "idle";
       const s = newSCV(BOT, AWAY);      s.task = "idle";
       const mHp0 = m.hp;
-      run(C.marine.range + 1); // past the closing window
+      run(ENGAGE_DELAY + C.marine.range + 1); // shared windup + ranged closing window
       ok(m.hp < mHp0, "SCV deals damage after closing the distance");
     },
     "melee/ranged: marine vs marine has no closing delay (symmetric)"() {
@@ -1938,9 +1979,11 @@ function runTests() {
       state.units = []; // clear auto-spawned units
       const a = newMarine(HUMAN, AWAY); a.task = "idle";
       const b = newMarine(BOT, AWAY);   b.task = "idle";
+      // Pre-advance both past the shared windup — equal range means no asymmetric bonus.
+      a.engaged = ENGAGE_DELAY; b.engaged = ENGAGE_DELAY;
       const aHp0 = a.hp, bHp0 = b.hp;
       tick();
-      ok(a.hp < aHp0 && b.hp < bHp0, "equal-range units trade from tick 1");
+      ok(a.hp < aHp0 && b.hp < bHp0, "equal-range units trade symmetrically after engage delay");
     },
     "fog: enemy buildings unknown until scouted, then remembered"() {
       resetState(1);
@@ -1977,16 +2020,16 @@ function runTests() {
       state.units = state.units.filter(u => u.owner !== BOT);
       cc(BOT).hp = C.marine.dmg; // one hit
       const m = newMarine(HUMAN, AWAY); m.task = "idle";
-      run(5);
-      eq(state.over, "win", "win when enemy CC dies");
+      run(ENGAGE_DELAY + 2); // +2 past windup so the marine gets at least one attack in
+      eq(state.over, "win", "win when last enemy building is destroyed");
     },
     "losing own CC is defeat"() {
       resetState(1);
       state.units = state.units.filter(u => u.owner !== HUMAN);
       cc(HUMAN).hp = C.marine.dmg;
       const e = newMarine(BOT, HOME); e.task = "idle";
-      run(5);
-      eq(state.over, "loss", "loss when own CC dies");
+      run(ENGAGE_DELAY + 2);
+      eq(state.over, "loss", "loss when last own building is destroyed");
     },
     "determinism: same seed → same result"() {
       const play = seed => { resetState(seed); run(120); return state.minerals.bot.toFixed(2); };
