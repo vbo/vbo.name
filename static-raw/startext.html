@@ -1044,10 +1044,17 @@ function botEval() {
     } else if (homeReachable) {
       // Enemy base in reach — scout for intel, then commit a real wave that clearly
       // beats the scouted defense (no cheating: enemyArmy is scouted, not read).
-      if (!intelFresh && !scoutOut && marines.length > reserve) {
+      // Exception: when the wave is overdue and the army is overwhelming (scout is
+      // likely being killed en route), commit without intel rather than drip-feeding
+      // one marine at a time forever.
+      const strike = marines.length - reserve;
+      const blindAttack = waveDue && !intelFresh && strike >= 20;
+      if (blindAttack) {
+        sendUnits(BOT, home, strike, "marine", HOME, "attack");
+        state.bot.lastWave = state.time;
+      } else if (!intelFresh && !scoutOut && marines.length > reserve) {
         sendUnits(BOT, home, 1, "marine", HOME); // scout — move mode, will observe then leave
       } else if (waveDue && intelFresh) {
-        const strike = marines.length - reserve;
         const needed = Math.max(12, Math.ceil(state.bot.enemyArmy * 1.4) + 4);
         if (strike >= needed) {
           sendUnits(BOT, home, strike, "marine", HOME, "attack"); // attack wave — fight through each node
@@ -2268,6 +2275,20 @@ function runTests() {
       const committed = state.units.filter(u =>
         u.owner === BOT && u.type === "marine" && (u.task === "moving" || u.node === HOME)).length;
       ok(committed <= 1, `no mass attack without intel (committed ${committed})`);
+    },
+    "bot commits overwhelming blind attack when wave overdue and scouts can't get through"() {
+      resetState(1);
+      cheat(BOT, 0);
+      state.visited.bot = state.visited.bot.map(() => true);
+      state.bot.lastWave = -999; // wave overdue
+      state.bot.scoutTime = null; // never scouted (scouts kept dying)
+      state.buildings.push({ id: idSeq++, owner: BOT, node: AWAY, type: "barracks",
+        hp: 1000, maxHp: 1000, construct: null, train: null, queued: 0 });
+      for (let i = 0; i < 35; i++) { const m = newMarine(BOT, AWAY); m.task = "idle"; }
+      botEval();
+      const committed = state.units.filter(u =>
+        u.owner === BOT && u.type === "marine" && (u.task === "moving" || u.node === HOME)).length;
+      ok(committed >= 12, `commits overwhelming force without intel (committed ${committed})`);
     },
     "bot attacks once intel shows it clearly outnumbers the player"() {
       resetState(1);
