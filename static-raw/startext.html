@@ -544,7 +544,7 @@ function init() {
   resetState();
   closeSheet();
   document.getElementById("end").className = "";
-  setPaused(false);
+  setPaused(true);
   render();
 }
 
@@ -828,10 +828,12 @@ function combatStep() {
   // Closing the distance: once engaged, a unit can't strike until it has spent
   // ENGAGE_DELAY + max(0, enemyRange - ownRange) ticks closing — a shared windup
   // when the forces meet, plus a ranged bonus so marines fire while melee advances.
+  // engaged is NOT reset when there are no foes: a unit already in position (engaged
+  // above its closeDelay) stays ready to fire the tick a new wave arrives.
   for (const u of state.units) {
     if (u.task !== "idle" || u.node < 0) { u.atkCd = 0; u.engaged = 0; continue; }
     const foes = targetsAt(enemy(u.owner), u.node);
-    if (!foes.length) { u.atkCd = 0; u.engaged = 0; continue; }
+    if (!foes.length) { u.atkCd = 0; continue; }
     u.engaged = (u.engaged || 0) + 1;
     const enemyRange = foes.reduce((m, o) => Math.max(m, unitRange(o)), 0);
     const closeDelay = ENGAGE_DELAY + Math.max(0, enemyRange - unitRange(u));
@@ -1426,8 +1428,7 @@ function renderNode(node) {
     : (Array.isArray(state.seen[node]) && state.seen[node].length > 0);
   el.className = "node " + (isHome ? "home" : enemyHeld ? "away" : "neutral");
 
-  // Header: name + (your-base badge) + resources for any node you can see that has them.
-  const badge = isHome ? `<span class="badge you">★ Your Base</span>` : "";
+  // Header: name + resources for any node you can see that has them.
   let resStr = "";
   if (present && (state.field[node] > 0 || state.gasField[node] > 0)) {
     const hasRefinery = state.buildings.some(b => b.node === node && b.type === "refinery" && !b.construct);
@@ -1439,7 +1440,7 @@ function renderNode(node) {
     ? `<div class="paths">↔ ${state.map.adj[node].map(nodeName).join(", ")}</div>`
     : `<div class="paths">↔ ?</div>`;
   el.innerHTML = `<div class="node-head">
-      <h1>${nodeName(node)} ${badge}</h1>
+      <h1>${nodeName(node)}</h1>
       <span class="field" style="color:var(--dim)">${resStr}</span>
     </div>
     ${pathsLine}`;
@@ -2079,7 +2080,7 @@ function stopLoop() { clearInterval(timer); }
 function setPaused(p) {
   state.paused = p;
   const btn = $("pause-btn");
-  if (btn) btn.textContent = p ? "▶ Resume" : "⏸ Pause";
+  if (btn) btn.textContent = p ? (state.time === 0 ? "▶ New game" : "▶ Resume") : "⏸ Pause";
   if (p) render(); // reflect paused label immediately
 }
 function togglePause() { setPaused(!state.paused); }
@@ -2415,6 +2416,22 @@ function runTests() {
       const aHp0 = a.hp, bHp0 = b.hp;
       tick();
       ok(a.hp < aHp0 && b.hp < bHp0, "equal-range units trade symmetrically after engage delay");
+    },
+    "established defenders fire immediately at new arrivals (no re-windup)"() {
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.units = [];
+      // Place 3 bot marines that have already fought (engaged >> closeDelay).
+      for (let i = 0; i < 3; i++) {
+        const m = newMarine(BOT, HOME); m.task = "idle"; m.engaged = 100;
+      }
+      // No foes yet — combatStep will freeze engaged at 100 (not reset it).
+      tick();
+      // Now a human marine arrives (fresh, engaged=0 → increments to 1 this tick via combatStep).
+      const h = newMarine(HUMAN, HOME); h.task = "idle";
+      const hHp0 = h.hp;
+      tick(); // h.engaged = 1 ≤ 5, h can't fire; bots have engaged=102 ≥ 5, fire immediately
+      ok(h.hp < hHp0, "established defenders deal damage on the very first tick of contact");
     },
     "fog: enemy buildings unknown until scouted, then remembered"() {
       resetState(1);
