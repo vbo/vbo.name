@@ -299,9 +299,14 @@ const SUPPLY_MAX = 200;     // BW hard cap
 
 // Vespene gas: 1 geyser per base, optimal at GAS_OPT SCVs (100% utilisation).
 // Beyond that the extra SCVs add nothing (hard cap, like BW 3-worker optimum).
-const GAS_TOTAL = 5000;     // gas units per geyser
-const GAS_RATE  = 0.55;     // gas per collecting SCV per second at full efficiency
-const GAS_OPT   = 4;        // SCVs for 100% gas utilisation (capped — extras waste time)
+const GAS_TOTAL  = 5000;    // gas units per geyser (main base)
+const GAS_RATE   = 0.55;    // gas per collecting SCV per second at full efficiency
+const GAS_OPT    = 4;       // SCVs for 100% gas utilisation (capped — extras waste time)
+
+// Expansion nodes: symmetric mineral/gas fields placed at non-start nodes that have
+// a matching mirror node equidistant from the other player (so neither side is favoured).
+const EXPANSION_FIELD = 5000;  // minerals at each expansion
+const EXPANSION_GAS   = 5000;  // gas at each expansion
 
 // Combat windup: when two forces first meet at a node they spend ENGAGE_DELAY
 // seconds closing the distance before any blows land. This represents the armies
@@ -463,6 +468,17 @@ function resetState(seed) {
   const field = new Array(n).fill(0), gasField = new Array(n).fill(0);
   field[HOME] = field[AWAY] = FIELD_TOTAL;
   gasField[HOME] = gasField[AWAY] = GAS_TOTAL;
+  // Expansion resources: only placed on non-start nodes that have a symmetric mirror,
+  // so both players always have the same number of nearby expansions.
+  for (let i = 0; i < n; i++) {
+    if (i === HOME || i === AWAY) continue;
+    const dh = map.dist[HOME][i], da = map.dist[AWAY][i];
+    const fair = dh === da || // equidistant — inherently balanced
+      [...Array(n).keys()].some(j =>   // or has an exact symmetric mirror
+        j !== HOME && j !== AWAY && j !== i &&
+        map.dist[HOME][j] === da && map.dist[AWAY][j] === dh);
+    if (fair) { field[i] = EXPANSION_FIELD; gasField[i] = EXPANSION_GAS; }
+  }
   // Explored set per owner: each starts knowing only its own base.
   const visited = { human: new Array(n).fill(false), bot: new Array(n).fill(false) };
   visited.human[HOME] = true;
@@ -652,14 +668,19 @@ const mineralSatPct = (n, field) =>
   Math.min(100, Math.round(n / (activePatchCount(field) * 2) * 100));
 
 function mineStep() {
-  // Minerals: process per (owner, node) so group utilisation applies.
-  // Only the two start nodes carry minerals; the rest have field 0.
+  // Minerals: process per (owner, node). Mining requires a completed CC at the node.
   for (const owner of [HUMAN, BOT]) {
-    for (const node of [HOME, AWAY]) {
-      const miners = state.units.filter(u =>
-        u.owner === owner && u.node === node && u.task === "mining");
-      if (!miners.length) continue;
-      if (state.field[node] <= 0) { miners.forEach(u => u.task = "idle"); continue; }
+    const ccNodes = new Set(
+      state.buildings.filter(b => b.owner === owner && b.type === "cc" && !b.construct)
+                     .map(b => b.node));
+    const activeMiners = state.units.filter(u =>
+      u.owner === owner && u.task === "mining" && u.node >= 0);
+    const miningNodes = new Set(activeMiners.map(u => u.node));
+    for (const node of miningNodes) {
+      const miners = activeMiners.filter(u => u.node === node);
+      if (!ccNodes.has(node) || state.field[node] <= 0) {
+        miners.forEach(u => u.task = "idle"); continue;
+      }
       const got = Math.min(mineralYield(miners.length, state.field[node]), state.field[node]);
       state.field[node] -= got;
       state.minerals[owner] += got;
@@ -804,6 +825,11 @@ function cleanupDead() {
     // When a refinery is destroyed its gas collectors are freed.
     if (b.type === "refinery") {
       state.units.filter(u => u.owner === b.owner && u.node === b.node && u.task === "gas")
+        .forEach(u => u.task = "idle");
+    }
+    // When a CC is destroyed miners at that node have nowhere to bring minerals.
+    if (b.type === "cc") {
+      state.units.filter(u => u.owner === b.owner && u.node === b.node && u.task === "mining")
         .forEach(u => u.task = "idle");
     }
     if (b.owner === HUMAN)
@@ -1107,8 +1133,10 @@ function botEval() {
     if (min() === before) break; // all barracks queues full
   }
 
-  // Idle SCVs back to mining when safe.
-  if (!underAttack && state.field[home] > 0)
+  // Idle SCVs back to mining when safe (requires a CC at home).
+  const botCcAtHome = state.buildings.some(b =>
+    b.owner === BOT && b.node === home && b.type === "cc" && !b.construct);
+  if (!underAttack && botCcAtHome && state.field[home] > 0)
     unitsOf(BOT, home, "idle", "scv").forEach(u => u.task = "mining");
 }
 
@@ -1727,7 +1755,9 @@ function renderSheet() {
     const max = Math.max(1, all.length);
     sel.n = Math.min(Math.max(1, sel.n || 1), max);
     const n = sel.n;
-    const ccOK        = all.length >= 1 && mineNow >= C.cc.cost;
+    const ccAtNode    = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "cc");
+    const hasCc       = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "cc" && !b.construct);
+    const ccOK        = all.length >= 1 && mineNow >= C.cc.cost && !ccAtNode;
     const depotOK     = all.length >= 1 && mineNow >= C.depot.cost;
     const raxOK       = all.length >= 1 && mineNow >= C.barracks.cost;
     const hasRef      = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "refinery" && !b.construct);
@@ -1736,19 +1766,21 @@ function renderSheet() {
     const refOK       = all.length >= 1 && mineNow >= C.refinery.cost && !refBuilding && gasAvail;
     const minSatPct   = mineralSatPct(miningN, state.field[node]);
     const gasSatPct   = Math.round(gasN / GAS_OPT * 100);
-    const hasMinerals = state.field[node] > 0;     // mining only makes sense where there's a field
-    const canMine     = hasMinerals || hasRef;
+    const hasMinerals = state.field[node] > 0;
+    const canMineHere = hasMinerals && hasCc;  // minerals + completed CC = can mine
+    const canMine     = canMineHere || hasRef;
     const tab = sel.tab || "root";
 
-    const summary = `<div class="sheet-sub">${all.length} available · ${idleN} idle${hasMinerals || miningN ? ` · ${miningN} mining (${minSatPct}% sat)` : ""}${gasN ? ` · ${gasN} gas (${gasSatPct}% sat)` : ""}</div>`;
+    const needCcNote = hasMinerals && !hasCc ? " · ⚠️ Need CC to mine" : "";
+    const summary = `<div class="sheet-sub">${all.length} available · ${idleN} idle${canMineHere || miningN ? ` · ${miningN} mining (${minSatPct}% sat)` : ""}${gasN ? ` · ${gasN} gas (${gasSatPct}% sat)` : ""}${needCcNote}</div>`;
     let title = `SCVs at ${nodeName(node)}`, body;
 
     // Actions available right now (enabled). Used both to build the root body and to wire bindings.
     const mineActs = [];
-    if (hasMinerals && idleN > 0)
+    if (canMineHere && idleN > 0)
       mineActs.push({ id: "a-mf0", html: `⛏ Set ${idleN} idle → mining`,
         fn: () => { setTask(HUMAN, node, idleN, "idle", "mining", "scv"); refreshSheet(); } });
-    if (hasMinerals && miningN > 0)
+    if (canMineHere && miningN > 0)
       mineActs.push({ id: "a-mf1", html: `⛏ Set ${miningN} mining → idle`,
         fn: () => { setTask(HUMAN, node, miningN, "mining", "idle", "scv"); refreshSheet(); } });
     if (hasRef && idleN + miningN > 0 && gasN < GAS_OPT)
@@ -1808,13 +1840,13 @@ function renderSheet() {
     } else if (tab === "mine") {
       title = `Mine & Gas · ${nodeName(node)}`;
       body = `
-        ${hasMinerals ? `
+        ${canMineHere ? `
         <button class="act secondary" id="a-mine-all" ${idleN ? "" : "disabled"}>
           Set ALL ${idleN} idle → mining
         </button>
         <button class="act secondary" id="a-idle-all" ${miningN ? "" : "disabled"}>
           Set ALL ${miningN} mining → idle
-        </button>` : ""}
+        </button>` : hasMinerals ? `<div class="sheet-sub">Build a Command Center here to mine minerals.</div>` : ""}
         ${hasRef ? `
         <button class="act secondary" id="a-gas-add" ${idleN + miningN > 0 && gasN < GAS_OPT ? "" : "disabled"}>
           ⛽ Assign 1 SCV → gas <span class="cost">— ${gasN}/${GAS_OPT} optimal</span>
@@ -2099,22 +2131,58 @@ function runTests() {
       // The immediate neighbours of your base are always reachable.
       ok(canSendTo(HUMAN, state.map.adj[HOME][0]), "a neighbour is reachable");
     },
-    "map: connected, sized 5–6, resources only at the two bases"() {
+    "map: connected, sized 5–6, start bases full, expansions placed symmetrically"() {
       for (const seed of [1, 7, 42, 99, 256]) {
         resetState(seed);
         const m = state.map;
         ok(m.n >= MAP_MIN_NODES && m.n <= MAP_MAX_NODES, `node count in range (got ${m.n})`);
         ok(HOME !== AWAY, "two distinct start nodes");
-        // connectivity: BFS reaches everything (no islands)
         const reach = bfsDist(0, m.adj, m.n);
         ok(reach.every(d => d < Infinity), "graph is fully connected");
-        // resources only at the start nodes
+        // Start nodes carry full resources.
+        eq(state.field[HOME], FIELD_TOTAL, "HOME minerals full");
+        eq(state.field[AWAY], FIELD_TOTAL, "AWAY minerals full");
+        eq(state.gasField[HOME], GAS_TOTAL, "HOME gas full");
+        eq(state.gasField[AWAY], GAS_TOTAL, "AWAY gas full");
+        // Each non-start node either has expansion resources or nothing; no in-between.
         for (let i = 0; i < m.n; i++) {
-          const isStart = i === HOME || i === AWAY;
-          eq(state.field[i], isStart ? FIELD_TOTAL : 0, `field at node ${i}`);
-          eq(state.gasField[i], isStart ? GAS_TOTAL : 0, `gas at node ${i}`);
+          if (i === HOME || i === AWAY) continue;
+          const hasRes = state.field[i] > 0;
+          if (hasRes) {
+            eq(state.field[i], EXPANSION_FIELD, `expansion minerals at ${i} (seed ${seed})`);
+            eq(state.gasField[i], EXPANSION_GAS, `expansion gas at ${i} (seed ${seed})`);
+          } else {
+            eq(state.gasField[i], 0, `barren node has no gas at ${i} (seed ${seed})`);
+          }
         }
       }
+    },
+    "expansion resources are symmetric — both sides have equal access"() {
+      for (const seed of [1, 7, 42, 99, 256]) {
+        resetState(seed);
+        const m = state.map;
+        for (let i = 0; i < m.n; i++) {
+          if (i === HOME || i === AWAY || !state.field[i]) continue;
+          const dh = m.dist[HOME][i], da = m.dist[AWAY][i];
+          if (dh !== da) {
+            // Must have a symmetric mirror that also has resources.
+            const mirror = [...Array(m.n).keys()].find(
+              j => j !== HOME && j !== AWAY && j !== i &&
+                   m.dist[HOME][j] === da && m.dist[AWAY][j] === dh);
+            ok(mirror !== undefined && state.field[mirror] > 0,
+              `expansion at node ${i} (dH=${dh},dA=${da}) has symmetric mirror (seed ${seed})`);
+          }
+        }
+      }
+    },
+    "SCVs stop mining when CC at their node is destroyed"() {
+      resetState(1);
+      unitsOf(HUMAN, HOME, null, "scv").slice(0, 3).forEach(u => u.task = "mining");
+      eq(unitsOf(HUMAN, HOME, "mining", "scv").length, 3, "3 miners active");
+      const humanCc = state.buildings.find(b => b.owner === HUMAN && b.type === "cc");
+      humanCc.hp = 0;
+      cleanupDead();
+      eq(unitsOf(HUMAN, HOME, "mining", "scv").length, 0, "miners idle immediately when CC destroyed");
     },
     "exploration frontier expands one hop at a time"() {
       resetState(1);
