@@ -44,6 +44,12 @@
   .stat.minerals b { color: var(--mineral); }
   .stat.gas b { color: var(--gas); }
   .stat.supply.blocked b { color: var(--warn); }
+  #supply-warn {
+    display: none; flex: 0 0 100%; margin-top: 4px;
+    background: #3d2e00; border: 1px solid var(--warn); border-radius: 8px;
+    padding: 6px 12px; font-size: 13px; font-weight: 600;
+    color: var(--warn); text-align: center;
+  }
 
   h1 { font-size: 15px; margin: 0; letter-spacing: .04em; }
 
@@ -243,6 +249,7 @@
     <div class="stat"><b id="s-time">0:00</b><span>Time</span></div>
     <div style="flex:1"></div>
     <button id="pause-btn" class="pause">⏸ Pause</button>
+    <div id="supply-warn">⚠️ Additional supply depots required</div>
   </div>
 
   <div id="notes"></div>
@@ -1305,6 +1312,7 @@ function render() {
   const used = supplyUsed(HUMAN), cap = supplyCap(HUMAN);
   $("s-sup").textContent = `${used} / ${cap}`;
   $("s-supwrap").className = "stat supply" + (used >= cap ? " blocked" : "");
+  $("supply-warn").style.display = (used >= cap && cap < SUPPLY_MAX) ? "block" : "none";
   $("s-time").textContent = fmtTime(state.time);
   if (typeof document.body !== "undefined" && document.body)
     document.body.classList.toggle("paused", !!state.paused);
