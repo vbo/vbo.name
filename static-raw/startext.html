@@ -1462,11 +1462,8 @@ function destButtonsHtml(node, n, poolLen) {
   if (!dests.length) return `<div class="sheet-sub" style="margin-top:8px">No reachable destinations — explore a neighbour first.</div>`;
   return dests.map(d => {
     const eta = hopDist(node, d) * EDGE_TIME;
-    const su = state.seenUnits[d];
-    const enemyKnown = (Array.isArray(state.seen[d]) && state.seen[d].length > 0) ||
-      !!(su && state.time - su.time <= SEEN_UNITS_TTL && (su.marines || su.scvs || su.gasScvs));
     return `<button class="act secondary" id="dest-${d}" ${poolLen ? "" : "disabled"}>
-        Send ${n} → ${nodeName(d)}${enemyKnown ? " ⚔️" : ""} <span class="cost">— ${eta}s travel</span>
+        Send ${n} → ${nodeName(d)} <span class="cost">— ${eta}s travel</span>
       </button>`;
   }).join("");
 }
