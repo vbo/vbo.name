@@ -1251,7 +1251,7 @@ function renderNode(node) {
       en.innerHTML = `<div class="section-label">Enemy forces — last seen</div>`;
       if (snap.length) appendSeenBuildings(en, snap);
       const seenU = appendSeenUnits(en, state.seenUnits[node]);
-      if (!snap.length && !seenU) en.innerHTML += `<div class="unknown">Last seen: no forces.</div>`;
+      // "no forces" omitted — saves space; absence of rows is self-explanatory
     } else {
       en.innerHTML = `<div class="unknown">${visited ? "No vision here." : "Unexplored."}</div>`;
     }
