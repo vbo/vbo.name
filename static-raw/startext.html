@@ -1114,6 +1114,33 @@ function botEval() {
         }
       }
     }
+
+    // Expansion: send an SCV to claim visited resource nodes without a bot CC.
+    if (!underAttack && min() >= C.cc.cost + 200) {
+      const noExpanding = !state.buildings.some(
+        b => b.owner === BOT && b.type === "cc" && b.construct && b.node !== home);
+      if (noExpanding) {
+        let expNode = -1, expDist = Infinity;
+        for (let n = 0; n < state.map.n; n++) {
+          if (n === home || !state.visited[BOT][n] || state.field[n] <= 0) continue;
+          if (state.buildings.some(b => b.owner === BOT && b.node === n && b.type === "cc")) continue;
+          if (distFromHome[n] < expDist) { expDist = distFromHome[n]; expNode = n; }
+        }
+        if (expNode !== -1) {
+          const scvThere = unitsOf(BOT, expNode, null, "scv").length > 0;
+          const scvEnRoute = state.units.some(u =>
+            u.owner === BOT && u.type === "scv" && u.transit && u.transit.to === expNode);
+          if (scvThere) {
+            startBuilding(BOT, expNode, "cc");
+          } else if (!scvEnRoute) {
+            const homeScvAvail = state.units.filter(u =>
+              u.owner === BOT && u.node === home && u.type === "scv" &&
+              (u.task === "idle" || u.task === "mining")).length;
+            if (homeScvAvail > 10) sendUnits(BOT, home, 1, "scv", expNode);
+          }
+        }
+      }
+    }
   }
 
   // Supply: build depots with a healthy buffer so production never stalls.
@@ -1148,11 +1175,27 @@ function botEval() {
     if (min() === before) break; // all barracks queues full
   }
 
-  // Idle SCVs back to mining when safe (requires a CC at home).
-  const botCcAtHome = state.buildings.some(b =>
-    b.owner === BOT && b.node === home && b.type === "cc" && !b.construct);
-  if (!underAttack && botCcAtHome && state.field[home] > 0)
-    unitsOf(BOT, home, "idle", "scv").forEach(u => u.task = "mining");
+  // Set idle SCVs to mining at every completed bot CC node.
+  for (const ccB of state.buildings.filter(b => b.owner === BOT && b.type === "cc" && !b.construct)) {
+    if (state.field[ccB.node] <= 0) continue;
+    if (underAttack && ccB.node === home) continue;
+    unitsOf(BOT, ccB.node, "idle", "scv").forEach(u => u.task = "mining");
+  }
+  // Trickle extra SCVs to undermanned expansion nodes (up to 8 miners, keep 10+ at home).
+  if (!underAttack) {
+    for (const ccB of state.buildings.filter(
+        b => b.owner === BOT && b.type === "cc" && !b.construct && b.node !== home)) {
+      if (state.field[ccB.node] <= 0) continue;
+      const expMiners = unitsOf(BOT, ccB.node, "mining", "scv").length;
+      const enRoute = state.units.filter(u =>
+        u.owner === BOT && u.type === "scv" && u.transit && u.transit.to === ccB.node).length;
+      const homeScvAvail = state.units.filter(u =>
+        u.owner === BOT && u.node === home && u.type === "scv" &&
+        (u.task === "idle" || u.task === "mining")).length;
+      const send = Math.min(Math.max(0, 8 - expMiners - enRoute), Math.max(0, homeScvAvail - 10));
+      if (send > 0) sendUnits(BOT, home, send, "scv", ccB.node);
+    }
+  }
 }
 
 /* ------------------------------ Rendering ---------------------------- */
@@ -2579,6 +2622,66 @@ function runTests() {
       ref.hp = 0;
       cleanupDead();
       eq(unitsOf(HUMAN, HOME, "gas", "scv").length, 0, "gas SCVs freed when refinery dies");
+    },
+
+    bot_sends_scv_to_expand() {
+      resetState(7);
+      // Give BOT plenty of minerals and SCVs so expansion condition is met.
+      state.minerals[BOT] = C.cc.cost + 400;
+      // Ensure bot has 12 SCVs at home.
+      while (state.units.filter(u => u.owner === BOT && u.node === AWAY && u.type === "scv").length < 12) {
+        state.units.push({ owner: BOT, type: "scv", node: AWAY, task: "idle", hp: 60, maxHp: 60, transit: null });
+      }
+      // Mark a non-home node with minerals as visited by bot (simulate scout).
+      let expNode = -1;
+      for (let n = 0; n < state.map.n; n++) {
+        if (n !== HOME && n !== AWAY && state.field[n] > 0) { expNode = n; break; }
+      }
+      if (expNode === -1) { ok(true, "no expansion node on this seed — skip"); return; }
+      state.visited[BOT][expNode] = true;
+      // Bot not under attack.
+      state.underAttack = Array(state.map.n).fill(false);
+      botEval();
+      const scvGoing = state.units.some(u =>
+        u.owner === BOT && u.type === "scv" && u.transit && u.transit.to === expNode);
+      ok(scvGoing, "bot sends SCV toward expansion node");
+    },
+
+    bot_builds_cc_at_expansion() {
+      resetState(7);
+      state.minerals[BOT] = C.cc.cost + 400;
+      // SCV already at the expansion node.
+      let expNode = -1;
+      for (let n = 0; n < state.map.n; n++) {
+        if (n !== HOME && n !== AWAY && state.field[n] > 0) { expNode = n; break; }
+      }
+      if (expNode === -1) { ok(true, "no expansion node on this seed — skip"); return; }
+      state.visited[BOT][expNode] = true;
+      state.units.push({ owner: BOT, type: "scv", node: expNode, task: "idle", hp: 60, maxHp: 60, transit: null });
+      state.underAttack = Array(state.map.n).fill(false);
+      botEval();
+      const ccStarted = state.buildings.some(b => b.owner === BOT && b.node === expNode && b.type === "cc");
+      ok(ccStarted, "bot starts CC at expansion when SCV is present");
+    },
+
+    bot_mines_expansion_after_cc() {
+      resetState(7);
+      // Find a non-home resource node.
+      let expNode = -1;
+      for (let n = 0; n < state.map.n; n++) {
+        if (n !== HOME && n !== AWAY && state.field[n] > 0) { expNode = n; break; }
+      }
+      if (expNode === -1) { ok(true, "no expansion node on this seed — skip"); return; }
+      // Place a completed CC at the expansion.
+      state.buildings.push({ owner: BOT, type: "cc", node: expNode, construct: false, hp: 1000, maxHp: 1000 });
+      state.visited[BOT][expNode] = true;
+      // Place an idle SCV at the expansion.
+      state.units.push({ owner: BOT, type: "scv", node: expNode, task: "idle", hp: 60, maxHp: 60, transit: null });
+      state.minerals[BOT] = 0;
+      state.underAttack = Array(state.map.n).fill(false);
+      botEval();
+      const mining = unitsOf(BOT, expNode, "mining", "scv").length;
+      ok(mining >= 1, "bot sets expansion SCV to mining when CC is complete");
     },
   };
 
