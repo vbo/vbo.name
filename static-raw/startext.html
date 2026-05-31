@@ -137,6 +137,8 @@
     text-align: center; box-shadow: 0 4px 14px rgba(0,0,0,.45);
   }
   .note.loss { background: #3a1d24; border: 1px solid var(--bad); color: #ffd7d7; }
+  .note.link { cursor: pointer; }
+  .note.link:active { filter: brightness(1.15); }
   .note.alert {
     background: #5a1414; border: 1px solid #ff5a5a; color: #fff;
     font-size: 17px; letter-spacing: .03em;
@@ -430,7 +432,7 @@ function resetState(seed) {
     units: [],
     buildings: [],
     notes: [],                  // transient on-screen notifications
-    underAttack: false,         // edge-trigger for the "under attack" alert
+    underAttack: new Array(n).fill(false), // per-node edge-trigger for the "under attack" alert
     seen: new Array(n).fill(null),      // per-node last-seen enemy buildings (null = never scouted)
     seenUnits: new Array(n).fill(null), // per-node last-seen enemy units (fades after a few s)
     bot: {
@@ -532,16 +534,22 @@ function tick() {
   render();
 }
 
-function notify(text, kind, ttl = 5) {
-  state.notes.push({ id: idSeq++, text, kind, until: state.time + ttl });
+function notify(text, kind, ttl = 5, node = null) {
+  state.notes.push({ id: idSeq++, text, kind, until: state.time + ttl, node });
 }
 
-// Fire a prominent alert the moment enemies first appear at Your Base (edge-triggered,
-// so it re-fires for each fresh wave rather than spamming every tick).
+// Fire a prominent alert the moment enemies appear at any node you hold — your base
+// or a forward position. Edge-triggered per node, so it re-fires for each fresh wave
+// rather than spamming every tick, and carries the node so the toast can link to it.
 function alertStep() {
-  const enemyHome = state.units.some(u => u.owner === BOT && u.node === HOME);
-  if (enemyHome && !state.underAttack) notify("⚠️ UNDER ATTACK at Your Base!", "alert", 6);
-  state.underAttack = enemyHome;
+  for (let node = 0; node < state.map.n; node++) {
+    const mine = state.units.some(u => u.owner === HUMAN && u.node === node) ||
+                 state.buildings.some(b => b.owner === HUMAN && b.node === node);
+    const foe = state.units.some(u => u.owner === BOT && u.node === node);
+    const contested = mine && foe;
+    if (contested && !state.underAttack[node]) notify("⚠️ UNDER ATTACK", "alert", 6, node);
+    state.underAttack[node] = contested;
+  }
 }
 
 const SEEN_UNITS_TTL = 5; // seconds a last-seen enemy unit count lingers after we lose vision
@@ -1049,7 +1057,14 @@ function render() {
   board.appendChild(renderNode(ui.selectedNode));
 
   renderTransit();
-  $("notes").innerHTML = state.notes.map(n => `<div class="note ${n.kind}">${n.text}</div>`).join("");
+  const notesEl = $("notes");
+  notesEl.innerHTML = state.notes.map(n => {
+    const linked = n.node != null;
+    const where = linked ? ` at <b>${nodeName(n.node)}</b> · tap to view →` : "";
+    return `<div class="note ${n.kind}${linked ? " link" : ""}"${linked ? ` data-node="${n.node}"` : ""}>${n.text}${where}</div>`;
+  }).join("");
+  notesEl.querySelectorAll(".note.link").forEach(el =>
+    el.onclick = () => { ui.selectedNode = +el.dataset.node; render(); });
   if (ui.sheet) renderSheet();
 }
 
@@ -2068,6 +2083,24 @@ function runTests() {
       // emulate the loop's guard
       if (!state.paused) tick();
       eq(state.time, t0, "no tick while paused");
+    },
+    "under-attack alert fires per node (incl. forward positions) and links the node"() {
+      resetState(1);
+      // Player marine + enemy marine at a non-home node we hold.
+      const fwd = state.map.adj[HOME][0];
+      const mine = newMarine(HUMAN, fwd); mine.task = "idle";
+      const foe  = newMarine(BOT, fwd);   foe.task = "idle";
+      alertStep();
+      const note = state.notes.find(x => x.kind === "alert" && x.node === fwd);
+      ok(note, "alert fires for a contested non-home node");
+      ok(state.underAttack[fwd], "node flagged under attack");
+      // Edge-triggered: no duplicate while it stays contested.
+      const before = state.notes.length;
+      alertStep();
+      eq(state.notes.length, before, "no duplicate alert while still contested");
+      // Clears when the enemy is gone.
+      foe.hp = 0; cleanupDead(); alertStep();
+      ok(!state.underAttack[fwd], "flag clears once the attacker is gone");
     },
 
     // ── Gas + utilisation ───────────────────────────────────────────────
