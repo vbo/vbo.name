@@ -125,9 +125,16 @@
   .transit-row {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; padding: 10px; margin-bottom: 6px;
+    display: flex; align-items: flex-start; gap: 8px;
   }
+  .transit-info { flex: 1; }
   .transit-row .name { font-size: 14px; font-weight: 600; }
   .transit-row .meta { font-size: 12px; color: var(--dim); }
+  .transit-cancel {
+    background: none; border: 1px solid var(--line); border-radius: 6px;
+    color: var(--dim); font-size: 13px; padding: 3px 8px; cursor: pointer; flex-shrink: 0;
+  }
+  .transit-cancel:hover { color: var(--bad); border-color: var(--bad); }
 
   /* Notifications */
   #notes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
@@ -929,6 +936,27 @@ function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
   }
 }
 
+function cancelTransit(to) {
+  to = parseInt(to);
+  const group = state.units.filter(u => u.owner === HUMAN && u.transit && u.transit.to === to);
+  for (const u of group) {
+    const tr = u.transit;
+    if (tr.dwellStart !== null) {
+      u.task = "idle"; u.transit = null;
+    } else {
+      const prev = tr.path[tr.pathIdx - 1];
+      const next = tr.path[tr.pathIdx];
+      if (tr.progress >= EDGE_TIME / 2) {
+        u.node = next; state.visited[u.owner][next] = true;
+      } else {
+        u.node = prev;
+      }
+      u.task = "idle"; u.transit = null;
+    }
+  }
+  render();
+}
+
 function setTask(owner, node, n, from, to, unitType) {
   const pool = unitsOf(owner, node, from, unitType).slice(0, n);
   for (const u of pool) u.task = to;
@@ -1543,9 +1571,12 @@ function renderTransit() {
     const dwelling = group.filter(u => u.transit.dwellStart != null && u.transit.pathIdx < hops);
     const atNote = dwelling.length ? ` · at ${nodeName(dwelling[0].node)}` : "";
     html += `<div class="transit-row">
-        <div class="name">${label}${modeLabel} → ${nodeName(parseInt(to))}${atNote}</div>
-        <div class="meta">ETA ${eta}s</div>
-        ${progBar(Math.min(avgDone, totalTime), totalTime)}
+        <div class="transit-info">
+          <div class="name">${label}${modeLabel} → ${nodeName(parseInt(to))}${atNote}</div>
+          <div class="meta">ETA ${eta}s</div>
+          ${progBar(Math.min(avgDone, totalTime), totalTime)}
+        </div>
+        <button class="transit-cancel" onclick="cancelTransit(${to})">✕</button>
       </div>`;
   }
   wrap.innerHTML = html;
@@ -2369,6 +2400,44 @@ function runTests() {
       const r2 = startBuilding(HUMAN, HOME, "refinery");
       ok(r1 === true,  "first refinery starts");
       ok(r2 === false, "second refinery at same node rejected");
+    },
+    "cancelTransit: early cancel snaps unit back to origin"() {
+      resetState(1);
+      const dest = state.map.adj[HOME][0];
+      sendUnits(HUMAN, HOME, 1, "scv", dest);
+      const u = state.units.find(x => x.transit);
+      eq(u.node, -1, "unit in transit");
+      // progress starts at 0, well below EDGE_TIME/2 — should snap back
+      cancelTransit(dest);
+      eq(u.node, HOME, "snapped back to origin");
+      eq(u.transit, null, "transit cleared");
+      eq(u.task, "idle", "idle after cancel");
+    },
+    "cancelTransit: late cancel snaps unit forward and marks visited"() {
+      resetState(1);
+      const dest = state.map.adj[HOME][0];
+      sendUnits(HUMAN, HOME, 1, "scv", dest);
+      const u = state.units.find(x => x.transit);
+      u.transit.progress = Math.ceil(EDGE_TIME / 2); // past midpoint
+      cancelTransit(dest);
+      eq(u.node, dest, "snapped forward to next node");
+      ok(state.visited.human[dest], "forward node marked visited");
+      eq(u.transit, null, "transit cleared");
+    },
+    "cancelTransit: dwelling unit stays at intermediate node"() {
+      resetState(1);
+      const path = bfsPath(HOME, AWAY, state.map.adj, state.map.n);
+      if (path.length < 3) { ok(true, "trivial 1-hop map — skip"); return; }
+      const mid = path[1];
+      path.slice(1, -1).forEach(nd => state.visited.human[nd] = true);
+      sendUnits(HUMAN, HOME, 1, "scv", AWAY);
+      const u = state.units.find(x => x.transit);
+      run(EDGE_TIME + 1); // arrives at first intermediate and starts dwelling
+      ok(u.transit && u.transit.dwellStart !== null, "unit is dwelling");
+      eq(u.node, mid, "at intermediate node");
+      cancelTransit(AWAY);
+      eq(u.node, mid, "stays at the intermediate node");
+      eq(u.transit, null, "transit cleared");
     },
     "gas SCVs go idle when refinery is destroyed"() {
       resetState(1);
