@@ -891,11 +891,16 @@ function combatStep() {
   }
 }
 
-// Engine targeting: prioritise enemies that can deal damage back (idle units = fighters).
+// A target shoots back if it's an idle fighter or a bunker with a garrison —
+// either way it gets priority over passive buildings/workers.
+const isThreatTarget = o =>
+  o.task === "idle" || (o.type === "bunker" && o.loaded && o.loaded.length > 0);
+
+// Engine targeting: prioritise enemies that can deal damage back.
 function pickTarget(owner, node) {
   const live = targetsAt(owner, node);
   if (!live.length) return null;
-  const threats = live.filter(o => o.task === "idle");
+  const threats = live.filter(isThreatTarget);
   const pool = threats.length ? threats : live;
   return pool[(rng() * pool.length) | 0];
 }
@@ -2867,6 +2872,33 @@ function runTests() {
       const rangeBefore = unitRange(m);
       loadBunker(HUMAN, HOME, bunk.id);
       ok(unitRange(m) > rangeBefore, "bunker gives +1 range to occupant");
+    },
+    "bunker: an occupied bunker is targeted before passive buildings"() {
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.units = [];
+      // A HUMAN depot (passive) and a HUMAN bunker side by side at HOME.
+      const depot = { id: idSeq++, owner: HUMAN, node: HOME, type: "depot",
+        hp: C.depot.hp, maxHp: C.depot.hp, construct: null, train: null, queued: 0, rally: null };
+      const bunk = { id: idSeq++, owner: HUMAN, node: HOME, type: "bunker",
+        hp: C.bunker.hp, maxHp: C.bunker.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: [], research: null, rally: null };
+      state.buildings.push(depot, bunk);
+      // Empty bunker is not a threat — passive, same as the depot.
+      ok(!isThreatTarget(bunk), "empty bunker is not a threat");
+      const m = newMarine(HUMAN, HOME); m.task = "idle";
+      loadBunker(HUMAN, HOME, bunk.id);
+      ok(isThreatTarget(bunk), "occupied bunker counts as a threat");
+      // pickTarget should only ever return the bunker (the lone threat), never the depot.
+      seedRng(7);
+      let pickedBunker = 0, pickedDepot = 0;
+      for (let i = 0; i < 40; i++) {
+        const t = pickTarget(HUMAN, HOME);
+        if (t === bunk) pickedBunker++;
+        if (t === depot) pickedDepot++;
+      }
+      eq(pickedDepot, 0, "passive depot never picked while bunker is garrisoned");
+      ok(pickedBunker > 0, "occupied bunker is the prioritised target");
     },
     "fog: enemy buildings unknown until scouted, then remembered"() {
       resetState(1);
