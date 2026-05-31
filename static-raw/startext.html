@@ -49,7 +49,7 @@
 
   /* Board */
   #board { display: grid; grid-template-columns: 1fr; gap: 10px; }
-  @media (min-width: 720px) { #board { grid-template-columns: 1fr 1fr; } }
+  @media (min-width: 560px) { #board { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); } }
 
   .node {
     background: var(--panel); border: 1px solid var(--line);
@@ -57,8 +57,15 @@
   }
   .node.home { border-color: #2f4a6b; }
   .node.away { border-color: #5a2f3a; }
-  .node-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
-  .node-head .field { font-size: 12px; color: var(--mineral); }
+  .node.neutral { border-color: var(--line); opacity: .96; }
+  .node-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+  .node-head h1 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .node-head .field { font-size: 12px; color: var(--mineral); white-space: nowrap; }
+  .badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    padding: 2px 6px; border-radius: 6px; }
+  .badge.you { background: #1d3350; color: #9ec1ff; }
+  .badge.foe { background: #4a1f28; color: #ffb4b4; }
+  .paths { font-size: 11px; color: var(--dim); margin-bottom: 8px; }
 
   .section-label {
     font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
@@ -224,6 +231,12 @@
 //                 | node -   →  prints "N passed, M failed", exits non-zero on fail
 //   In browser: open startext.html?test to see the same report instead of the game.
 //
+// Map: a random connected graph of 5–6 nodes (genMap). Only the two farthest-apart
+// nodes (the players' bases) hold resources. Movement is exploration-gated — you can
+// only send units to a node adjacent to one you've already visited (canSendTo) — and
+// travel time scales with shortest-path distance (hopDist × EDGE_TIME). Transit is
+// abstract: units are off-map mid-trip and don't fight en route.
+//
 // See runTests() near the bottom. Add an assert there whenever you add behaviour.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -241,7 +254,8 @@ function rng() {
 
 /* ----------------------------- Constants ----------------------------- */
 const TICK_MS = 1000;       // simulation runs at 1 tick / second
-const TRAVEL_TIME = 20;     // seconds to move between the two nodes
+const EDGE_TIME = 14;       // seconds to traverse one map edge (multi-hop trips cost more)
+const MAP_MIN_NODES = 5, MAP_MAX_NODES = 6; // random map size range
 const MINE_RATE = 0.7;      // minerals per mining SCV per second (below saturation)
 const FIELD_TOTAL = 12000;  // 8 patches × 1500 — standard BW main base
 const MINERAL_PATCHES = 8;  // patches per base; 2 SCVs/patch = full efficiency (16 total)
@@ -268,9 +282,80 @@ const C = {
   refinery: { hp: 500,  cost: 75,  build: 20 }, // builds on the geyser; no train queue
 };
 
-const HOME = 0, AWAY = 1;           // node indices from the human's perspective
-const NODE_NAMES = ["Your Base", "Enemy Base"];
+// HOME/AWAY are the human's and bot's start-node ids on the generated map.
+// They (and NODE_NAMES) are filled in by resetState once the map exists.
+let HOME = 0, AWAY = 1;
+let NODE_NAMES = [];
 const HUMAN = "human", BOT = "bot";
+
+/* ------------------------------- Map --------------------------------- */
+// The map is a small connected graph (5–6 nodes). Only the two start nodes
+// (farthest-apart pair) carry resources. Movement is gated by exploration:
+// you may send units to any node adjacent to a node you've already visited.
+
+// BFS hop-distances from `src` to every node.
+function bfsDist(src, adj, n) {
+  const dist = new Array(n).fill(Infinity);
+  dist[src] = 0;
+  const q = [src];
+  for (let h = 0; h < q.length; h++) {
+    const u = q[h];
+    for (const v of adj[u]) if (dist[v] === Infinity) { dist[v] = dist[u] + 1; q.push(v); }
+  }
+  return dist;
+}
+
+// BFS shortest path (list of node ids) from a to b.
+function bfsPath(a, b, adj, n) {
+  const prev = new Array(n).fill(-1);
+  const seen = new Array(n).fill(false);
+  seen[a] = true;
+  const q = [a];
+  for (let h = 0; h < q.length; h++) {
+    const u = q[h];
+    if (u === b) break;
+    for (const v of adj[u]) if (!seen[v]) { seen[v] = true; prev[v] = u; q.push(v); }
+  }
+  const path = [];
+  for (let cur = b; cur !== -1; cur = prev[cur]) { path.unshift(cur); if (cur === a) break; }
+  return path[0] === a ? path : [a]; // unreachable → just the origin (can't happen: graph is connected)
+}
+
+// Build a random connected map: spanning tree (guarantees no islands) + a few
+// extra edges for loops. Deterministic under the active rng seed.
+function genMap() {
+  const n = MAP_MIN_NODES + ((rng() * (MAP_MAX_NODES - MAP_MIN_NODES + 1)) | 0);
+  const adj = Array.from({ length: n }, () => new Set());
+  const link = (a, b) => { adj[a].add(b); adj[b].add(a); };
+  for (let i = 1; i < n; i++) link(i, (rng() * i) | 0); // tree: each node joins an earlier one
+  const extra = 1 + ((rng() * 2) | 0);                   // 1–2 extra edges
+  for (let k = 0; k < extra; k++) {
+    const a = (rng() * n) | 0, b = (rng() * n) | 0;
+    if (a !== b && !adj[a].has(b)) link(a, b);
+  }
+  const adjArr = adj.map(s => [...s].sort((x, y) => x - y));
+  const dist = adjArr.map((_, i) => bfsDist(i, adjArr, n));
+  // Start nodes = the farthest-apart pair (graph diameter endpoints).
+  let starts = [0, 1], best = -1;
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++)
+      if (dist[i][j] > best) { best = dist[i][j]; starts = [i, j]; }
+  const names = Array.from({ length: n }, (_, i) => "Sector " + String.fromCharCode(65 + i));
+  return { n, adj: adjArr, dist, starts, names };
+}
+
+// Nodes an owner may currently send units to: every visited node and each of
+// their neighbours (the explored frontier). Reinforcing held nodes is allowed.
+function reachableSet(owner) {
+  const vis = state.visited[owner], out = new Set();
+  for (let i = 0; i < state.map.n; i++) if (vis[i]) {
+    out.add(i);
+    for (const j of state.map.adj[i]) out.add(j);
+  }
+  return out;
+}
+const canSendTo = (owner, dest) => reachableSet(owner).has(dest);
+const hopDist = (a, b) => state.map.dist[a][b];
 
 /* ----------------------------- Game state ---------------------------- */
 let state, ui, timer, idSeq;
@@ -280,20 +365,34 @@ let state, ui, timer, idSeq;
 function resetState(seed) {
   seedRng(seed === undefined ? (typeof Date !== "undefined" ? Date.now() : 1) : seed);
   idSeq = 1;
+  const map = genMap();
+  HOME = map.starts[0];
+  AWAY = map.starts[1];
+  NODE_NAMES = map.names;
+  const n = map.n;
+  // Resources live only at the two start nodes.
+  const field = new Array(n).fill(0), gasField = new Array(n).fill(0);
+  field[HOME] = field[AWAY] = FIELD_TOTAL;
+  gasField[HOME] = gasField[AWAY] = GAS_TOTAL;
+  // Explored set per owner: each starts knowing only its own base.
+  const visited = { human: new Array(n).fill(false), bot: new Array(n).fill(false) };
+  visited.human[HOME] = true;
+  visited.bot[AWAY]   = true;
   state = {
     time: 0,
     over: null,                 // null | "win" | "loss"
     paused: false,
-    field:    [FIELD_TOTAL, FIELD_TOTAL],
-    gasField: [GAS_TOTAL,   GAS_TOTAL],  // vespene gas remaining per node
+    map,
+    field, gasField,
+    visited,
     minerals: { human: 50, bot: 50 },
     gas:      { human: 0,  bot: 0  },    // gas collected (future: spent on advanced units)
     units: [],
     buildings: [],
     notes: [],                  // transient on-screen notifications
     underAttack: false,         // edge-trigger for the "under attack" alert
-    seen: [null, null],         // per-node last-seen enemy buildings (null = never scouted)
-    seenUnits: [null, null],    // per-node last-seen enemy units {time,marines,scvs} (fades after a few s)
+    seen: new Array(n).fill(null),      // per-node last-seen enemy buildings (null = never scouted)
+    seenUnits: new Array(n).fill(null), // per-node last-seen enemy units (fades after a few s)
     bot: {
       lastEval: 0, lastWave: 30, waveInterval: 90, // adaptive; starts at 90s between waves
       enemyArmy: 0,    // player army size last *scouted* at HOME (no cheating: only seen counts)
@@ -411,7 +510,14 @@ const SEEN_UNITS_TTL = 5; // seconds a last-seen enemy unit count lingers after 
 // the enemy *buildings* there. Enemy unit counts are also captured but only linger a
 // few seconds (SEEN_UNITS_TTL) so a scout that dies still reports what it saw.
 function fogStep() {
-  for (const node of [HOME, AWAY]) {
+  for (let node = 0; node < state.map.n; node++) {
+    // Vision/exploration is symmetric: each side remembers nodes it occupies.
+    for (const me of [HUMAN, BOT]) {
+      const present = state.units.some(u => u.owner === me && u.node === node) ||
+                      state.buildings.some(b => b.owner === me && b.node === node);
+      if (present) state.visited[me][node] = true;
+    }
+    // Player's fog memory of the bot at this node (only the human side is rendered).
     const present = state.units.some(u => u.owner === HUMAN && u.node === node) ||
                     state.buildings.some(b => b.owner === HUMAN && b.node === node);
     if (!present) continue;
@@ -450,6 +556,7 @@ const mineralSatPct = (n, field) =>
 
 function mineStep() {
   // Minerals: process per (owner, node) so group utilisation applies.
+  // Only the two start nodes carry minerals; the rest have field 0.
   for (const owner of [HUMAN, BOT]) {
     for (const node of [HOME, AWAY]) {
       const miners = state.units.filter(u =>
@@ -507,10 +614,11 @@ function unitStep() {
   for (const u of state.units) {
     if (u.task === "moving") {
       u.transit.progress++;
-      if (u.transit.progress >= TRAVEL_TIME) {
+      if (u.transit.progress >= u.transit.total) {
         u.node = u.transit.to;
         u.task = "idle";
         u.transit = null;
+        state.visited[u.owner][u.node] = true; // arriving explores the node
       }
     }
   }
@@ -679,15 +787,18 @@ function queueMarine(owner, node, raxId) {
   else rax.queued++;
 }
 
-function sendUnits(owner, node, n, unitType = "scv") {
+function sendUnits(owner, node, n, unitType = "scv", dest) {
   const pool = unitType === "marine" ? idleMarines(owner, node) : controllable(owner, node);
   // For SCVs, send idle ones before pulling miners off duty.
   if (unitType === "scv") pool.sort((a, b) => (a.task === "idle" ? 0 : 1) - (b.task === "idle" ? 0 : 1));
-  const dest = node === HOME ? AWAY : HOME;
+  // Default destination keeps old call sites working: nearest reachable enemy-ward node.
+  if (dest === undefined) dest = node === HOME ? AWAY : HOME;
+  if (dest === node) return;
+  const total = Math.max(1, hopDist(node, dest)) * EDGE_TIME; // travel scales with map distance
   for (const u of pool.slice(0, n)) {
     u.task = "moving";
     u.node = -1; // off-map: not minable, not targetable, hidden from fog
-    u.transit = { to: dest, progress: 0 };
+    u.transit = { to: dest, progress: 0, total };
   }
 }
 
@@ -737,11 +848,9 @@ function botEval() {
         unitsOf(BOT, home, "idle", "scv").forEach(u => u.task = "mining");
     }
   } else {
-    // Not under attack. Decide whether to commit an attack based on *scouted*
-    // intel — the bot sends a lone marine to see the player's army, then only
-    // pushes when it clearly outnumbers what it saw. This stops it from feeding
-    // its whole army into a turtle and going broke. (No cheating: enemyArmy is
-    // only updated when a bot unit is physically at the player's base.)
+    // Not under attack. On a multi-node map the bot must first *explore* toward the
+    // player before it can strike — it pushes one unit at a time to the next frontier
+    // node along the shortest path, then engages once the enemy base is in reach.
     const marines = idleMarines(BOT, home);
     const reserve = skilled ? 8 : 14; // marines held back to defend
     const waveDue = state.time - state.bot.lastWave >= state.bot.waveInterval;
@@ -756,25 +865,39 @@ function botEval() {
     const scoutOut = state.units.some(u =>
       u.owner === BOT && u.node < 0 && u.task === "moving"); // a unit already en route
 
-    if (!botRax) {
-      // No barracks yet: an early SCV poke, only if it won't gut mining.
-      const scvsHome = state.units.filter(u => u.owner === BOT && u.node === home &&
-        u.type === "scv" && (u.task === "idle" || u.task === "mining"));
-      if (waveDue && scvsHome.length >= 8) {
-        sendUnits(BOT, home, 3, "scv");
-        state.bot.lastWave = state.time;
+    // Next unvisited node along the path AWAY → HOME (the frontier to claim).
+    const path = bfsPath(home, HOME, state.map.adj, state.map.n);
+    let frontier = -1;
+    for (let i = 1; i < path.length; i++)
+      if (!state.visited[BOT][path[i]]) { frontier = path[i]; break; }
+    const homeReachable = canSendTo(BOT, HOME);
+
+    if (!homeReachable && frontier !== -1) {
+      // Claim the frontier: send one marine (or a spare SCV early) if nobody is
+      // there or already heading there.
+      const atFrontier = state.units.some(u => u.owner === BOT && u.node === frontier);
+      const headed = state.units.some(u =>
+        u.owner === BOT && u.task === "moving" && u.transit.to === frontier);
+      if (!atFrontier && !headed) {
+        if (marines.length > 1) sendUnits(BOT, home, 1, "marine", frontier);
+        else {
+          const scvsHome = state.units.filter(u => u.owner === BOT && u.node === home &&
+            u.type === "scv" && (u.task === "idle" || u.task === "mining"));
+          if (scvsHome.length >= 10) sendUnits(BOT, home, 1, "scv", frontier);
+        }
       }
-    } else if (!intelFresh && !scoutOut && marines.length > reserve) {
-      // Intel is stale: spend one marine to scout the player's strength.
-      sendUnits(BOT, home, 1, "marine");
-    } else if (waveDue && intelFresh) {
-      // Commit only with a striking force that clearly beats the scouted defense
-      // (and is meaningfully large), always keeping the home reserve.
-      const strike = marines.length - reserve;
-      const needed = Math.max(12, Math.ceil(state.bot.enemyArmy * 1.4) + 4);
-      if (strike >= needed) {
-        sendUnits(BOT, home, strike, "marine");
-        state.bot.lastWave = state.time;
+    } else if (homeReachable) {
+      // Enemy base in reach — scout for intel, then commit a real wave that clearly
+      // beats the scouted defense (no cheating: enemyArmy is scouted, not read).
+      if (!intelFresh && !scoutOut && marines.length > reserve) {
+        sendUnits(BOT, home, 1, "marine", HOME); // scout the player's strength
+      } else if (waveDue && intelFresh) {
+        const strike = marines.length - reserve;
+        const needed = Math.max(12, Math.ceil(state.bot.enemyArmy * 1.4) + 4);
+        if (strike >= needed) {
+          sendUnits(BOT, home, strike, "marine", HOME);
+          state.bot.lastWave = state.time;
+        }
       }
     }
   }
@@ -862,11 +985,12 @@ function render() {
   if (typeof document.body !== "undefined" && document.body)
     document.body.classList.toggle("paused", !!state.paused);
 
-  // Nodes.
+  // Nodes — ordered by distance from your base (your base first, enemy base last).
   const board = $("board");
   board.innerHTML = "";
-  board.appendChild(renderNode(HOME));
-  board.appendChild(renderNode(AWAY));
+  const order = [...Array(state.map.n).keys()]
+    .sort((a, b) => state.map.dist[HOME][a] - state.map.dist[HOME][b] || a - b);
+  for (const node of order) board.appendChild(renderNode(node));
 
   renderTransit();
   $("notes").innerHTML = state.notes.map(n => `<div class="note ${n.kind}">${n.text}</div>`).join("");
@@ -875,56 +999,62 @@ function render() {
 
 function renderNode(node) {
   const el = document.createElement("div");
-  el.className = "node " + (node === HOME ? "home" : "away");
+  const isHome = node === HOME, isAway = node === AWAY;
   const present = state.units.some(u => u.owner === HUMAN && u.node === node) ||
                   state.buildings.some(b => b.owner === HUMAN && b.node === node);
-  // Resource fields — readable only when we have vision (fog hides enemy economy).
-  const hasRefinery = state.buildings.some(b => b.node === node && b.type === "refinery" && !b.construct);
-  const fieldStr = present
-    ? `💎 ${Math.ceil(state.field[node])} left`
-    : "💎 ?";
-  const gasStr = present
-    ? (hasRefinery ? `· ⛽ ${Math.ceil(state.gasField[node])} left` : `· ⛽ ${Math.ceil(state.gasField[node])} available`)
-    : (state.gasField[node] > 0 ? "· ⛽ ?" : "");
-  el.innerHTML = `<div class="node-head">
-      <h1>${NODE_NAMES[node]}</h1>
-      <span class="field" style="color:var(--dim)">${fieldStr} ${gasStr}</span>
-    </div>`;
+  const visited = state.visited.human[node];
+  const seenCC = Array.isArray(state.seen[node]) && state.seen[node].some(b => b.type === "cc");
+  const enemyBaseKnown = isAway && (present || seenCC); // don't reveal the enemy base until scouted
+  el.className = "node " + (isHome ? "home" : enemyBaseKnown ? "away" : "neutral");
 
-  // --- Your forces (always visible) ---
+  // Header: name + base badge + resources (only the two start nodes have any, and
+  // only when we can see them).
+  const badge = isHome ? `<span class="badge you">★ Your Base</span>`
+              : enemyBaseKnown ? `<span class="badge foe">☠ Enemy Base</span>` : "";
+  const isResourceNode = isHome || isAway;
+  let resStr = "";
+  if (isResourceNode && (isHome || present)) {
+    const hasRefinery = state.buildings.some(b => b.node === node && b.type === "refinery" && !b.construct);
+    resStr = `💎 ${Math.ceil(state.field[node])} · ⛽ ${Math.ceil(state.gasField[node])}${hasRefinery ? " left" : ""}`;
+  } else if (isResourceNode && enemyBaseKnown) {
+    resStr = "💎 ? · ⛽ ?";
+  }
+  const neighbours = state.map.adj[node].map(j => NODE_NAMES[j]).join(", ");
+  el.innerHTML = `<div class="node-head">
+      <h1>${NODE_NAMES[node]} ${badge}</h1>
+      <span class="field" style="color:var(--dim)">${resStr}</span>
+    </div>
+    <div class="paths">↔ ${neighbours}</div>`;
+
+  // --- Your forces (only when you have something here) ---
   const mine = document.createElement("div");
   mine.className = "force-mine";
-  mine.innerHTML = `<div class="section-label">Your forces</div>`;
-  appendForces(mine, HUMAN, node, true);
-  el.appendChild(mine);
+  if (appendForces(mine, HUMAN, node, true)) {
+    mine.insertAdjacentHTML("afterbegin", `<div class="section-label">Your forces</div>`);
+    el.appendChild(mine);
+  }
 
   // --- Enemy forces (fog of war) ---
   const en = document.createElement("div");
   en.className = "force-enemy";
-  let showEnemy = false;
   if (present) {
-    en.innerHTML = `<div class="section-label">Enemy forces</div>`;
-    const had = appendForces(en, BOT, node, false);
-    if (had) showEnemy = true;
-    // If had===false: no enemy presence at all — hide the section entirely.
+    // Full vision: show live enemy forces if any.
+    if (appendForces(en, BOT, node, false)) {
+      en.insertAdjacentHTML("afterbegin", `<div class="section-label">Enemy forces</div>`);
+      el.appendChild(en);
+    }
   } else {
-    // Out of sight: show last-seen buildings or "Unknown" if never scouted.
     const snap = state.seen[node];
-    if (snap == null) {
-      en.innerHTML = `<div class="section-label">Enemy forces</div>` +
-        `<div class="unknown">Unknown — no scouts here.</div>`;
-    } else {
+    if (snap) {
       en.innerHTML = `<div class="section-label">Enemy forces — last seen</div>`;
       if (snap.length) appendSeenBuildings(en, snap);
-      // Recently-seen enemy units linger briefly so a scout that dies still reports
-      // what it saw — giving you a few seconds to read the army size.
       const seenU = appendSeenUnits(en, state.seenUnits[node]);
-      if (!snap.length && !seenU)
-        en.innerHTML += `<div class="unknown">Last seen: no forces.</div>`;
+      if (!snap.length && !seenU) en.innerHTML += `<div class="unknown">Last seen: no forces.</div>`;
+    } else {
+      en.innerHTML = `<div class="unknown">${visited ? "No vision here." : "Unexplored."}</div>`;
     }
-    showEnemy = true;
+    el.appendChild(en);
   }
-  if (showEnemy) el.appendChild(en);
   return el;
 }
 
@@ -1181,8 +1311,9 @@ function renderTransit() {
   let html = `<div class="section-label">In transit</div>`;
   for (const to in byDir) {
     const group = byDir[to];
+    const total = group[0].transit.total; // same destination → same trip length
     const avg = group.reduce((s, u) => s + u.transit.progress, 0) / group.length;
-    const eta = Math.max(0, TRAVEL_TIME - Math.round(avg));
+    const eta = Math.max(0, total - Math.round(avg));
     const scvN = group.filter(u => u.type === "scv").length;
     const marN = group.filter(u => u.type === "marine").length;
     const label = [scvN && `${scvN} SCV${scvN > 1 ? "s" : ""}`,
@@ -1190,7 +1321,7 @@ function renderTransit() {
     html += `<div class="transit-row">
         <div class="name">${label} → ${NODE_NAMES[to]}</div>
         <div class="meta">ETA ${eta}s</div>
-        ${progBar(avg, TRAVEL_TIME)}
+        ${progBar(avg, total)}
       </div>`;
   }
   wrap.innerHTML = html;
@@ -1202,6 +1333,27 @@ function closeSheet() {
   ui.sheet = null;
   $("sheet").className = "";
   $("sheet-backdrop").className = "";
+}
+
+// Reachable destinations from `node` for the human, nearest first.
+const sendDests = node => [...reachableSet(HUMAN)]
+  .filter(d => d !== node)
+  .sort((a, b) => hopDist(node, a) - hopDist(node, b) || a - b);
+
+// One "Send n → Sector X (ETA)" button per reachable destination.
+function destButtonsHtml(node, n, poolLen) {
+  const dests = sendDests(node);
+  if (!dests.length) return `<div class="sheet-sub" style="margin-top:8px">No reachable destinations — explore a neighbour first.</div>`;
+  return dests.map(d => {
+    const eta = hopDist(node, d) * EDGE_TIME;
+    const enemyWard = d === AWAY ? " ⚔️" : "";
+    return `<button class="act secondary" id="dest-${d}" ${poolLen ? "" : "disabled"}>
+        Send ${n} → ${NODE_NAMES[d]}${enemyWard} <span class="cost">— ${eta}s travel</span>
+      </button>`;
+  }).join("");
+}
+function bindDestButtons(node, onSend) {
+  for (const d of sendDests(node)) bind(`dest-${d}`, () => onSend(d));
 }
 
 function renderSheet() {
@@ -1267,13 +1419,9 @@ function renderSheet() {
     const max = Math.max(1, pool.length);
     sel.n = Math.min(Math.max(1, sel.n || pool.length), max);
     const n = sel.n;
-    const other = node === HOME ? AWAY : HOME;
     sheet.innerHTML = `
       <h2>Marines at ${NODE_NAMES[node]}</h2>
-      <div class="sheet-sub">${pool.length} ready to move</div>
-      <button class="act" id="a-send-all-m" ${pool.length ? "" : "disabled"}>
-        ⚔️ Send ALL ${pool.length} → ${NODE_NAMES[other]}
-      </button>
+      <div class="sheet-sub">${pool.length} ready · pick a destination</div>
       <div class="stepper">
         <button id="n-minus">−</button>
         <div class="count" id="n-count">${n}</div>
@@ -1281,16 +1429,13 @@ function renderSheet() {
         <div class="label">selected</div>
       </div>
       <input type="range" id="n-range" min="1" max="${max}" value="${n}">
-      <button class="act secondary" id="a-send-m" ${pool.length ? "" : "disabled"}>
-        Send ${n} → ${NODE_NAMES[other]} <span class="cost">— ${TRAVEL_TIME}s travel</span>
-      </button>
+      ${destButtonsHtml(node, n, pool.length)}
       <button class="act-close" id="a-close">Close</button>`;
     const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
     bind("n-minus", () => setN(sel.n - 1));
     bind("n-plus", () => setN(sel.n + 1));
     $("n-range").oninput = e => setN(parseInt(e.target.value, 10));
-    bind("a-send-all-m", () => { sendUnits(HUMAN, node, pool.length, "marine"); closeSheet(); render(); });
-    bind("a-send-m", () => { sendUnits(HUMAN, node, sel.n, "marine"); closeSheet(); render(); });
+    bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "marine", dest); closeSheet(); render(); });
 
   } else {
     // SCV group sheet.
@@ -1302,7 +1447,6 @@ function renderSheet() {
     const max = Math.max(1, all.length);
     sel.n = Math.min(Math.max(1, sel.n || 1), max);
     const n = sel.n;
-    const other = node === HOME ? AWAY : HOME;
     const depotOK     = all.length >= 1 && mineNow >= C.depot.cost;
     const raxOK       = all.length >= 1 && mineNow >= C.barracks.cost;
     const hasRef      = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "refinery" && !b.construct);
@@ -1312,13 +1456,21 @@ function renderSheet() {
     const minSatPct   = mineralSatPct(miningN, state.field[node]);
     const gasSatPct   = Math.round(gasN / GAS_OPT * 100);
 
+    const isResourceNode = node === HOME || node === AWAY;
     sheet.innerHTML = `
       <h2>SCVs at ${NODE_NAMES[node]}</h2>
       <div class="sheet-sub">${all.length} available · ${miningN} mining (${minSatPct}% sat)${gasN ? ` · ${gasN} gas (${gasSatPct}% sat)` : ""} · ${idleN} idle</div>
 
-      <button class="act" id="a-send-all" ${all.length ? "" : "disabled"}>
-        Send ALL ${all.length} → ${NODE_NAMES[other]}
-      </button>
+      <div class="stepper">
+        <button id="n-minus">−</button>
+        <div class="count" id="n-count">${n}</div>
+        <button id="n-plus">+</button>
+        <div class="label">SCVs<br>selected</div>
+      </div>
+      <input type="range" id="n-range" min="1" max="${max}" value="${n}">
+      ${destButtonsHtml(node, n, all.length)}
+
+      ${isResourceNode ? `
       <button class="act secondary" id="a-mine-all" ${idleN ? "" : "disabled"}>
         Set ALL ${idleN} idle → mining
       </button>
@@ -1332,18 +1484,6 @@ function renderSheet() {
       <button class="act secondary" id="a-gas-rem" ${gasN ? "" : "disabled"}>
         ⛽ Pull 1 gas SCV → mining <span class="cost">— frees a gas SCV</span>
       </button>` : ""}
-
-      <div class="stepper">
-        <button id="n-minus">−</button>
-        <div class="count" id="n-count">${n}</div>
-        <button id="n-plus">+</button>
-        <div class="label">SCVs<br>selected</div>
-      </div>
-      <input type="range" id="n-range" min="1" max="${max}" value="${n}">
-      <button class="act secondary" id="a-send" ${all.length ? "" : "disabled"}>
-        Send ${n} → ${NODE_NAMES[other]} <span class="cost">— ${TRAVEL_TIME}s travel</span>
-      </button>
-
       <button class="act secondary" id="a-depot" ${depotOK ? "" : "disabled"}>
         Build Supply Depot <span class="cost">— ${C.depot.cost} 💎 · ${C.depot.build}s</span>
       </button>
@@ -1352,7 +1492,7 @@ function renderSheet() {
       </button>
       <button class="act secondary" id="a-ref" ${refOK ? "" : "disabled"}>
         Build Refinery <span class="cost">— ${C.refinery.cost} 💎 · ${C.refinery.build}s · unlock gas</span>
-      </button>
+      </button>` : ""}
       <button class="act-close" id="a-close">Close</button>`;
 
     const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
@@ -1360,7 +1500,7 @@ function renderSheet() {
     bind("n-plus", () => setN(sel.n + 1));
     $("n-range").oninput = e => setN(parseInt(e.target.value, 10));
 
-    bind("a-send-all", () => { sendUnits(HUMAN, node, all.length, "scv"); closeSheet(); render(); });
+    bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "scv", dest); closeSheet(); render(); });
     bind("a-mine-all", () => { setTask(HUMAN, node, idleN, "idle", "mining", "scv"); refreshSheet(); });
     bind("a-idle-all", () => { setTask(HUMAN, node, miningN, "mining", "idle", "scv"); refreshSheet(); });
     if (hasRef) {
@@ -1374,7 +1514,6 @@ function renderSheet() {
         if (scv) { scv.task = "mining"; refreshSheet(); }
       });
     }
-    bind("a-send", () => { sendUnits(HUMAN, node, sel.n, "scv"); closeSheet(); render(); });
     bind("a-depot", () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); });
     bind("a-rax",   () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
     bind("a-ref",   () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); });
@@ -1560,14 +1699,61 @@ function runTests() {
       const dealt = 1000 - e.hp;
       ok(dealt > 0 && dealt % C.marine.dmg === 0, `marine damage is a multiple of 6 (got ${dealt})`);
     },
-    "travel takes 20s and hides unit in transit"() {
+    "travel takes hopDist×EDGE_TIME and hides unit in transit"() {
       resetState(1);
-      sendUnits(HUMAN, HOME, 1, "scv");
+      const dest = state.map.adj[HOME][0]; // a neighbour of your base (1 hop)
+      sendUnits(HUMAN, HOME, 1, "scv", dest);
       const u = state.units.find(x => x.task === "moving");
       eq(u.node, -1, "in transit: off-map");
-      run(TRAVEL_TIME);
-      eq(u.node, AWAY, "arrived at enemy base");
+      eq(u.transit.total, EDGE_TIME, "1-hop trip costs EDGE_TIME");
+      run(EDGE_TIME);
+      eq(u.node, dest, "arrived at the neighbouring node");
       eq(u.task, "idle", "arrives idle");
+      ok(state.visited.human[dest], "arrival marks the node explored");
+    },
+    "can't send beyond the explored frontier"() {
+      resetState(1);
+      // The enemy base is multiple hops away and unexplored at the start.
+      if (hopDist(HOME, AWAY) > 1) ok(!canSendTo(HUMAN, AWAY), "enemy base not reachable until scouted");
+      // The immediate neighbours of your base are always reachable.
+      ok(canSendTo(HUMAN, state.map.adj[HOME][0]), "a neighbour is reachable");
+    },
+    "map: connected, sized 5–6, resources only at the two bases"() {
+      for (const seed of [1, 7, 42, 99, 256]) {
+        resetState(seed);
+        const m = state.map;
+        ok(m.n >= MAP_MIN_NODES && m.n <= MAP_MAX_NODES, `node count in range (got ${m.n})`);
+        ok(HOME !== AWAY, "two distinct start nodes");
+        // connectivity: BFS reaches everything (no islands)
+        const reach = bfsDist(0, m.adj, m.n);
+        ok(reach.every(d => d < Infinity), "graph is fully connected");
+        // resources only at the start nodes
+        for (let i = 0; i < m.n; i++) {
+          const isStart = i === HOME || i === AWAY;
+          eq(state.field[i], isStart ? FIELD_TOTAL : 0, `field at node ${i}`);
+          eq(state.gasField[i], isStart ? GAS_TOTAL : 0, `gas at node ${i}`);
+        }
+      }
+    },
+    "exploration frontier expands one hop at a time"() {
+      resetState(1);
+      const path = bfsPath(HOME, AWAY, state.map.adj, state.map.n);
+      if (path.length < 3) { ok(true, "trivial map — nothing to step through"); return; }
+      const first = path[1], second = path[2];
+      ok(canSendTo(HUMAN, first), "the first hop is reachable from the start");
+      ok(!state.visited.human[first] ? !canSendTo(HUMAN, second) || state.map.adj[HOME].includes(second) : true,
+        "the second hop is gated until the first is visited");
+      // walk a scout to the first frontier node
+      sendUnits(HUMAN, HOME, 1, "scv", first);
+      run(EDGE_TIME + 1);
+      ok(state.visited.human[first], "first hop now explored");
+      ok(canSendTo(HUMAN, second), "second hop becomes reachable after the first is visited");
+    },
+    "bot explores toward the player over time"() {
+      resetState(7);
+      run(500);
+      const botExplored = state.visited.bot.filter(Boolean).length;
+      ok(botExplored >= 2, `bot expands beyond its base (visited ${botExplored} nodes)`);
     },
     "melee/ranged: marine strikes first while the SCV closes the distance"() {
       resetState(1);
@@ -1603,8 +1789,8 @@ function runTests() {
     "fog: enemy buildings unknown until scouted, then remembered"() {
       resetState(1);
       eq(state.seen[AWAY], null, "AWAY unknown at start");
-      sendUnits(HUMAN, HOME, 2, "scv");
-      run(TRAVEL_TIME + 2);
+      sendUnits(HUMAN, HOME, 2, "scv", AWAY); // march straight to the enemy base
+      run(hopDist(HOME, AWAY) * EDGE_TIME + 2);
       ok(Array.isArray(state.seen[AWAY]) && state.seen[AWAY].length >= 1, "scouted: CC remembered");
       const snapLen = state.seen[AWAY].length;
       // remove our scouts; bot snapshot must freeze
@@ -1699,6 +1885,7 @@ function runTests() {
     "bot attacks once intel shows it clearly outnumbers the player"() {
       resetState(1);
       cheat(BOT, 0);
+      state.visited.bot = state.visited.bot.map(() => true); // map fully scouted → enemy base in reach
       state.bot.lastWave = -999;
       state.bot.scoutTime = state.time; // fresh intel
       state.bot.enemyArmy = 4;          // player looks weak
