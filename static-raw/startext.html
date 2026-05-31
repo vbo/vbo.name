@@ -237,6 +237,8 @@
     font-size: 14px; font-weight: 600; white-space: nowrap;
   }
   .pause:active { background: #243049; }
+  .surrender { color: #ff9a9a; border-color: #5a2a2a; }
+  .surrender:active { background: #3a1f24; }
   body.paused #board { opacity: .6; }
 </style>
 </head>
@@ -249,6 +251,7 @@
     <div class="stat"><b id="s-time">0:00</b><span>Time</span></div>
     <div style="flex:1"></div>
     <button id="pause-btn" class="pause">⏸ Pause</button>
+    <button id="surrender-btn" class="pause surrender">🏳️ Surrender</button>
     <div id="supply-warn">⚠️ Additional supply depots required</div>
   </div>
 
@@ -972,8 +975,9 @@ function checkEnd() {
   else if (!humanBuildings) endGame("loss");
 }
 
-function endGame(result) {
+function endGame(result, reason) {
   state.over = result;
+  state.overReason = reason || null;
   if (typeof document === "undefined") return; // headless test: state only, no DOM
   stopLoop();
   closeSheet();
@@ -982,7 +986,17 @@ function endGame(result) {
   document.getElementById("end-big").textContent = result === "win" ? "Victory!" : "Defeat";
   document.getElementById("end-msg").textContent = result === "win"
     ? "You destroyed all enemy buildings."
-    : "All your buildings were destroyed.";
+    : reason === "surrender"
+      ? "You surrendered the match."
+      : "All your buildings were destroyed.";
+}
+
+// Concede the match. Ends immediately as a loss (with a confirm so a stray tap
+// doesn't throw the game).
+function surrender() {
+  if (state.over) return;
+  if (typeof confirm === "function" && !confirm("Surrender this game?")) return;
+  endGame("loss", "surrender");
 }
 
 /* ------------------------------- Actions ----------------------------- */
@@ -2462,7 +2476,7 @@ function restore() {
   if (!deserializeState(raw)) return false;
   closeSheet();
   document.getElementById("end").className = "";
-  if (state.over) { render(); endGame(state.over); }
+  if (state.over) { render(); endGame(state.over, state.overReason); }
   else { setPaused(true); render(); }
   return true;
 }
@@ -2951,6 +2965,14 @@ function runTests() {
       const e = newMarine(BOT, HOME); e.task = "idle";
       run(ENGAGE_DELAY + 2);
       eq(state.over, "loss", "loss when last own building is destroyed");
+    },
+    "surrender ends the game as a loss"() {
+      resetState(1);
+      eq(state.over, null, "game running before surrender");
+      // endGame is the DOM-free core that surrender() calls after its confirm.
+      endGame("loss", "surrender");
+      eq(state.over, "loss", "surrender ends the game as a loss");
+      eq(state.overReason, "surrender", "loss reason recorded as surrender");
     },
     "determinism: same seed → same result"() {
       const play = seed => { resetState(seed); run(120); return state.minerals.bot.toFixed(2); };
@@ -3472,6 +3494,7 @@ if (HEADLESS) {
   $("sheet-backdrop").onclick = closeSheet;
   $("end-again").onclick = init;
   $("pause-btn").onclick = togglePause;
+  $("surrender-btn").onclick = surrender;
   if (!restore()) init(); // resume a saved game across refresh, else start fresh
   startLoop();
 }
