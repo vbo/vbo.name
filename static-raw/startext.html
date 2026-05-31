@@ -703,7 +703,7 @@ function mineStep() {
         miners.forEach(u => u.task = "idle"); continue;
       }
       const got = Math.min(mineralYield(miners.length, state.field[node]), state.field[node]);
-      state.field[node] -= got;
+      state.field[node] = Math.max(0, state.field[node] - got);
       state.minerals[owner] += got;
     }
   }
@@ -716,7 +716,7 @@ function mineStep() {
     if (state.gasField[ref.node] <= 0) { gasScvs.forEach(u => u.task = "idle"); continue; }
     // Cap at GAS_OPT — beyond that SCVs are wasted (hard cap like BW 3-worker optimum).
     const got = Math.min(Math.min(gasScvs.length, GAS_OPT) * GAS_RATE, state.gasField[ref.node]);
-    state.gasField[ref.node] -= got;
+    state.gasField[ref.node] = Math.max(0, state.gasField[ref.node] - got);
     state.gas[ref.owner] += got;
   }
 }
@@ -2697,7 +2697,7 @@ function runTests() {
       state.minerals[BOT] = C.cc.cost + 400;
       // Ensure bot has 12 SCVs at home.
       while (state.units.filter(u => u.owner === BOT && u.node === AWAY && u.type === "scv").length < 12) {
-        state.units.push({ owner: BOT, type: "scv", node: AWAY, task: "idle", hp: 60, maxHp: 60, transit: null });
+        newSCV(BOT, AWAY);
       }
       // Mark a non-home node with minerals as visited by bot (simulate scout).
       let expNode = -1;
@@ -2724,7 +2724,7 @@ function runTests() {
       }
       if (expNode === -1) { ok(true, "no expansion node on this seed — skip"); return; }
       state.visited[BOT][expNode] = true;
-      state.units.push({ owner: BOT, type: "scv", node: expNode, task: "idle", hp: 60, maxHp: 60, transit: null });
+      newSCV(BOT, expNode);
       state.underAttack = Array(state.map.n).fill(false);
       botEval();
       const ccStarted = state.buildings.some(b => b.owner === BOT && b.node === expNode && b.type === "cc");
@@ -2777,10 +2777,11 @@ function runTests() {
       }
       if (expNode === -1) { ok(true, "no expansion node on this seed — skip"); return; }
       // Place a completed CC at the expansion.
-      state.buildings.push({ owner: BOT, type: "cc", node: expNode, construct: false, hp: 1000, maxHp: 1000 });
+      state.buildings.push({ id: idSeq++, owner: BOT, type: "cc", node: expNode,
+        hp: 1000, maxHp: 1000, construct: null, train: null, queued: 0, rally: "mining" });
       state.visited[BOT][expNode] = true;
       // Place an idle SCV at the expansion.
-      state.units.push({ owner: BOT, type: "scv", node: expNode, task: "idle", hp: 60, maxHp: 60, transit: null });
+      newSCV(BOT, expNode);
       state.minerals[BOT] = 0;
       state.underAttack = Array(state.map.n).fill(false);
       botEval();
@@ -2793,6 +2794,35 @@ function runTests() {
     try { T[name](); }
     catch (e) { fail++; log.push("THREW: " + name + " — " + (e && e.message)); }
   }
+
+  // Stress-test: run 30 seeded games to completion.
+  // Checks that every game ends (win or loss), no crash, no stall, no negative resources.
+  const MAX_TICKS = 20000;
+  let stressPass = 0, stressFail = 0;
+  for (let seed = 0; seed < 30; seed++) {
+    try {
+      resetState(seed);
+      let ticks = 0;
+      while (!state.over && ticks < MAX_TICKS) { tick(); ticks++; }
+      if (!state.over) {
+        fail++; stressFail++;
+        log.push(`STRESS seed=${seed}: game did not end within ${MAX_TICKS} ticks`);
+      } else if (state.minerals[HUMAN] < 0 || state.minerals[BOT] < 0) {
+        fail++; stressFail++;
+        log.push(`STRESS seed=${seed}: negative minerals (human=${state.minerals[HUMAN].toFixed(2)}, bot=${state.minerals[BOT].toFixed(2)})`);
+      } else if (state.gas[HUMAN] < 0 || state.gas[BOT] < 0) {
+        fail++; stressFail++;
+        log.push(`STRESS seed=${seed}: negative gas`);
+      } else {
+        pass++; stressPass++;
+      }
+    } catch (e) {
+      fail++; stressFail++;
+      log.push(`STRESS seed=${seed} THREW: ${e && e.message}`);
+    }
+  }
+  if (stressFail === 0 && typeof console !== "undefined")
+    console.log(`  Stress: ${stressPass}/30 games completed cleanly`);
   const summary = `StarText tests: ${pass} passed, ${fail} failed`;
   if (typeof console !== "undefined") { console.log(summary); log.forEach(l => console.log("  " + l)); }
   return { pass, fail, log, summary };
