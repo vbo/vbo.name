@@ -727,6 +727,13 @@ function buildingStep() {
       b.construct.progress++;
       if (b.construct.progress >= b.construct.total) {
         b.construct = null;
+        // New barracks inherits the rally node already set on siblings at this node.
+        if (b.type === "barracks") {
+          const sibling = state.buildings.find(s =>
+            s.id !== b.id && s.owner === b.owner && s.node === b.node &&
+            s.type === "barracks" && !s.construct && typeof s.rally === "number");
+          if (sibling) b.rally = sibling.rally;
+        }
         const scv = state.units.find(u => u.buildingId === b.id);
         if (scv) { scv.task = "idle"; scv.buildingId = null; }
       }
@@ -739,7 +746,6 @@ function buildingStep() {
           const scv = newSCV(b.owner, b.node);
           // Rally: send the newborn to mine unless the patch is dry or rally is "idle".
           if (b.rally === "mining" && state.field[b.node] > 0) scv.task = "mining";
-          if (b.queued > 0) { b.queued--; b.train = { progress: 0, total: C.cc.trainTime }; }
         } else if (b.type === "barracks") {
           const marine = newMarine(b.owner, b.node);
           if (typeof b.rally === "number" && b.rally !== b.node) {
@@ -749,9 +755,16 @@ function buildingStep() {
               marine.task = "moving"; marine.node = -1;
             }
           }
-          if (b.queued > 0) { b.queued--; b.train = { progress: 0, total: C.marine.build }; }
         }
       }
+    }
+    // Dequeue the next waiting unit into the training slot whenever it is free and
+    // supply allows. This runs every tick so supply-blocked queues self-resolve as
+    // soon as a depot finishes.
+    if (!b.train && b.construct === null && b.queued > 0 &&
+        supplyUsed(b.owner) < supplyCap(b.owner)) {
+      b.queued--;
+      b.train = { progress: 0, total: b.type === "cc" ? C.cc.trainTime : C.marine.build };
     }
   }
 }
@@ -913,10 +926,12 @@ function queueSCV(owner, node, maxQueue = C.cc.queueMax) {
   const inQueue = (cc.train ? 1 : 0) + cc.queued; // active + waiting
   if (inQueue >= maxQueue) return;
   if (state.minerals[owner] < C.cc.trainCost) return;
-  if (supplyUsed(owner) >= supplyCap(owner)) return;
   state.minerals[owner] -= C.cc.trainCost;
-  if (!cc.train) cc.train = { progress: 0, total: C.cc.trainTime };
-  else cc.queued++;
+  // Start training immediately if the slot is free and supply allows; otherwise queue.
+  if (!cc.train && supplyUsed(owner) < supplyCap(owner))
+    cc.train = { progress: 0, total: C.cc.trainTime };
+  else
+    cc.queued++;
 }
 
 function freeIdle(owner, node) {
@@ -969,10 +984,12 @@ function queueMarine(owner, node, raxId) {
   const inQueue = (rax.train ? 1 : 0) + rax.queued;
   if (inQueue >= C.marine.queueMax) return;
   if (state.minerals[owner] < C.marine.cost) return;
-  if (supplyUsed(owner) >= supplyCap(owner)) return;
   state.minerals[owner] -= C.marine.cost;
-  if (!rax.train) rax.train = { progress: 0, total: C.marine.build };
-  else rax.queued++;
+  // Start training immediately if the slot is free and supply allows; otherwise queue.
+  if (!rax.train && supplyUsed(owner) < supplyCap(owner))
+    rax.train = { progress: 0, total: C.marine.build };
+  else
+    rax.queued++;
 }
 
 function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
@@ -1787,11 +1804,11 @@ function renderSheet() {
     const inQ = (cc.train ? 1 : 0) + cc.queued;
     const supplyOK = supplyUsed(HUMAN) < supplyCap(HUMAN);
     const afford = mineNow >= C.cc.trainCost;
-    const dis = cc.construct || inQ >= C.cc.queueMax || !supplyOK || !afford;
+    const dis = cc.construct || inQ >= C.cc.queueMax || !afford;
     const note = cc.construct ? "Under construction."
       : inQ >= C.cc.queueMax ? `Queue full (${C.cc.queueMax} max).`
-      : !supplyOK ? "Supply capped — build a Supply Depot."
-      : !afford ? `Need ${C.cc.trainCost} 💎.` : "";
+      : !afford ? `Need ${C.cc.trainCost} 💎.`
+      : !supplyOK ? "Supply blocked — SCV will train when supply is free." : "";
     const rallyMining = cc.rally === "mining";
     sheet.innerHTML = `
       <h2>Command Center</h2>
@@ -1814,10 +1831,10 @@ function renderSheet() {
     const maxQ = allRax.length * C.marine.queueMax;
     const supplyOK = supplyUsed(HUMAN) < supplyCap(HUMAN);
     const afford = mineNow >= C.marine.cost;
-    const dis = totalQ >= maxQ || !supplyOK || !afford;
+    const dis = totalQ >= maxQ || !afford;
     const note = totalQ >= maxQ ? `All queues full (${maxQ} max).`
-      : !supplyOK ? "Supply capped — build a Supply Depot."
-      : !afford ? `Need ${C.marine.cost} 💎.` : "";
+      : !afford ? `Need ${C.marine.cost} 💎.`
+      : !supplyOK ? "Supply blocked — marines will train when supply is free." : "";
     const trainingRax = allRax.filter(b => b.train).sort((a, b) => b.train.progress - a.train.progress);
     const eta = trainingRax.length ? C.marine.build - trainingRax[0].train.progress : 0;
     const label = allRax.length > 1 ? `Barracks ×${allRax.length}` : "Barracks";
@@ -2787,6 +2804,49 @@ function runTests() {
       botEval();
       const mining = unitsOf(BOT, expNode, "mining", "scv").length;
       ok(mining >= 1, "bot sets expansion SCV to mining when CC is complete");
+    },
+
+    "queue marine when supply-capped; trains automatically when depot finishes"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      // Fill supply to cap.
+      while (supplyUsed(HUMAN) < supplyCap(HUMAN)) {
+        state.units.push({ id: idSeq++, owner: HUMAN, type: "marine", node: HOME,
+          task: "idle", hp: 40, maxHp: 40, atkCd: 0, engaged: 0, buildingId: null, transit: null });
+      }
+      ok(supplyUsed(HUMAN) >= supplyCap(HUMAN), "supply is at cap");
+      // Queuing a marine should still succeed (minerals deducted, queued not training yet).
+      const before = state.minerals[HUMAN];
+      const rax = state.buildings.find(b => b.type === "barracks" && !b.construct && b.owner === HUMAN);
+      if (!rax) { ok(true, "no barracks on this seed — skip"); return; }
+      queueMarine(HUMAN, HOME, rax.id);
+      ok(state.minerals[HUMAN] < before, "minerals deducted despite supply cap");
+      eq(rax.queued, 1, "marine is queued (not training) while supply-blocked");
+      eq(rax.train, null, "no active training slot while supply-blocked");
+      // Build a supply depot to clear the block.
+      startBuilding(HUMAN, HOME, "depot");
+      run(C.depot.build + 1);
+      ok(rax.train !== null || rax.queued === 0, "training started after supply freed");
+    },
+
+    "new barracks inherits rally from sibling at same node"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      const dest = state.map.adj[HOME][0];
+      state.visited.human[dest] = true;
+      // Build first barracks and set a rally.
+      startBuilding(HUMAN, HOME, "barracks");
+      run(C.barracks.build + 1);
+      const rax1 = state.buildings.find(b => b.type === "barracks" && !b.construct && b.owner === HUMAN);
+      ok(rax1, "first barracks done");
+      rax1.rally = dest;
+      // Build a second barracks.
+      startBuilding(HUMAN, HOME, "barracks");
+      run(C.barracks.build + 1);
+      const rax2 = state.buildings.filter(b => b.type === "barracks" && !b.construct && b.owner === HUMAN)
+        .find(b => b.id !== rax1.id);
+      ok(rax2, "second barracks done");
+      eq(rax2.rally, dest, "second barracks inherited rally from first");
     },
   };
 
