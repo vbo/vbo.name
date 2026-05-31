@@ -1486,6 +1486,7 @@ function render() {
   notesEl.querySelectorAll(".note.link").forEach(el =>
     el.onclick = () => { ui.selectedNode = +el.dataset.node; render(); });
   if (ui.sheet) renderSheet();
+  persist(); // every state change reaches here — checkpoint it for tab-refresh survival
 }
 
 // Draw the explored map as a node-link graph (SVG). Only `visible` nodes are drawn;
@@ -2400,6 +2401,62 @@ function setPaused(p) {
 }
 function togglePause() { setPaused(!state.paused); }
 
+/* ---------------------------- Persistence ---------------------------- */
+// The whole simulation is plain JSON-able data (map = arrays, sheet.ref holds
+// ids not object refs, the RNG is one int), so a tab refresh can resume an
+// in-progress game from localStorage instead of restarting.
+const SAVE_KEY = "startext.save.v1";
+const SAVE_VERSION = 1;
+
+// Pure (DOM/localStorage-free, so tests can round-trip it): snapshot every
+// global the sim reads or writes into a JSON string.
+function serializeState() {
+  // rng is stored unsigned so the same 32-bit value always serializes identically
+  // (rng() leaves it signed via |0, seedRng/restore use >>> 0).
+  return JSON.stringify({ v: SAVE_VERSION, state, idSeq, rng: _rngState >>> 0, ui });
+}
+
+// Pure inverse of serializeState: rebuild the globals from a snapshot string.
+// Returns true on success, false if the blob is missing / corrupt / wrong-version
+// (in which case the globals are left untouched and the caller starts fresh).
+function deserializeState(raw) {
+  if (!raw) return false;
+  let data;
+  try { data = JSON.parse(raw); } catch (e) { return false; }
+  if (!data || data.v !== SAVE_VERSION || !data.state || !data.state.map) return false;
+  state = data.state;
+  idSeq = data.idSeq;
+  _rngState = data.rng >>> 0;
+  ui = data.ui || { sheet: null, selectedNode: state.map.starts[0] };
+  ui.sheet = null; // resume on the map view rather than a half-painted sheet
+  HOME = state.map.starts[0];
+  AWAY = state.map.starts[1];
+  NODE_NAMES = state.map.names;
+  return true;
+}
+
+// Write the current game to localStorage. Cheap; called on every paint. Wrapped
+// so private-mode / quota errors can never break the game.
+function persist() {
+  if (typeof localStorage === "undefined") return;
+  try { localStorage.setItem(SAVE_KEY, serializeState()); } catch (e) {}
+}
+
+// Boot-time restore. Resumes paused so a refresh never drops the player into a
+// live fight, and re-shows the end screen if the saved game was already over.
+// Returns true if a game was restored.
+function restore() {
+  if (typeof localStorage === "undefined") return false;
+  let raw;
+  try { raw = localStorage.getItem(SAVE_KEY); } catch (e) { return false; }
+  if (!deserializeState(raw)) return false;
+  closeSheet();
+  document.getElementById("end").className = "";
+  if (state.over) { render(); endGame(state.over); }
+  else { setPaused(true); render(); }
+  return true;
+}
+
 /* ------------------------------- Tests ------------------------------- */
 // In-file test harness. Pure sim only (no DOM): resetState(seed) then drive tick().
 // Run headless:  node -e "<extract script>; process.exit(runTests()?0:1)"
@@ -3246,6 +3303,43 @@ function runTests() {
       ok(rax2, "second barracks done");
       eq(rax2.rally, dest, "second barracks inherited rally from first");
     },
+
+    "persistence: serialize/deserialize round-trips the whole game": () => {
+      resetState(777);
+      run(40);
+      cheat(HUMAN, 1234);
+      const before = { time: state.time, units: state.units.length,
+                       min: state.minerals[HUMAN], idSeq };
+      const blob = serializeState();
+      // Clobber the globals with a different game, then restore from the blob.
+      resetState(1);
+      eq(state.time, 0, "reset wiped the game before restore");
+      ok(deserializeState(blob), "deserialize accepts a valid blob");
+      eq(state.time, before.time, "restored time matches");
+      eq(state.units.length, before.units, "restored unit count matches");
+      eq(state.minerals[HUMAN], before.min, "restored minerals match");
+      eq(idSeq, before.idSeq, "restored idSeq matches");
+    },
+
+    "persistence: a restored game replays deterministically": () => {
+      resetState(31);
+      run(60);
+      const snap = serializeState();
+      run(25); const future = serializeState();
+      ok(deserializeState(snap), "restored to the snapshot point");
+      run(25); const future2 = serializeState();
+      eq(future, future2, "same 25 ticks from a restored state produce identical results");
+    },
+
+    "persistence: deserialize rejects garbage and stale versions": () => {
+      resetState(5);
+      const guard = state.time;
+      ok(!deserializeState("not json"), "rejects non-JSON");
+      ok(!deserializeState(""), "rejects empty string");
+      ok(!deserializeState(JSON.stringify({ v: 999, state, idSeq, rng: 0 })),
+         "rejects a wrong save version");
+      eq(state.time, guard, "globals untouched when a blob is rejected");
+    },
   };
 
   for (const name in T) {
@@ -3303,7 +3397,7 @@ if (HEADLESS) {
   $("sheet-backdrop").onclick = closeSheet;
   $("end-again").onclick = init;
   $("pause-btn").onclick = togglePause;
-  init();
+  if (!restore()) init(); // resume a saved game across refresh, else start fresh
   startLoop();
 }
 </script>
