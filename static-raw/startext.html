@@ -468,16 +468,31 @@ function resetState(seed) {
   const field = new Array(n).fill(0), gasField = new Array(n).fill(0);
   field[HOME] = field[AWAY] = FIELD_TOTAL;
   gasField[HOME] = gasField[AWAY] = GAS_TOTAL;
-  // Expansion resources: only placed on non-start nodes that have a symmetric mirror,
-  // so both players always have the same number of nearby expansions.
+  // Expansion resources: ~25% chance per slot, fairness enforced.
+  // Symmetric pairs (one node close to HOME, its mirror close to AWAY) are rolled
+  // together — both get resources or neither does. Equidistant mid nodes roll solo.
+  // Asymmetric unpaired nodes are never given resources (would favour one side).
+  // Minerals and gas are rolled independently (~25% each), so a node can have
+  // minerals only, gas only, both, or neither. Symmetric pairs share the same
+  // roll so both sides always receive identical resources.
+  const expUsed = new Set();
   for (let i = 0; i < n; i++) {
-    if (i === HOME || i === AWAY) continue;
+    if (i === HOME || i === AWAY || expUsed.has(i)) continue;
     const dh = map.dist[HOME][i], da = map.dist[AWAY][i];
-    const fair = dh === da || // equidistant — inherently balanced
-      [...Array(n).keys()].some(j =>   // or has an exact symmetric mirror
-        j !== HOME && j !== AWAY && j !== i &&
-        map.dist[HOME][j] === da && map.dist[AWAY][j] === dh);
-    if (fair) { field[i] = EXPANSION_FIELD; gasField[i] = EXPANSION_GAS; }
+    if (dh === da) {
+      if (rng() < 0.25) { field[i] = EXPANSION_FIELD; }
+      if (rng() < 0.25) { gasField[i] = EXPANSION_GAS; }
+      expUsed.add(i);
+    } else {
+      const mirror = [...Array(n).keys()].find(
+        j => j !== HOME && j !== AWAY && !expUsed.has(j) && j !== i &&
+             map.dist[HOME][j] === da && map.dist[AWAY][j] === dh);
+      if (mirror !== undefined) {
+        if (rng() < 0.25) { field[i] = EXPANSION_FIELD; field[mirror] = EXPANSION_FIELD; }
+        if (rng() < 0.25) { gasField[i] = EXPANSION_GAS; gasField[mirror] = EXPANSION_GAS; }
+        expUsed.add(i); expUsed.add(mirror);
+      }
+    }
   }
   // Explored set per owner: each starts knowing only its own base.
   const visited = { human: new Array(n).fill(false), bot: new Array(n).fill(false) };
@@ -2157,16 +2172,13 @@ function runTests() {
         eq(state.field[AWAY], FIELD_TOTAL, "AWAY minerals full");
         eq(state.gasField[HOME], GAS_TOTAL, "HOME gas full");
         eq(state.gasField[AWAY], GAS_TOTAL, "AWAY gas full");
-        // Each non-start node either has expansion resources or nothing; no in-between.
+        // Each non-start node: minerals and gas are each either EXPANSION_FIELD/GAS or 0.
         for (let i = 0; i < m.n; i++) {
           if (i === HOME || i === AWAY) continue;
-          const hasRes = state.field[i] > 0;
-          if (hasRes) {
-            eq(state.field[i], EXPANSION_FIELD, `expansion minerals at ${i} (seed ${seed})`);
-            eq(state.gasField[i], EXPANSION_GAS, `expansion gas at ${i} (seed ${seed})`);
-          } else {
-            eq(state.gasField[i], 0, `barren node has no gas at ${i} (seed ${seed})`);
-          }
+          ok(state.field[i] === 0 || state.field[i] === EXPANSION_FIELD,
+            `field at node ${i} is 0 or EXPANSION_FIELD (seed ${seed})`);
+          ok(state.gasField[i] === 0 || state.gasField[i] === EXPANSION_GAS,
+            `gasField at node ${i} is 0 or EXPANSION_GAS (seed ${seed})`);
         }
       }
     },
@@ -2175,15 +2187,18 @@ function runTests() {
         resetState(seed);
         const m = state.map;
         for (let i = 0; i < m.n; i++) {
-          if (i === HOME || i === AWAY || !state.field[i]) continue;
+          if (i === HOME || i === AWAY) continue;
           const dh = m.dist[HOME][i], da = m.dist[AWAY][i];
-          if (dh !== da) {
-            // Must have a symmetric mirror that also has resources.
-            const mirror = [...Array(m.n).keys()].find(
-              j => j !== HOME && j !== AWAY && j !== i &&
-                   m.dist[HOME][j] === da && m.dist[AWAY][j] === dh);
-            ok(mirror !== undefined && state.field[mirror] > 0,
-              `expansion at node ${i} (dH=${dh},dA=${da}) has symmetric mirror (seed ${seed})`);
+          if (dh === da) continue; // equidistant nodes are inherently fair
+          // Asymmetric node: minerals and gas must each match the symmetric mirror.
+          const mirror = [...Array(m.n).keys()].find(
+            j => j !== HOME && j !== AWAY && j !== i &&
+                 m.dist[HOME][j] === da && m.dist[AWAY][j] === dh);
+          if (mirror !== undefined) {
+            ok(state.field[i] === state.field[mirror],
+              `minerals symmetric at nodes ${i}↔${mirror} (seed ${seed})`);
+            ok(state.gasField[i] === state.gasField[mirror],
+              `gas symmetric at nodes ${i}↔${mirror} (seed ${seed})`);
           }
         }
       }
