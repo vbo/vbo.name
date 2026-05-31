@@ -49,6 +49,12 @@
 
   /* Board: map graph on top, focused-node detail below */
   #board { display: flex; flex-direction: column; gap: 10px; }
+  @media (min-width: 640px) {
+    #board { flex-direction: row; align-items: flex-start; }
+    #board .map { flex: 0 0 260px; max-width: 260px; }
+    #board .map svg { max-height: none; }
+    #board > .node { flex: 1; min-width: 0; }
+  }
 
   /* Map graph */
   .map { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
