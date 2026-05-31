@@ -1078,17 +1078,20 @@ function renderGraph(visible) {
   let nodes = "";
   for (let id = 0; id < n; id++) if (visible.has(id)) {
     const cx = X(pos[id].x), cy = Y(pos[id].y);
-    const isHome = id === HOME, isAway = id === AWAY;
+    const isHome = id === HOME;
     const present = state.units.some(u => u.owner === HUMAN && u.node === id) ||
                     state.buildings.some(b => b.owner === HUMAN && b.node === id);
     const visited = state.visited.human[id];
-    const seenCC = Array.isArray(state.seen[id]) && state.seen[id].some(b => b.type === "cc");
-    const enemyBaseKnown = isAway && (present || seenCC);
+    // Enemy-held = we've seen enemy buildings here (live or remembered). No node id
+    // is special: any node turns up as enemy territory once you scout its base.
+    const enemyHeld = present
+      ? state.buildings.some(b => b.owner === BOT && b.node === id)
+      : (Array.isArray(state.seen[id]) && state.seen[id].length > 0);
     const su = state.seenUnits[id];
     const enemyHere = present
       ? state.units.some(u => u.owner === BOT && u.node === id)
       : !!(su && state.time - su.time <= SEEN_UNITS_TTL && (su.marines || su.scvs || su.gasScvs));
-    let cls = isHome ? "home" : enemyBaseKnown ? "foe" : visited ? "owned" : "unknown";
+    let cls = isHome ? "home" : enemyHeld ? "foe" : visited ? "owned" : "unknown";
     if (enemyHere) cls += " threat";
     if (id === ui.selectedNode) cls += " selected";
     const army = state.units.filter(u => u.owner === HUMAN && u.node === id).length;
@@ -1110,25 +1113,23 @@ function renderGraph(visible) {
 
 function renderNode(node) {
   const el = document.createElement("div");
-  const isHome = node === HOME, isAway = node === AWAY;
+  const isHome = node === HOME;
   const present = state.units.some(u => u.owner === HUMAN && u.node === node) ||
                   state.buildings.some(b => b.owner === HUMAN && b.node === node);
   const visited = state.visited.human[node];
-  const seenCC = Array.isArray(state.seen[node]) && state.seen[node].some(b => b.type === "cc");
-  const enemyBaseKnown = isAway && (present || seenCC); // don't reveal the enemy base until scouted
-  el.className = "node " + (isHome ? "home" : enemyBaseKnown ? "away" : "neutral");
+  // Enemy-held = enemy buildings seen here (live or remembered). No node is special;
+  // a base is just a node where you've spotted the enemy's buildings.
+  const enemyHeld = present
+    ? state.buildings.some(b => b.owner === BOT && b.node === node)
+    : (Array.isArray(state.seen[node]) && state.seen[node].length > 0);
+  el.className = "node " + (isHome ? "home" : enemyHeld ? "away" : "neutral");
 
-  // Header: name + base badge + resources (only the two start nodes have any, and
-  // only when we can see them).
-  const badge = isHome ? `<span class="badge you">★ Your Base</span>`
-              : enemyBaseKnown ? `<span class="badge foe">☠ Enemy Base</span>` : "";
-  const isResourceNode = isHome || isAway;
+  // Header: name + (your-base badge) + resources for any node you can see that has them.
+  const badge = isHome ? `<span class="badge you">★ Your Base</span>` : "";
   let resStr = "";
-  if (isResourceNode && (isHome || present)) {
+  if (present && (state.field[node] > 0 || state.gasField[node] > 0)) {
     const hasRefinery = state.buildings.some(b => b.node === node && b.type === "refinery" && !b.construct);
     resStr = `💎 ${Math.ceil(state.field[node])} · ⛽ ${Math.ceil(state.gasField[node])}${hasRefinery ? " left" : ""}`;
-  } else if (isResourceNode && enemyBaseKnown) {
-    resStr = "💎 ? · ⛽ ?";
   }
   // Paths are only known for nodes you've actually visited — an unexplored frontier
   // node shows that it exists, but not what it connects to.
@@ -1461,9 +1462,11 @@ function destButtonsHtml(node, n, poolLen) {
   if (!dests.length) return `<div class="sheet-sub" style="margin-top:8px">No reachable destinations — explore a neighbour first.</div>`;
   return dests.map(d => {
     const eta = hopDist(node, d) * EDGE_TIME;
-    const enemyWard = d === AWAY ? " ⚔️" : "";
+    const su = state.seenUnits[d];
+    const enemyKnown = (Array.isArray(state.seen[d]) && state.seen[d].length > 0) ||
+      !!(su && state.time - su.time <= SEEN_UNITS_TTL && (su.marines || su.scvs || su.gasScvs));
     return `<button class="act secondary" id="dest-${d}" ${poolLen ? "" : "disabled"}>
-        Send ${n} → ${nodeName(d)}${enemyWard} <span class="cost">— ${eta}s travel</span>
+        Send ${n} → ${nodeName(d)}${enemyKnown ? " ⚔️" : ""} <span class="cost">— ${eta}s travel</span>
       </button>`;
   }).join("");
 }
@@ -1553,7 +1556,7 @@ function renderSheet() {
     bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "marine", dest); closeSheet(); render(); });
 
   } else {
-    // SCV group sheet.
+    // SCV group sheet — split into Move / Build / Mine submenus to avoid clutter.
     const node = sel.node;
     const all = controllable(HUMAN, node);
     const idleN   = unitsOf(HUMAN, node, "idle",   "scv").length;
@@ -1570,57 +1573,86 @@ function renderSheet() {
     const refOK       = all.length >= 1 && mineNow >= C.refinery.cost && !refBuilding && gasAvail;
     const minSatPct   = mineralSatPct(miningN, state.field[node]);
     const gasSatPct   = Math.round(gasN / GAS_OPT * 100);
+    const hasMinerals = state.field[node] > 0;     // mining only makes sense where there's a field
+    const canMine     = hasMinerals || hasRef;
+    const tab = sel.tab || "root";
 
-    const isResourceNode = node === HOME || node === AWAY;
-    sheet.innerHTML = `
-      <h2>SCVs at ${nodeName(node)}</h2>
-      <div class="sheet-sub">${all.length} available · ${miningN} mining (${minSatPct}% sat)${gasN ? ` · ${gasN} gas (${gasSatPct}% sat)` : ""} · ${idleN} idle</div>
+    const summary = `<div class="sheet-sub">${all.length} available · ${idleN} idle${hasMinerals || miningN ? ` · ${miningN} mining (${minSatPct}% sat)` : ""}${gasN ? ` · ${gasN} gas (${gasSatPct}% sat)` : ""}</div>`;
+    let title = `SCVs at ${nodeName(node)}`, body;
 
-      <div class="stepper">
-        <button id="n-minus">−</button>
-        <div class="count" id="n-count">${n}</div>
-        <button id="n-plus">+</button>
-        <div class="label">SCVs<br>selected</div>
-      </div>
-      <input type="range" id="n-range" min="1" max="${max}" value="${n}">
-      ${destButtonsHtml(node, n, all.length)}
+    if (tab === "move") {
+      title = `Move · ${nodeName(node)}`;
+      body = `
+        <div class="stepper">
+          <button id="n-minus">−</button>
+          <div class="count" id="n-count">${n}</div>
+          <button id="n-plus">+</button>
+          <div class="label">SCVs<br>selected</div>
+        </div>
+        <input type="range" id="n-range" min="1" max="${max}" value="${n}">
+        ${destButtonsHtml(node, n, all.length)}
+        <button class="act-close" id="a-back">‹ Back</button>`;
+    } else if (tab === "build") {
+      title = `Build · ${nodeName(node)}`;
+      body = `
+        <button class="act secondary" id="a-depot" ${depotOK ? "" : "disabled"}>
+          Build Supply Depot <span class="cost">— ${C.depot.cost} 💎 · ${C.depot.build}s</span>
+        </button>
+        <button class="act secondary" id="a-rax" ${raxOK ? "" : "disabled"}>
+          Build Barracks <span class="cost">— ${C.barracks.cost} 💎 · ${C.barracks.build}s</span>
+        </button>
+        ${gasAvail ? `
+        <button class="act secondary" id="a-ref" ${refOK ? "" : "disabled"}>
+          Build Refinery <span class="cost">— ${C.refinery.cost} 💎 · ${C.refinery.build}s · unlock gas</span>
+        </button>` : ""}
+        <button class="act-close" id="a-back">‹ Back</button>`;
+    } else if (tab === "mine") {
+      title = `Mine & Gas · ${nodeName(node)}`;
+      body = `
+        ${hasMinerals ? `
+        <button class="act secondary" id="a-mine-all" ${idleN ? "" : "disabled"}>
+          Set ALL ${idleN} idle → mining
+        </button>
+        <button class="act secondary" id="a-idle-all" ${miningN ? "" : "disabled"}>
+          Set ALL ${miningN} mining → idle
+        </button>` : ""}
+        ${hasRef ? `
+        <button class="act secondary" id="a-gas-add" ${idleN + miningN > 0 && gasN < GAS_OPT ? "" : "disabled"}>
+          ⛽ Assign 1 SCV → gas <span class="cost">— ${gasN}/${GAS_OPT} optimal</span>
+        </button>
+        <button class="act secondary" id="a-gas-rem" ${gasN ? "" : "disabled"}>
+          ⛽ Pull 1 gas SCV → mining
+        </button>` : ""}
+        <button class="act-close" id="a-back">‹ Back</button>`;
+    } else {
+      body = `
+        <button class="act" id="m-move">🚶 Move <span class="cost">— send SCVs to another node</span></button>
+        <button class="act secondary" id="m-build">🏗 Build <span class="cost">— depot, barracks${gasAvail ? ", refinery" : ""}</span></button>
+        ${canMine ? `<button class="act secondary" id="m-mine">⛏ Mine & Gas <span class="cost">— assign workers to resources</span></button>` : ""}
+        <button class="act-close" id="a-close">Close</button>`;
+    }
+    sheet.innerHTML = `<h2>${title}</h2>${summary}${body}`;
 
-      ${isResourceNode ? `
-      <button class="act secondary" id="a-mine-all" ${idleN ? "" : "disabled"}>
-        Set ALL ${idleN} idle → mining
-      </button>
-      <button class="act secondary" id="a-idle-all" ${miningN ? "" : "disabled"}>
-        Set ALL ${miningN} mining → idle
-      </button>
-      ${hasRef ? `
-      <button class="act secondary" id="a-gas-add" ${idleN + miningN > 0 && gasN < GAS_OPT ? "" : "disabled"}>
-        ⛽ Assign 1 SCV → gas collection <span class="cost">— ${gasN}/${GAS_OPT} optimal</span>
-      </button>
-      <button class="act secondary" id="a-gas-rem" ${gasN ? "" : "disabled"}>
-        ⛽ Pull 1 gas SCV → mining <span class="cost">— frees a gas SCV</span>
-      </button>` : ""}
-      <button class="act secondary" id="a-depot" ${depotOK ? "" : "disabled"}>
-        Build Supply Depot <span class="cost">— ${C.depot.cost} 💎 · ${C.depot.build}s</span>
-      </button>
-      <button class="act secondary" id="a-rax" ${raxOK ? "" : "disabled"}>
-        Build Barracks <span class="cost">— ${C.barracks.cost} 💎 · ${C.barracks.build}s</span>
-      </button>
-      <button class="act secondary" id="a-ref" ${refOK ? "" : "disabled"}>
-        Build Refinery <span class="cost">— ${C.refinery.cost} 💎 · ${C.refinery.build}s · unlock gas</span>
-      </button>` : ""}
-      <button class="act-close" id="a-close">Close</button>`;
+    const setTab = t => { sel.tab = t; renderSheet(); };
+    bind("m-move",  () => setTab("move"));
+    bind("m-build", () => setTab("build"));
+    bind("m-mine",  () => setTab("mine"));
+    bind("a-back",  () => setTab(null));
 
-    const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
-    bind("n-minus", () => setN(sel.n - 1));
-    bind("n-plus", () => setN(sel.n + 1));
-    $("n-range").oninput = e => setN(parseInt(e.target.value, 10));
-
-    bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "scv", dest); closeSheet(); render(); });
-    bind("a-mine-all", () => { setTask(HUMAN, node, idleN, "idle", "mining", "scv"); refreshSheet(); });
-    bind("a-idle-all", () => { setTask(HUMAN, node, miningN, "mining", "idle", "scv"); refreshSheet(); });
-    if (hasRef) {
+    if (tab === "move") {
+      const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
+      bind("n-minus", () => setN(sel.n - 1));
+      bind("n-plus", () => setN(sel.n + 1));
+      const rng = $("n-range"); if (rng) rng.oninput = e => setN(parseInt(e.target.value, 10));
+      bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "scv", dest); closeSheet(); render(); });
+    } else if (tab === "build") {
+      bind("a-depot", () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); });
+      bind("a-rax",   () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
+      bind("a-ref",   () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); });
+    } else if (tab === "mine") {
+      bind("a-mine-all", () => { setTask(HUMAN, node, idleN, "idle", "mining", "scv"); refreshSheet(); });
+      bind("a-idle-all", () => { setTask(HUMAN, node, miningN, "mining", "idle", "scv"); refreshSheet(); });
       bind("a-gas-add", () => {
-        // Move one SCV (prefer idle, then mining) to gas collection.
         const scv = unitsOf(HUMAN, node, "idle", "scv")[0] || unitsOf(HUMAN, node, "mining", "scv")[0];
         if (scv) { scv.task = "gas"; refreshSheet(); }
       });
@@ -1629,9 +1661,6 @@ function renderSheet() {
         if (scv) { scv.task = "mining"; refreshSheet(); }
       });
     }
-    bind("a-depot", () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); });
-    bind("a-rax",   () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
-    bind("a-ref",   () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); });
   }
   bind("a-close", closeSheet);
 }
