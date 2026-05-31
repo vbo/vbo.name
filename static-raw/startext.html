@@ -249,6 +249,7 @@ const TRAVEL_TIME = 20;     // seconds to move between the two nodes
 const MINE_RATE = 0.7;      // minerals per mining SCV per second (below saturation)
 const FIELD_TOTAL = 12000;  // 8 patches × 1500 — standard BW main base
 const MINERAL_PATCHES = 8;  // patches per base; 2 SCVs/patch = full efficiency (16 total)
+const PATCH_SIZE = FIELD_TOTAL / MINERAL_PATCHES; // 1500 minerals per patch
 const SUPPLY_MAX = 200;     // BW hard cap
 
 // Vespene gas: 1 geyser per base, optimal at GAS_OPT SCVs (100% utilisation).
@@ -432,15 +433,24 @@ function fogStep() {
   }
 }
 
-// Mineral yield for a group of n miners at one base.
-// 8 patches: 2 SCVs/patch = full efficiency (16). A 3rd SCV on each patch gives ~33%
-// of base rate (real SC2/BW data). Beyond 3/patch (24 total) the return is zero.
-function mineralYield(n) {
-  const opt  = MINERAL_PATCHES * 2; // 16: full efficiency threshold
-  const semi = MINERAL_PATCHES;     //  8: one extra per patch at 33% efficiency
+// Active patch count shrinks as the field depletes — patches go dry one by one.
+// Using ceil so the last partial patch still counts (it still has minerals to mine).
+const activePatchCount = field => Math.max(1, Math.ceil(field / PATCH_SIZE));
+
+// Mineral yield for a group of n miners at one base, given current field amount.
+// As patches deplete, the optimal miner count shrinks with them so sat% stays meaningful.
+// 2 SCVs/patch = full efficiency; a 3rd per patch adds ~33% (BW data); beyond 3/patch: zero.
+function mineralYield(n, field) {
+  const patches = activePatchCount(field);
+  const opt  = patches * 2; // full-efficiency threshold (dynamic)
+  const semi = patches;     // extra SCVs at 33% efficiency
   return Math.min(n, opt) * MINE_RATE
        + Math.max(0, Math.min(n - opt, semi)) * MINE_RATE * 0.33;
 }
+
+// Sat% = how close we are to the optimal miner count for current field conditions.
+const mineralSatPct = (n, field) =>
+  Math.min(100, Math.round(n / (activePatchCount(field) * 2) * 100));
 
 function mineStep() {
   // Minerals: process per (owner, node) so group utilisation applies.
@@ -450,7 +460,7 @@ function mineStep() {
         u.owner === owner && u.node === node && u.task === "mining");
       if (!miners.length) continue;
       if (state.field[node] <= 0) { miners.forEach(u => u.task = "idle"); continue; }
-      const got = Math.min(mineralYield(miners.length), state.field[node]);
+      const got = Math.min(mineralYield(miners.length, state.field[node]), state.field[node]);
       state.field[node] -= got;
       state.minerals[owner] += got;
     }
@@ -1118,7 +1128,7 @@ function appendForces(container, owner, node, interactive) {
     if (miningN) {
       // Show sat% only in interactive (own base) view where it's actionable.
       if (interactive) {
-        const satPct = Math.min(100, Math.round(miningN / (MINERAL_PATCHES * 2) * 100));
+        const satPct = mineralSatPct(miningN, state.field[node]);
         parts.push(`${miningN} mining (${satPct}% sat)`);
       } else {
         parts.push(`${miningN} mining`);
@@ -1295,7 +1305,7 @@ function renderSheet() {
     const refBuilding = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "refinery");
     const gasAvail    = state.gasField[node] > 0;
     const refOK       = all.length >= 1 && mineNow >= C.refinery.cost && !refBuilding && gasAvail;
-    const minSatPct   = Math.min(100, Math.round(miningN / (MINERAL_PATCHES * 2) * 100));
+    const minSatPct   = mineralSatPct(miningN, state.field[node]);
     const gasSatPct   = Math.round(gasN / GAS_OPT * 100);
 
     sheet.innerHTML = `
@@ -1729,17 +1739,25 @@ function runTests() {
     },
 
     // ── Gas + utilisation ───────────────────────────────────────────────
-    "mineralYield: linear below saturation (< 16 miners)"() {
-      near(mineralYield(1),  0.7,  0.001, "1 miner = MINE_RATE");
-      near(mineralYield(8),  5.6,  0.001, "8 miners = 8 × 0.7");
-      near(mineralYield(16), 11.2, 0.001, "16 miners = full sat, 16 × 0.7");
+    "mineralYield: linear below saturation (< 16 miners) at full field"() {
+      near(mineralYield(1,  FIELD_TOTAL), 0.7,  0.001, "1 miner = MINE_RATE");
+      near(mineralYield(8,  FIELD_TOTAL), 5.6,  0.001, "8 miners = 8 × 0.7");
+      near(mineralYield(16, FIELD_TOTAL), 11.2, 0.001, "16 miners = full sat, 16 × 0.7");
     },
-    "mineralYield: diminishing returns above saturation"() {
-      const at16 = mineralYield(16);
-      const at24 = mineralYield(24);
+    "mineralYield: diminishing returns above saturation at full field"() {
+      const at16 = mineralYield(16, FIELD_TOTAL);
+      const at24 = mineralYield(24, FIELD_TOTAL);
       ok(at24 > at16, "24 miners gives more than 16");
       ok(at24 < at16 * 1.5, "but less than 50% more (diminishing)");
-      near(mineralYield(25), mineralYield(24), 0.001, "no return beyond 24 miners");
+      near(mineralYield(25, FIELD_TOTAL), mineralYield(24, FIELD_TOTAL), 0.001, "no return beyond 24 miners");
+    },
+    "mineralYield: optimal count shrinks as patches deplete"() {
+      // 4 patches left (half-depleted field): optimal = 4 × 2 = 8 miners.
+      const halfField = FIELD_TOTAL / 2;
+      near(mineralYield(8, halfField), 5.6, 0.001, "8 miners = full efficiency on 4 patches");
+      // 9 miners on 4 patches → one over the semi-sat threshold (4 patches × 3 = 12 cap).
+      ok(mineralYield(9, halfField) > mineralYield(8, halfField), "9th miner still adds yield (semi-sat)");
+      near(mineralYield(13, halfField), mineralYield(12, halfField), 0.001, "no return beyond 3/patch (12 for 4 patches)");
     },
     "refinery can be built and gas field is present"() {
       resetState(1);
