@@ -1702,10 +1702,14 @@ function renderNode(node) {
   } else {
     const snap = state.seen[node];
     if (snap) {
-      en.innerHTML = `<div class="section-label">Enemy forces — last seen</div>`;
-      if (snap.length) appendSeenBuildings(en, snap);
-      const seenU = appendSeenUnits(en, state.seenUnits[node]);
-      // "no forces" omitted — saves space; absence of rows is self-explanatory
+      // Build the remembered rows first; only add the header if something shows,
+      // so a scouted-but-empty node doesn't display a lone "last seen" label.
+      let any = false;
+      if (snap.length) { appendSeenBuildings(en, snap); any = true; }
+      if (appendSeenUnits(en, state.seenUnits[node])) any = true;
+      en.innerHTML = any
+        ? `<div class="section-label">Enemy forces — last seen</div>${en.innerHTML}`
+        : `<div class="unknown">${visited ? "No enemy forces seen here." : "Unexplored."}</div>`;
     } else {
       en.innerHTML = `<div class="unknown">${visited ? "No vision here." : "Unexplored."}</div>`;
     }
@@ -1714,12 +1718,16 @@ function renderNode(node) {
   return el;
 }
 
-// Render a fading last-seen enemy unit count (marines/SCVs). Returns true if shown.
-// Within SEEN_UNITS_TTL of the sighting; older intel is dropped (units move, so a
-// stale count would be misleading — unlike buildings, which stay put).
-function appendSeenUnits(container, snap) {
+// Pure: is a last-seen unit snapshot worth showing? Fresh (within SEEN_UNITS_TTL,
+// since units move and stale counts mislead) and actually counting something.
+function seenUnitsFresh(snap) {
   if (!snap || state.time - snap.time > SEEN_UNITS_TTL) return false;
-  if (!snap.marines && !snap.scvs && !snap.gasScvs) return false;
+  return !!(snap.marines || snap.scvs || snap.gasScvs);
+}
+
+// Render a fading last-seen enemy unit count (marines/SCVs). Returns true if shown.
+function appendSeenUnits(container, snap) {
+  if (!seenUnitsFresh(snap)) return false;
   const age = state.time - snap.time;
   const totalScvs = (snap.scvs || 0) + (snap.gasScvs || 0);
   const rows = [
@@ -1936,11 +1944,13 @@ function appendForces(container, owner, node, interactive) {
     if (gasN)   parts.push(`${gasN} gas`);
     if (idleN)  parts.push(`${idleN} idle`);
     if (buildN) parts.push(`${buildN} building`);
+    const sHp = scvs.reduce((s, u) => s + u.hp, 0), sMax = scvs.reduce((s, u) => s + u.maxHp, 0);
     const row = document.createElement(interactive ? "button" : "div");
     row.className = "row" + (interactive ? "" : " static");
     row.innerHTML = `${svgIcon("scv")}<div class="body">
         <div class="name">SCVs — ${scvs.length}</div>
         <div class="meta">${parts.join(", ") || "—"}</div>
+        ${hpBar(sHp, sMax)}
       </div>${interactive ? '<span class="chev">›</span>' : ""}`;
     if (interactive) row.onclick = () => openSheet({ kind: "scv", node, n: 1 });
     container.appendChild(row);
@@ -1950,11 +1960,13 @@ function appendForces(container, owner, node, interactive) {
   const marines = unitsOf(owner, node, null, "marine").filter(u => u.task !== "bunker");
   if (marines.length) {
     any = true;
+    const mHp = marines.reduce((s, u) => s + u.hp, 0), mMax = marines.reduce((s, u) => s + u.maxHp, 0);
     const row = document.createElement(interactive ? "button" : "div");
     row.className = "row" + (interactive ? "" : " static");
     row.innerHTML = `${svgIcon("marine")}<div class="body">
         <div class="name">Marines — ${marines.length}</div>
         <div class="meta">ready</div>
+        ${hpBar(mHp, mMax)}
       </div>${interactive ? '<span class="chev">›</span>' : ""}`;
     if (interactive) row.onclick = () => openSheet({ kind: "marine", node, n: 1 });
     container.appendChild(row);
@@ -1964,11 +1976,13 @@ function appendForces(container, owner, node, interactive) {
   const firebats = unitsOf(owner, node, null, "firebat").filter(u => u.task !== "bunker");
   if (firebats.length) {
     any = true;
+    const fHp = firebats.reduce((s, u) => s + u.hp, 0), fMax = firebats.reduce((s, u) => s + u.maxHp, 0);
     const row = document.createElement(interactive ? "button" : "div");
     row.className = "row" + (interactive ? "" : " static");
     row.innerHTML = `${svgIcon("firebat")}<div class="body">
         <div class="name">Firebats — ${firebats.length}</div>
         <div class="meta">ready · splash dmg</div>
+        ${hpBar(fHp, fMax)}
       </div>${interactive ? '<span class="chev">›</span>' : ""}`;
     if (interactive) row.onclick = () => openSheet({ kind: "firebat", node, n: 1 });
     container.appendChild(row);
@@ -3074,6 +3088,15 @@ function runTests() {
       ok(state.time - seenAt <= SEEN_UNITS_TTL, "intel fresh right after sighting");
       state.time = seenAt + SEEN_UNITS_TTL + 1;
       ok(state.time - state.seenUnits[AWAY].time > SEEN_UNITS_TTL, "intel stale past TTL");
+    },
+    "fog: seenUnitsFresh gates the 'last seen' header"() {
+      resetState(1);
+      ok(!seenUnitsFresh(null), "no snapshot → nothing to show");
+      ok(!seenUnitsFresh({ time: state.time, marines: 0, scvs: 0, gasScvs: 0 }),
+         "scouted but empty → nothing to show (no lone header)");
+      ok(seenUnitsFresh({ time: state.time, marines: 3 }), "fresh sighting with units → show");
+      ok(!seenUnitsFresh({ time: state.time - SEEN_UNITS_TTL - 1, marines: 3 }),
+         "stale sighting → drop");
     },
     "destroying enemy CC wins"() {
       resetState(1);
