@@ -137,6 +137,7 @@
     text-align: center; box-shadow: 0 4px 14px rgba(0,0,0,.45);
   }
   .note.loss { background: #3a1d24; border: 1px solid var(--bad); color: #ffd7d7; }
+  .note.ok   { background: #0d2b1a; border: 1px solid var(--good); color: #c8ffd0; }
   .note.link { cursor: pointer; }
   .note.link:active { filter: brightness(1.15); }
   .note.alert {
@@ -881,6 +882,7 @@ function startBuilding(owner, node, type) {
   state.buildings.push(b);
   scv.task = "building";
   scv.buildingId = b.id;
+  if (owner === HUMAN) notify(`🏗 ${BUILDING_LABEL[type] || type} ordered`, "ok", 3);
   return true;
 }
 
@@ -914,10 +916,16 @@ function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
   if (dest === node) return;
   const path = bfsPathVisited(owner, node, dest, state.map.adj, state.map.n);
   if (path.length < 2) return; // no path through explored territory
-  for (const u of pool.slice(0, n)) {
+  const sent = pool.slice(0, n);
+  for (const u of sent) {
     u.task = "moving";
     u.node = -1; // off-map until the first hop completes
     u.transit = { to: dest, path, pathIdx: 1, progress: 0, mode, dwellStart: null };
+  }
+  if (owner === HUMAN && sent.length) {
+    const label = unitType === "marine" ? "Marine" : "SCV";
+    const modeIcon = mode === "attack" ? " ⚔️" : "";
+    notify(`${sent.length} ${label}${sent.length > 1 ? "s" : ""}${modeIcon} → ${nodeName(dest)}`, "ok", 3);
   }
 }
 
