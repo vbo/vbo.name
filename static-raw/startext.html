@@ -355,6 +355,31 @@ function bfsPath(a, b, adj, n) {
   return path[0] === a ? path : [a]; // unreachable → just the origin (can't happen: graph is connected)
 }
 
+// BFS shortest path that only traverses nodes the owner has already visited.
+// The destination itself may be unvisited (frontier). Returns [] if unreachable.
+function bfsPathVisited(owner, src, dst, adj, n) {
+  const vis = state.visited[owner];
+  const prev = new Array(n).fill(-1);
+  const seen = new Array(n).fill(false);
+  seen[src] = true;
+  const q = [src];
+  for (let h = 0; h < q.length; h++) {
+    const u = q[h];
+    if (u === dst) break;
+    for (const v of adj[u]) {
+      if (seen[v]) continue;
+      if (!vis[v] && v !== dst) continue; // only traverse explored territory
+      seen[v] = true;
+      prev[v] = u;
+      q.push(v);
+    }
+  }
+  if (!seen[dst]) return [];
+  const path = [];
+  for (let cur = dst; cur !== -1; cur = prev[cur]) { path.unshift(cur); if (cur === src) break; }
+  return path[0] === src ? path : [];
+}
+
 // Build a random connected map: spanning tree (guarantees no islands) + a few
 // extra edges for loops. Deterministic under the active rng seed.
 function genMap() {
@@ -887,8 +912,8 @@ function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
   // Default destination keeps old call sites working: nearest reachable enemy-ward node.
   if (dest === undefined) dest = node === HOME ? AWAY : HOME;
   if (dest === node) return;
-  const path = bfsPath(node, dest, state.map.adj, state.map.n);
-  if (path.length < 2) return;
+  const path = bfsPathVisited(owner, node, dest, state.map.adj, state.map.n);
+  if (path.length < 2) return; // no path through explored territory
   for (const u of pool.slice(0, n)) {
     u.task = "moving";
     u.node = -1; // off-map until the first hop completes
@@ -2013,6 +2038,19 @@ function runTests() {
       ok(state.visited.human[first], "first hop now explored");
       ok(canSendTo(HUMAN, second), "second hop becomes reachable after the first is visited");
     },
+    "transit path stays inside explored territory"() {
+      resetState(1);
+      const path = bfsPath(HOME, AWAY, state.map.adj, state.map.n);
+      if (path.length < 3) { ok(true, "trivial 1-hop map — skip"); return; }
+      // Only HOME is visited — no path through explored territory to AWAY.
+      ok(bfsPathVisited(HUMAN, HOME, AWAY, state.map.adj, state.map.n).length === 0,
+        "no visited path to AWAY while intermediates unvisited");
+      // Explore all intermediate nodes — AWAY becomes reachable through known territory.
+      path.slice(1, -1).forEach(nd => state.visited.human[nd] = true);
+      const discovered = bfsPathVisited(HUMAN, HOME, AWAY, state.map.adj, state.map.n);
+      ok(discovered.length >= 2 && discovered[0] === HOME && discovered[discovered.length - 1] === AWAY,
+        "path found through fully-explored route");
+    },
     "bot explores toward the player over time"() {
       resetState(7);
       run(500);
@@ -2058,6 +2096,10 @@ function runTests() {
     "fog: enemy buildings unknown until scouted, then remembered"() {
       resetState(1);
       eq(state.seen[AWAY], null, "AWAY unknown at start");
+      // Pre-visit intermediate nodes so the scouts can reach AWAY (this test is about fog
+      // memory, not exploration mechanics; exploration is tested separately).
+      const fullPath = bfsPath(HOME, AWAY, state.map.adj, state.map.n);
+      fullPath.slice(1, -1).forEach(nd => state.visited.human[nd] = true);
       sendUnits(HUMAN, HOME, 2, "scv", AWAY); // march straight to the enemy base
       // Multi-hop travel: each hop takes EDGE_TIME, plus DWELL_TIME at each intermediate node.
       const hops = hopDist(HOME, AWAY);
