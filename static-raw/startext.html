@@ -598,6 +598,8 @@ const controllable = (owner, node) => state.units.filter(u =>
 // Idle marines at a node ready to be sent.
 const idleMarines = (owner, node) => state.units.filter(u =>
   u.owner === owner && u.node === node && u.type === "marine" && u.task === "idle");
+const idleFirebats = (owner, node) => state.units.filter(u =>
+  u.owner === owner && u.node === node && u.type === "firebat" && u.task === "idle");
 
 function supplyCap(owner) {
   let cap = 0;
@@ -1125,7 +1127,10 @@ function unloadBunker(owner, bunkerId) {
 }
 
 function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
-  const pool = unitType === "marine" ? idleMarines(owner, node) : controllable(owner, node);
+  let pool;
+  if (unitType === "marine")  pool = idleMarines(owner, node);
+  else if (unitType === "firebat") pool = idleFirebats(owner, node);
+  else { pool = controllable(owner, node); }
   // For SCVs, send idle ones before pulling miners off duty.
   if (unitType === "scv") pool.sort((a, b) => (a.task === "idle" ? 0 : 1) - (b.task === "idle" ? 0 : 1));
   // Default destination keeps old call sites working: nearest reachable enemy-ward node.
@@ -1140,7 +1145,7 @@ function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
     u.transit = { to: dest, path, pathIdx: 1, progress: 0, mode, dwellStart: null };
   }
   if (owner === HUMAN && sent.length) {
-    const label = unitType === "marine" ? "Marine" : "SCV";
+    const label = unitType === "marine" ? "Marine" : unitType === "firebat" ? "Firebat" : "SCV";
     const modeIcon = mode === "attack" ? " ⚔️" : "";
     notify(`${sent.length} ${label}${sent.length > 1 ? "s" : ""}${modeIcon} → ${nodeName(dest)}`, "ok", 3);
   }
@@ -1854,8 +1859,8 @@ function appendForces(container, owner, node, interactive) {
     container.appendChild(row);
   }
 
-  // Marines — all marines at a fixed node are idle (moving ones have node=-1).
-  const marines = unitsOf(owner, node, null, "marine");
+  // Marines — exclude bunker occupants (task="bunker"); moving ones have node=-1 so already absent.
+  const marines = unitsOf(owner, node, null, "marine").filter(u => u.task !== "bunker");
   if (marines.length) {
     any = true;
     const row = document.createElement(interactive ? "button" : "div");
@@ -1868,8 +1873,8 @@ function appendForces(container, owner, node, interactive) {
     container.appendChild(row);
   }
 
-  // Firebats — shown alongside marines; share the send sheet.
-  const firebats = unitsOf(owner, node, null, "firebat");
+  // Firebats — exclude bunker occupants; moving ones have node=-1 so already absent.
+  const firebats = unitsOf(owner, node, null, "firebat").filter(u => u.task !== "bunker");
   if (firebats.length) {
     any = true;
     const row = document.createElement(interactive ? "button" : "div");
@@ -3339,6 +3344,44 @@ function runTests() {
       ok(!deserializeState(JSON.stringify({ v: 999, state, idSeq, rng: 0 })),
          "rejects a wrong save version");
       eq(state.time, guard, "globals untouched when a blob is rejected");
+    },
+
+    "sendUnits firebat: moves a firebat, not an SCV": () => {
+      resetState(5);
+      state.minerals[HUMAN] = 500; state.gas[HUMAN] = 200;
+      startBuilding(HUMAN, HOME, "barracks");
+      startBuilding(HUMAN, HOME, "academy");
+      run(C.barracks.build + C.academy.build + 1);
+      queueFirebat(HUMAN, HOME);
+      run(C.firebat.build + 1);
+      const fb = state.units.find(u => u.owner === HUMAN && u.type === "firebat");
+      ok(fb, "firebat trained");
+      const scvsBefore = state.units.filter(u => u.owner === HUMAN && u.type === "scv" && u.task !== "moving").length;
+      const dest = state.map.adj[HOME][0];
+      state.visited[HUMAN][dest] = true;
+      sendUnits(HUMAN, HOME, 1, "firebat", dest);
+      const scvsAfter = state.units.filter(u => u.owner === HUMAN && u.type === "scv" && u.task !== "moving").length;
+      eq(scvsAfter, scvsBefore, "no SCV was moved when sending a firebat");
+      eq(fb.task, "moving", "the firebat is now moving");
+    },
+
+    "bunker: garrisoned units hidden from the forces panel": () => {
+      resetState(5);
+      state.minerals[HUMAN] = 999; state.gas[HUMAN] = 200;
+      startBuilding(HUMAN, HOME, "barracks");
+      run(C.barracks.build + 1);
+      queueMarine(HUMAN, HOME);
+      run(C.marine.build + 1);
+      startBuilding(HUMAN, HOME, "bunker");
+      run(C.bunker.build + 1);
+      const bunk = state.buildings.find(b => b.owner === HUMAN && b.type === "bunker");
+      ok(bunk && !bunk.construct, "bunker ready");
+      loadBunker(HUMAN, HOME, bunk.id);
+      const m = state.units.find(u => u.owner === HUMAN && u.type === "marine");
+      ok(m && m.task === "bunker", "marine is loaded");
+      // Marines shown in forces panel should exclude bunker occupants.
+      const visibleMarines = unitsOf(HUMAN, HOME, null, "marine").filter(u => u.task !== "bunker");
+      eq(visibleMarines.length, 0, "loaded marine not shown as idle in forces panel");
     },
   };
 
