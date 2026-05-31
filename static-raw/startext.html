@@ -651,6 +651,9 @@ const unitsOf = (owner, node, task, type) => state.units.filter(u =>
 const buildingsOf = (owner, node) => state.buildings.filter(b =>
   b.owner === owner && (node === undefined || b.node === node));
 const enemy = o => (o === HUMAN ? BOT : HUMAN);
+// A completed refinery at a node — required for SCVs to collect gas there.
+const refineryReady = (owner, node) => state.buildings.some(b =>
+  b.owner === owner && b.node === node && b.type === "refinery" && !b.construct);
 
 // SCVs at a node that can be re-tasked or sent (not building, not moving).
 const controllable = (owner, node) => state.units.filter(u =>
@@ -831,6 +834,7 @@ function buildingStep() {
           const scv = newSCV(b.owner, b.node);
           scv.engaged = WARMED_ENGAGED; // born here — fights immediately if attacked
           if (b.rally === "mining" && state.field[b.node] > 0) scv.task = "mining";
+          else if (b.rally === "gas" && refineryReady(b.owner, b.node)) scv.task = "gas";
         } else {
           // marine or firebat — same spawn + rally logic
           const unit = unitType === "firebat" ? newFirebat(b.owner, b.node) : newMarine(b.owner, b.node);
@@ -2146,7 +2150,11 @@ function renderSheet() {
       : inQ >= C.cc.queueMax ? `Queue full (${C.cc.queueMax} max).`
       : !afford ? `Need ${C.cc.trainCost} 💎.`
       : !supplyOK ? "Supply blocked — SCV will train when supply is free." : "";
-    const rallyMining = cc.rally === "mining";
+    const rally = cc.rally;
+    // Offer Gas only where a refinery stands (or it's already the active rally, so
+    // a player whose refinery was destroyed can still see/change the setting).
+    const gasHere = refineryReady(HUMAN, cc.node) || rally === "gas";
+    const rallySel = r => rally === r ? "sel" : "";
     sheet.innerHTML = `
       <h2>Command Center</h2>
       <div class="sheet-sub">${nodeName(sel.node)} · HP ${Math.ceil(cc.hp)}/${cc.maxHp} · Queue ${inQ}/${C.cc.queueMax}</div>
@@ -2154,12 +2162,17 @@ function renderSheet() {
         Train SCV <span class="cost">— ${C.cc.trainCost} 💎 · ${C.cc.trainTime}s · +1 supply</span>
       </button>
       ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
-      <button class="act secondary" id="a-rally">
-        Rally: ${rallyMining ? "⛏️ Mine" : "🛑 Idle"} <span class="cost">— new SCVs ${rallyMining ? "go mining" : "stay idle"}</span>
-      </button>
+      <div class="sheet-sub" style="margin-top:10px">Rally — new SCVs:</div>
+      <div class="mode-toggle">
+        <button id="a-rally-mine" class="${rallySel("mining")}">⛏️ Mine</button>
+        ${gasHere ? `<button id="a-rally-gas" class="${rallySel("gas")}">⚡ Gas</button>` : ""}
+        <button id="a-rally-idle" class="${rallySel("idle")}">🛑 Idle</button>
+      </div>
       <button class="act-close" id="a-close">Close</button>`;
     bind("a-train", () => { queueSCV(HUMAN, cc.node); refreshSheet(); });
-    bind("a-rally", () => { cc.rally = rallyMining ? "idle" : "mining"; refreshSheet(); });
+    bind("a-rally-mine", () => { cc.rally = "mining"; refreshSheet(); });
+    bind("a-rally-gas",  () => { cc.rally = "gas";    refreshSheet(); });
+    bind("a-rally-idle", () => { cc.rally = "idle";   refreshSheet(); });
 
   } else if (sel.kind === "barracks" || sel.kind === "barracks-group") {
     const allRax = buildingsOf(HUMAN, sel.node).filter(b => b.type === "barracks" && !b.construct);
@@ -2655,6 +2668,25 @@ function runTests() {
       queueSCV(HUMAN, HOME);
       run(C.cc.trainTime);
       eq(unitsOf(HUMAN, HOME, "idle", "scv").length, idleBefore + 1, "newborn stays idle on rally=idle");
+    },
+    "CC rally=gas sends newborn SCVs to gas only with a refinery"() {
+      resetState(1);
+      cheat(HUMAN, 9999);
+      const cc1 = cc(HUMAN);
+      cc1.rally = "gas";
+      // No refinery yet → newborn falls back to idle.
+      const idleBefore = unitsOf(HUMAN, HOME, "idle", "scv").length;
+      queueSCV(HUMAN, HOME);
+      run(C.cc.trainTime);
+      eq(unitsOf(HUMAN, HOME, "gas", "scv").length, 0, "no gas SCV without a refinery");
+      eq(unitsOf(HUMAN, HOME, "idle", "scv").length, idleBefore + 1, "falls back to idle without a refinery");
+      // Build a refinery → newborn now collects gas.
+      state.gasField[HOME] = 5000;
+      state.buildings.push({ id: idSeq++, owner: HUMAN, node: HOME, type: "refinery",
+        hp: C.refinery.hp, maxHp: C.refinery.hp, construct: null, train: null, queued: 0 });
+      queueSCV(HUMAN, HOME);
+      run(C.cc.trainTime);
+      ok(unitsOf(HUMAN, HOME, "gas", "scv").length >= 1, "newborn collects gas on rally=gas with a refinery");
     },
     "CC rally=mining yields idle SCV when patch is dry"() {
       resetState(1);
