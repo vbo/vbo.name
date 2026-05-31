@@ -485,7 +485,8 @@ function resetState(seed) {
     seenUnits: new Array(n).fill(null), // per-node last-seen enemy units (fades after a few s)
     bot: {
       lastEval: 0, lastWave: 30, waveInterval: 90, // adaptive; starts at 90s between waves
-      enemyArmy: 0,    // player army size last *scouted* at HOME (no cheating: only seen counts)
+      enemyBase: null, // null until a bot unit visits a node with enemy buildings
+      enemyArmy: 0,    // player army size last scouted at enemyBase
       scoutTime: null, // tick of that last sighting; null = never scouted
     },
   };
@@ -1003,16 +1004,25 @@ function botEval() {
         unitsOf(BOT, home, "idle", "scv").forEach(u => u.task = "mining");
     }
   } else {
-    // Not under attack. On a multi-node map the bot must first *explore* toward the
-    // player before it can strike — it pushes one unit at a time to the next frontier
-    // node along the shortest path, then engages once the enemy base is in reach.
+    // Not under attack. Bot explores outward (toward any unvisited frontier node) until
+    // it discovers the enemy base; once found and reachable, it scouts then attacks.
     const marines = idleMarines(BOT, home);
     const reserve = skilled ? 8 : 14; // marines held back to defend
     const waveDue = state.time - state.bot.lastWave >= state.bot.waveInterval;
 
-    // Update intel whenever any bot unit stands at the player's base.
-    if (state.units.some(u => u.owner === BOT && u.node === HOME)) {
-      state.bot.enemyArmy = state.units.filter(u => u.owner === HUMAN && u.node === HOME &&
+    // Discover enemy base: first visited node that has enemy buildings.
+    if (state.bot.enemyBase === null) {
+      for (let n = 0; n < state.map.n; n++) {
+        if (state.visited[BOT][n] && state.buildings.some(b => b.owner === HUMAN && b.node === n)) {
+          state.bot.enemyBase = n; break;
+        }
+      }
+    }
+    const target = state.bot.enemyBase;
+
+    // Update intel whenever any bot unit stands at the discovered enemy base.
+    if (target !== null && state.units.some(u => u.owner === BOT && u.node === target)) {
+      state.bot.enemyArmy = state.units.filter(u => u.owner === HUMAN && u.node === target &&
         (u.type === "marine" || u.type === "scv")).length;
       state.bot.scoutTime = state.time;
     }
@@ -1020,14 +1030,17 @@ function botEval() {
     // Any bot unit with a transit heading away from home (scout or attack wave).
     const scoutOut = state.units.some(u => u.owner === BOT && u.transit != null && u.transit.to !== home);
 
-    // Next unvisited node along the path AWAY → HOME (the frontier to claim).
-    const path = bfsPath(home, HOME, state.map.adj, state.map.n);
-    let frontier = -1;
-    for (let i = 1; i < path.length; i++)
-      if (!state.visited[BOT][path[i]]) { frontier = path[i]; break; }
-    const homeReachable = canSendTo(BOT, HOME);
+    // Frontier: nearest unvisited node (any direction, not hard-coded toward HOME).
+    const distFromHome = bfsDist(home, state.map.adj, state.map.n);
+    let frontier = -1, frontierDist = Infinity;
+    for (let n = 0; n < state.map.n; n++) {
+      if (!state.visited[BOT][n] && distFromHome[n] < frontierDist) {
+        frontierDist = distFromHome[n]; frontier = n;
+      }
+    }
+    const targetReachable = target !== null && canSendTo(BOT, target);
 
-    if (!homeReachable && frontier !== -1) {
+    if (!targetReachable && frontier !== -1) {
       // Claim the frontier: send one marine (or a spare SCV early) if nobody is
       // there or already heading there.
       const atFrontier = state.units.some(u => u.owner === BOT && u.node === frontier);
@@ -1041,23 +1054,21 @@ function botEval() {
           if (scvsHome.length >= 10) sendUnits(BOT, home, 1, "scv", frontier);
         }
       }
-    } else if (homeReachable) {
-      // Enemy base in reach — scout for intel, then commit a real wave that clearly
-      // beats the scouted defense (no cheating: enemyArmy is scouted, not read).
-      // Exception: when the wave is overdue and the army is overwhelming (scout is
-      // likely being killed en route), commit without intel rather than drip-feeding
-      // one marine at a time forever.
+    } else if (targetReachable) {
+      // Enemy base discovered and reachable — scout for intel, then commit a real wave.
+      // If the wave is overdue and overwhelming force is available, commit blind rather
+      // than drip-feeding scouts that keep dying en route.
       const strike = marines.length - reserve;
       const blindAttack = waveDue && !intelFresh && strike >= 20;
       if (blindAttack) {
-        sendUnits(BOT, home, strike, "marine", HOME, "attack");
+        sendUnits(BOT, home, strike, "marine", target, "attack");
         state.bot.lastWave = state.time;
       } else if (!intelFresh && !scoutOut && marines.length > reserve) {
-        sendUnits(BOT, home, 1, "marine", HOME); // scout — move mode, will observe then leave
+        sendUnits(BOT, home, 1, "marine", target); // scout — move mode, observe then leave
       } else if (waveDue && intelFresh) {
         const needed = Math.max(12, Math.ceil(state.bot.enemyArmy * 1.4) + 4);
         if (strike >= needed) {
-          sendUnits(BOT, home, strike, "marine", HOME, "attack"); // attack wave — fight through each node
+          sendUnits(BOT, home, strike, "marine", target, "attack"); // attack wave
           state.bot.lastWave = state.time;
         }
       }
