@@ -333,13 +333,21 @@ const DWELL_TIME  = 10; // seconds spent at each intermediate node in "move" mod
 // max(0, enemyRange - ownRange) ticks, so a ranged unit (marine) lands free hits
 // while a melee unit (SCV, range 0) is still closing. Buildings have no range → 0.
 const C = {
-  scv:      { hp: 60,  dmg: 5, atk: 1.5, cost: 50, build: 12, range: 0 }, // melee
+  scv:      { hp: 60,  dmg: 5,  atk: 1.5, cost: 50,  build: 12, range: 0 }, // melee
   // Marine: BW stats — 40 HP, 6 dmg, 15-frame cooldown (~0.9 s at our tick rate)
-  marine:   { hp: 40,  dmg: 6, atk: 0.9, cost: 50, build: 24, queueMax: 5, range: 3 }, // ranged
+  marine:   { hp: 40,  dmg: 6,  atk: 0.9, cost: 50,  build: 24, queueMax: 5, range: 3 }, // ranged
+  // Firebat: melee splash unit — hits 2 targets per swing; requires Academy
+  firebat:  { hp: 50,  dmg: 16, atk: 1.5, cost: 50,  gasCost: 25, build: 24, queueMax: 5, range: 0, splash: 2 },
   cc:       { hp: 1500, supply: 10, trainCost: 50, trainTime: 12, queueMax: 5, cost: 400, build: 60 },
   depot:    { hp: 400,  cost: 100, build: 25, supply: 8 },
   barracks: { hp: 1000, cost: 150, build: 46 },
   refinery: { hp: 500,  cost: 75,  build: 20 }, // builds on the geyser; no train queue
+  academy:  { hp: 600,  cost: 150, build: 80 }, // unlocks firebat + U-238 Shells research
+  bunker:   { hp: 350,  cost: 100, build: 30, capacity: 4 }, // shelters up to 4 infantry
+};
+// Tech upgrades researched at the Academy.
+const UPGRADES = {
+  u238: { minerals: 150, gas: 150, time: 100, label: "U-238 Shells (+1 Marine range)" },
 };
 
 // HOME/AWAY are the human's and bot's start-node ids on the generated map.
@@ -527,6 +535,7 @@ function resetState(seed) {
     underAttack: new Array(n).fill(false), // per-node edge-trigger for the "under attack" alert
     seen: new Array(n).fill(null),      // per-node last-seen enemy buildings (null = never scouted)
     seenUnits: new Array(n).fill(null), // per-node last-seen enemy units (fades after a few s)
+    upgrades: { human: [], bot: [] }, // researched upgrade keys per owner
     bot: {
       lastEval: 0, lastWave: 30, waveInterval: 90, // adaptive; starts at 90s between waves
       enemyBase: null, // null until a bot unit visits a node with enemy buildings
@@ -568,6 +577,11 @@ function newMarine(owner, node) {
     hp: C.marine.hp, maxHp: C.marine.hp, atkCd: 0, engaged: 0, buildingId: null, transit: null };
   state.units.push(u); return u;
 }
+function newFirebat(owner, node) {
+  const u = { id: idSeq++, type: "firebat", owner, node, task: "idle",
+    hp: C.firebat.hp, maxHp: C.firebat.hp, atkCd: 0, engaged: 0, buildingId: null, transit: null };
+  state.units.push(u); return u;
+}
 
 /* ----------------------------- Queries ------------------------------- */
 const unitsOf = (owner, node, task, type) => state.units.filter(u =>
@@ -599,7 +613,7 @@ function supplyUsed(owner) {
   let used = state.units.filter(u => u.owner === owner).length;
   for (const b of buildingsOf(owner)) {
     if (b.type === "cc" || b.type === "barracks")
-      used += (b.train ? 1 : 0) + (b.queued || 0);
+      used += (b.train ? 1 : 0) + (b.queued || 0) + (b.queuedFirebats || 0);
   }
   return used;
 }
@@ -748,30 +762,46 @@ function buildingStep() {
     if (b.train) {
       b.train.progress++;
       if (b.train.progress >= b.train.total) {
+        const unitType = b.train.unitType || (b.type === "cc" ? "scv" : "marine");
         b.train = null;
-        if (b.type === "cc") {
+        if (unitType === "scv") {
           const scv = newSCV(b.owner, b.node);
-          // Rally: send the newborn to mine unless the patch is dry or rally is "idle".
           if (b.rally === "mining" && state.field[b.node] > 0) scv.task = "mining";
-        } else if (b.type === "barracks") {
-          const marine = newMarine(b.owner, b.node);
+        } else {
+          // marine or firebat — same spawn + rally logic
+          const unit = unitType === "firebat" ? newFirebat(b.owner, b.node) : newMarine(b.owner, b.node);
           if (typeof b.rally === "number" && b.rally !== b.node) {
             const path = bfsPathVisited(b.owner, b.node, b.rally, state.map.adj, state.map.n);
             if (path && path.length > 1) {
-              marine.transit = { to: b.rally, path, pathIdx: 1, progress: 0, mode: "move", dwellStart: null };
-              marine.task = "moving"; marine.node = -1;
+              unit.transit = { to: b.rally, path, pathIdx: 1, progress: 0, mode: "move", dwellStart: null };
+              unit.task = "moving"; unit.node = -1;
             }
           }
         }
       }
     }
+    // Academy: advance research.
+    if (b.type === "academy" && !b.construct && b.research) {
+      b.research.progress++;
+      if (b.research.progress >= b.research.total) {
+        if (!state.upgrades[b.owner].includes(b.research.type))
+          state.upgrades[b.owner].push(b.research.type);
+        b.research = null;
+        if (b.owner === HUMAN)
+          notify("🔬 U-238 Shells complete! Marines have +1 range.", "ok", 6);
+      }
+    }
     // Dequeue the next waiting unit into the training slot whenever it is free and
-    // supply allows. This runs every tick so supply-blocked queues self-resolve as
-    // soon as a depot finishes.
-    if (!b.train && b.construct === null && b.queued > 0 &&
-        supplyUsed(b.owner) < supplyCap(b.owner)) {
-      b.queued--;
-      b.train = { progress: 0, total: b.type === "cc" ? C.cc.trainTime : C.marine.build };
+    // supply allows. Marines/SCVs dequeue before firebats.
+    if (!b.train && b.construct === null && supplyUsed(b.owner) < supplyCap(b.owner)) {
+      if (b.queued > 0) {
+        b.queued--;
+        const tt = b.type === "cc" ? C.cc.trainTime : C.marine.build;
+        b.train = { progress: 0, total: tt, unitType: b.type === "cc" ? "scv" : "marine" };
+      } else if ((b.queuedFirebats || 0) > 0) {
+        b.queuedFirebats--;
+        b.train = { progress: 0, total: C.firebat.build, unitType: "firebat" };
+      }
     }
   }
 }
@@ -820,29 +850,40 @@ function unitStep() {
   }
 }
 
-// A unit's weapon reach; buildings (no entry) and melee units are 0.
-const unitRange = u => (C[u.type] && C[u.type].range) || 0;
+// A unit's weapon reach. U-238 Shells adds +1 to marines; bunker adds +1 to all occupants.
+const unitRange = u => {
+  let r = (C[u.type] && C[u.type].range) || 0;
+  if (u.type === "marine" && state.upgrades && state.upgrades[u.owner].includes("u238")) r++;
+  if (u.task === "bunker") r++; // bunker elevation bonus
+  return r;
+};
 
 function combatStep() {
-  // Idle units (SCVs and Marines) auto-attack, focusing whatever can shoot back.
+  // Idle units (and bunker occupants) auto-attack, focusing whatever can shoot back.
   // Closing the distance: once engaged, a unit can't strike until it has spent
   // ENGAGE_DELAY + max(0, enemyRange - ownRange) ticks closing — a shared windup
   // when the forces meet, plus a ranged bonus so marines fire while melee advances.
+  // Firebats hit up to `splash` targets per swing (good against crowds).
   for (const u of state.units) {
-    if (u.task !== "idle" || u.node < 0) { u.atkCd = 0; u.engaged = 0; continue; }
+    if ((u.task !== "idle" && u.task !== "bunker") || u.node < 0) { u.atkCd = 0; u.engaged = 0; continue; }
     const foes = targetsAt(enemy(u.owner), u.node);
     if (!foes.length) { u.atkCd = 0; u.engaged = 0; continue; }
     u.engaged = (u.engaged || 0) + 1;
     const enemyRange = foes.reduce((m, o) => Math.max(m, unitRange(o)), 0);
     const closeDelay = ENGAGE_DELAY + Math.max(0, enemyRange - unitRange(u));
     if (u.engaged <= closeDelay) continue; // still closing — can't strike yet
-    const cfg = u.type === "marine" ? C.marine : C.scv;
+    const cfg = C[u.type] || C.scv;
     u.atkCd -= 1;
     let guard = 0;
     while (u.atkCd <= 0 && guard++ < 3) {
       const t = pickTarget(enemy(u.owner), u.node);
       if (!t) break;
       t.hp -= cfg.dmg;
+      // Firebat splash: deal damage to a second random target too.
+      if (cfg.splash && cfg.splash > 1) {
+        const t2 = pickTarget(enemy(u.owner), u.node);
+        if (t2 && t2 !== t) t2.hp -= cfg.dmg;
+      }
       u.atkCd += cfg.atk;
     }
   }
@@ -857,9 +898,10 @@ function pickTarget(owner, node) {
   return pool[(rng() * pool.length) | 0];
 }
 
-// Enemy units (any task) + buildings present at a node — all are valid targets.
+// Enemy units (any task except bunker) + buildings present at a node.
+// Bunker occupants can't be targeted directly — attackers must destroy the bunker first.
 function targetsAt(owner, node) {
-  const us = state.units.filter(u => u.owner === owner && u.node === node && u.hp > 0);
+  const us = state.units.filter(u => u.owner === owner && u.node === node && u.hp > 0 && u.task !== "bunker");
   const bs = state.buildings.filter(b => b.owner === owner && b.node === node && b.hp > 0);
   return us.concat(bs);
 }
@@ -868,17 +910,22 @@ function cleanupDead() {
   // Remove dead buildings; free or cancel anything tied to them.
   state.buildings = state.buildings.filter(b => {
     if (b.hp > 0) return true;
-    const scv = state.units.find(u => u.buildingId === b.id);
+    const scv = state.units.find(u => u.buildingId === b.id && u.task === "building");
     if (scv) { scv.task = "idle"; scv.buildingId = null; }
-    // When a refinery is destroyed its gas collectors are freed.
     if (b.type === "refinery") {
       state.units.filter(u => u.owner === b.owner && u.node === b.node && u.task === "gas")
         .forEach(u => u.task = "idle");
     }
-    // When a CC is destroyed miners at that node have nowhere to bring minerals.
     if (b.type === "cc") {
       state.units.filter(u => u.owner === b.owner && u.node === b.node && u.task === "mining")
         .forEach(u => u.task = "idle");
+    }
+    // Bunker destroyed: eject loaded infantry (they fight on, exposed).
+    if (b.type === "bunker" && b.loaded) {
+      for (const uid of b.loaded) {
+        const u = state.units.find(u => u.id === uid);
+        if (u) { u.task = "idle"; u.buildingId = null; }
+      }
     }
     if (b.owner === HUMAN)
       notify(`💥 Your ${BUILDING_LABEL[b.type]} was destroyed!`, "loss", 6);
@@ -886,15 +933,25 @@ function cleanupDead() {
   });
   // Remove dead units; a builder dying cancels its building (no refund).
   const deadBuilds = [];
-  let scvLost = 0, marineLost = 0;
+  let scvLost = 0, marineLost = 0, firebatLost = 0;
   state.units = state.units.filter(u => {
     if (u.hp > 0) return true;
-    if (u.buildingId) deadBuilds.push(u.buildingId);
-    if (u.owner === HUMAN) u.type === "marine" ? marineLost++ : scvLost++;
+    if (u.task === "building" && u.buildingId) deadBuilds.push(u.buildingId);
+    // Dead bunker occupant: clean it out of the bunker's loaded list.
+    if (u.task === "bunker" && u.buildingId) {
+      const bunk = state.buildings.find(b => b.id === u.buildingId);
+      if (bunk && bunk.loaded) bunk.loaded = bunk.loaded.filter(id => id !== u.id);
+    }
+    if (u.owner === HUMAN) {
+      if (u.type === "marine") marineLost++;
+      else if (u.type === "firebat") firebatLost++;
+      else scvLost++;
+    }
     return false;
   });
-  if (scvLost)    notify(`Lost ${scvLost} SCV${scvLost > 1 ? "s" : ""}.`, "loss", 4);
-  if (marineLost) notify(`Lost ${marineLost} Marine${marineLost > 1 ? "s" : ""}.`, "loss", 4);
+  if (scvLost)      notify(`Lost ${scvLost} SCV${scvLost > 1 ? "s" : ""}.`, "loss", 4);
+  if (marineLost)   notify(`Lost ${marineLost} Marine${marineLost > 1 ? "s" : ""}.`, "loss", 4);
+  if (firebatLost)  notify(`Lost ${firebatLost} Firebat${firebatLost > 1 ? "s" : ""}.`, "loss", 4);
   if (deadBuilds.length) {
     state.buildings = state.buildings.filter(b =>
       !(deadBuilds.includes(b.id) && b.construct));
@@ -936,7 +993,7 @@ function queueSCV(owner, node, maxQueue = C.cc.queueMax) {
   state.minerals[owner] -= C.cc.trainCost;
   // Start training immediately if the slot is free and supply allows; otherwise queue.
   if (!cc.train && supplyUsed(owner) < supplyCap(owner))
-    cc.train = { progress: 0, total: C.cc.trainTime };
+    cc.train = { progress: 0, total: C.cc.trainTime, unitType: "scv" };
   else
     cc.queued++;
 }
@@ -967,7 +1024,10 @@ function startBuilding(owner, node, type) {
     id: idSeq++, owner, node, type,
     hp: cfg.hp, maxHp: cfg.hp,
     construct: { progress: 0, total: cfg.build }, train: null, queued: 0,
+    queuedFirebats: 0,
     rally: type === "cc" ? "mining" : null,
+    loaded: type === "bunker" ? [] : undefined,
+    research: null,
   };
   state.buildings.push(b);
   scv.task = "building";
@@ -994,9 +1054,74 @@ function queueMarine(owner, node, raxId) {
   state.minerals[owner] -= C.marine.cost;
   // Start training immediately if the slot is free and supply allows; otherwise queue.
   if (!rax.train && supplyUsed(owner) < supplyCap(owner))
-    rax.train = { progress: 0, total: C.marine.build };
+    rax.train = { progress: 0, total: C.marine.build, unitType: "marine" };
   else
     rax.queued++;
+}
+
+function queueFirebat(owner, node, raxId) {
+  if (!state.buildings.some(b => b.owner === owner && b.type === "academy" && !b.construct)) return;
+  let rax;
+  if (raxId != null) {
+    rax = state.buildings.find(b => b.id === raxId && !b.construct && b.type === "barracks");
+  } else {
+    rax = state.buildings
+      .filter(b => b.owner === owner && b.node === node && b.type === "barracks" && !b.construct)
+      .sort((a, b) => ((a.train ? 1 : 0) + a.queued + (a.queuedFirebats || 0))
+                    - ((b.train ? 1 : 0) + b.queued + (b.queuedFirebats || 0)))[0];
+  }
+  if (!rax) return;
+  const inQueue = (rax.train ? 1 : 0) + (rax.queued || 0) + (rax.queuedFirebats || 0);
+  if (inQueue >= C.firebat.queueMax) return;
+  if (state.minerals[owner] < C.firebat.cost) return;
+  if (state.gas[owner] < C.firebat.gasCost) return;
+  state.minerals[owner] -= C.firebat.cost;
+  state.gas[owner] -= C.firebat.gasCost;
+  if (!rax.train && supplyUsed(owner) < supplyCap(owner))
+    rax.train = { progress: 0, total: C.firebat.build, unitType: "firebat" };
+  else
+    rax.queuedFirebats = (rax.queuedFirebats || 0) + 1;
+}
+
+function startResearch(owner, upgradeType) {
+  if (state.upgrades[owner].includes(upgradeType)) return false;
+  const acad = state.buildings.find(b =>
+    b.owner === owner && b.type === "academy" && !b.construct && !b.research);
+  if (!acad) return false;
+  const up = UPGRADES[upgradeType];
+  if (state.minerals[owner] < up.minerals || state.gas[owner] < up.gas) return false;
+  state.minerals[owner] -= up.minerals;
+  state.gas[owner] -= up.gas;
+  acad.research = { type: upgradeType, progress: 0, total: up.time };
+  return true;
+}
+
+function loadBunker(owner, node, bunkerId) {
+  const bunker = state.buildings.find(b =>
+    b.id === bunkerId && b.owner === owner && b.type === "bunker" && !b.construct);
+  if (!bunker) return;
+  const freeSlots = C.bunker.capacity - bunker.loaded.length;
+  if (freeSlots <= 0) return;
+  const avail = state.units.filter(u =>
+    u.owner === owner && u.node === node && u.task === "idle" &&
+    (u.type === "marine" || u.type === "firebat") && !u.transit
+  ).slice(0, freeSlots);
+  for (const u of avail) {
+    u.task = "bunker";
+    u.buildingId = bunkerId;
+    bunker.loaded.push(u.id);
+  }
+}
+
+function unloadBunker(owner, bunkerId) {
+  const bunker = state.buildings.find(b =>
+    b.id === bunkerId && b.owner === owner && b.type === "bunker");
+  if (!bunker) return;
+  for (const uid of bunker.loaded) {
+    const u = state.units.find(u => u.id === uid);
+    if (u) { u.task = "idle"; u.buildingId = null; }
+  }
+  bunker.loaded = [];
 }
 
 function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
@@ -1220,6 +1345,15 @@ function botEval() {
     queueSCV(BOT, home, 1);
   }
 
+  // Tech: build Academy once a barracks is done, then research U-238.
+  const raxDone = state.buildings.some(b => b.owner === BOT && b.type === "barracks" && !b.construct);
+  const academyExists = state.buildings.some(b => b.owner === BOT && b.type === "academy");
+  if (raxDone && !academyExists && min() >= C.academy.cost && !underAttack)
+    startBuilding(BOT, home, "academy");
+  const academyReady = state.buildings.find(b => b.owner === BOT && b.type === "academy" && !b.construct && !b.research);
+  if (academyReady && !state.upgrades[BOT].includes("u238"))
+    startResearch(BOT, "u238");
+
   // Tech: expand barracks over time so marine output scales with the player's.
   const raxCount = state.buildings.filter(b => b.owner === BOT && b.type === "barracks").length;
   const raxTarget = skilled ? Math.min(6, 1 + Math.floor(state.time / 60))
@@ -1229,11 +1363,17 @@ function botEval() {
     startBuilding(BOT, home, "barracks");
   }
 
-  // Pump marines from every idle barracks (one top-up per barracks per eval).
+  // Pump marines/firebats from every idle barracks (one top-up per barracks per eval).
+  const hasAcademy = state.buildings.some(b => b.owner === BOT && b.type === "academy" && !b.construct);
   let guard = raxCount;
-  while (botRax && min() >= C.marine.cost && supplyUsed(BOT) < supplyCap(BOT) && guard-- > 0) {
+  while (botRax && supplyUsed(BOT) < supplyCap(BOT) && guard-- > 0) {
     const before = min();
-    queueMarine(BOT, home);
+    // Use firebats when academy is ready and gas is plentiful; otherwise marines.
+    if (hasAcademy && state.gas[BOT] >= C.firebat.gasCost * 3 && min() >= C.firebat.cost) {
+      queueFirebat(BOT, home);
+    } else if (min() >= C.marine.cost) {
+      queueMarine(BOT, home);
+    } else break;
     if (min() === before) break; // all barracks queues full
   }
 
@@ -1263,7 +1403,7 @@ function botEval() {
 /* ------------------------------ Rendering ---------------------------- */
 const $ = id => document.getElementById(id);
 const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks", refinery: "Refinery" };
+const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks", refinery: "Refinery", academy: "Academy", bunker: "Bunker" };
 
 // Display names, assigned the first time the player sees a node. Naming by discovery
 // order (not the underlying node id) means the labels never hint at how many unseen
@@ -1292,6 +1432,12 @@ function svgIcon(kind) {
     return `<svg class="icon" viewBox="0 0 24 24" fill="#4ade80" stroke="#0a2211" stroke-width="0.5"><path d="M12 3c0 0-4 5.5-4 10a4 4 0 008 0c0-2.5-1-4-2-5-.1 2-1.5 3-2 3-.5 0-1-1-1-2.5 1.5-1 2.5-3 1-5.5z"/></svg>`;
   if (kind === "mineral")
     return `<svg class="icon" viewBox="0 0 24 24" fill="#41d6ff" stroke="#0a1a22" stroke-width="1"><path d="M12 3l4 6-4 12-4-12z"/></svg>`;
+  if (kind === "academy")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><path d="M12 3l9 5v2H3V8z"/><rect x="5" y="10" width="14" height="9" rx="1"/><path d="M9 19v-5h6v5"/><path d="M12 6v2"/></svg>`;
+  if (kind === "bunker")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><rect x="3" y="10" width="18" height="10" rx="2"/><path d="M7 10V7h10v3"/><path d="M8 14h2M14 14h2"/></svg>`;
+  if (kind === "firebat")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#ff9a9a" stroke-width="2"><circle cx="12" cy="8" r="3"/><path d="M6 21v-1a6 6 0 0112 0v1"/><path d="M9 14c1 1 2 3 3 3s2-2 3-3"/></svg>`;
   return "";
 }
 
@@ -1544,7 +1690,7 @@ function barracksMeta(allRax, interactive) {
   const segs = [];
   if (readyRax.length) {
     if (interactive) {
-      const totalQ = readyRax.reduce((s, b) => s + (b.train ? 1 : 0) + (b.queued || 0), 0);
+      const totalQ = readyRax.reduce((s, b) => s + (b.train ? 1 : 0) + (b.queued || 0) + (b.queuedFirebats || 0), 0);
       segs.push(totalQ ? `Training · ${totalQ} queued` : "Idle · tap to train");
     } else {
       const totHP = readyRax.reduce((s, b) => s + Math.ceil(b.hp), 0);
@@ -1721,6 +1867,72 @@ function appendForces(container, owner, node, interactive) {
     container.appendChild(row);
   }
 
+  // Firebats — shown alongside marines; share the send sheet.
+  const firebats = unitsOf(owner, node, null, "firebat");
+  if (firebats.length) {
+    any = true;
+    const row = document.createElement(interactive ? "button" : "div");
+    row.className = "row" + (interactive ? "" : " static");
+    row.innerHTML = `${svgIcon("firebat")}<div class="body">
+        <div class="name">Firebats — ${firebats.length}</div>
+        <div class="meta">ready · splash dmg</div>
+      </div>${interactive ? '<span class="chev">›</span>' : ""}`;
+    if (interactive) row.onclick = () => openSheet({ kind: "firebat", node, n: 1 });
+    container.appendChild(row);
+  }
+
+  // Academy — tappable to research upgrades.
+  for (const b of buildings.filter(b => b.type === "academy")) {
+    any = true;
+    const tappable = interactive && !b.construct;
+    const row = document.createElement(tappable ? "button" : "div");
+    row.className = "row" + (tappable ? "" : " static");
+    let meta;
+    if (b.construct) {
+      meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%`;
+      if (interactive) meta += progBar(b.construct.progress, b.construct.total);
+    } else if (b.research) {
+      const up = UPGRADES[b.research.type];
+      meta = `Researching ${up ? up.label : b.research.type} ${Math.floor(b.research.progress / b.research.total * 100)}%`;
+      if (interactive) meta += progBar(b.research.progress, b.research.total);
+    } else {
+      const done = state.upgrades[owner].includes("u238");
+      meta = interactive ? (done ? "✓ U-238 complete · tap to view" : "Idle · tap to research") : `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
+    }
+    row.innerHTML = `${svgIcon("academy")}<div class="body">
+        <div class="name">Academy</div>
+        <div class="meta">${meta}</div>
+        ${b.construct ? "" : hpBar(b.hp, b.maxHp)}
+      </div>${tappable ? '<span class="chev">›</span>' : ""}`;
+    if (tappable) row.onclick = () => openSheet({ kind: "academy", node, ref: b.id });
+    container.appendChild(row);
+  }
+
+  // Bunker — tappable to load/unload.
+  for (const b of buildings.filter(b => b.type === "bunker")) {
+    any = true;
+    const tappable = interactive && !b.construct;
+    const row = document.createElement(tappable ? "button" : "div");
+    row.className = "row" + (tappable ? "" : " static");
+    let meta;
+    if (b.construct) {
+      meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%`;
+      if (interactive) meta += progBar(b.construct.progress, b.construct.total);
+    } else {
+      const loaded = (b.loaded || []).length;
+      meta = interactive
+        ? `${loaded}/${C.bunker.capacity} loaded · tap to manage`
+        : `HP ${Math.ceil(b.hp)}/${b.maxHp} · ${(b.loaded || []).length} inside`;
+    }
+    row.innerHTML = `${svgIcon("bunker")}<div class="body">
+        <div class="name">Bunker</div>
+        <div class="meta">${meta}</div>
+        ${b.construct ? "" : hpBar(b.hp, b.maxHp)}
+      </div>${tappable ? '<span class="chev">›</span>' : ""}`;
+    if (tappable) row.onclick = () => openSheet({ kind: "bunker", node, ref: b.id });
+    container.appendChild(row);
+  }
+
   return any;
 }
 
@@ -1739,8 +1951,10 @@ function renderTransit() {
     const group = byDir[to];
     const scvN = group.filter(u => u.type === "scv").length;
     const marN = group.filter(u => u.type === "marine").length;
+    const fbtN = group.filter(u => u.type === "firebat").length;
     const label = [scvN && `${scvN} SCV${scvN > 1 ? "s" : ""}`,
-                   marN && `${marN} Marine${marN > 1 ? "s" : ""}`].filter(Boolean).join(", ");
+                   marN && `${marN} Marine${marN > 1 ? "s" : ""}`,
+                   fbtN && `${fbtN} Firebat${fbtN > 1 ? "s" : ""}`].filter(Boolean).join(", ");
     const mode = group[0].transit.mode;
     const modeLabel = mode === "attack" ? " ⚔️" : " 📦";
     const hops = group[0].transit.path.length - 1;
@@ -1834,7 +2048,7 @@ function renderSheet() {
   } else if (sel.kind === "barracks" || sel.kind === "barracks-group") {
     const allRax = buildingsOf(HUMAN, sel.node).filter(b => b.type === "barracks" && !b.construct);
     if (!allRax.length) { closeSheet(); return; }
-    const totalQ = allRax.reduce((s, b) => s + (b.train ? 1 : 0) + (b.queued || 0), 0);
+    const totalQ = allRax.reduce((s, b) => s + (b.train ? 1 : 0) + (b.queued || 0) + (b.queuedFirebats || 0), 0);
     const maxQ = allRax.length * C.marine.queueMax;
     const supplyOK = supplyUsed(HUMAN) < supplyCap(HUMAN);
     const afford = mineNow >= C.marine.cost;
@@ -1847,18 +2061,27 @@ function renderSheet() {
     const label = allRax.length > 1 ? `Barracks ×${allRax.length}` : "Barracks";
     const rallyNode = allRax[0].rally;
     const rallyLabel = typeof rallyNode === "number" ? `→ ${nodeName(rallyNode)}` : "Stay here";
+    const hasAcad = state.buildings.some(b => b.owner === HUMAN && b.type === "academy" && !b.construct);
+    const gasNow = Math.floor(state.gas[HUMAN]);
+    const canFirebat = hasAcad && totalQ < maxQ && mineNow >= C.firebat.cost && gasNow >= C.firebat.gasCost;
+    const fbNote = !hasAcad ? "Requires Academy." : gasNow < C.firebat.gasCost ? `Need ${C.firebat.gasCost} ⛽.` : "";
     sheet.innerHTML = `
       <h2>${label}</h2>
       <div class="sheet-sub">${nodeName(sel.node)} · ${totalQ} training${trainingRax.length ? ` · next ready in ${eta}s` : ""}</div>
       <button class="act" ${dis ? "disabled" : ""} id="a-marine">
         Train Marine <span class="cost">— ${C.marine.cost} 💎 · ${C.marine.build}s · +1 supply</span>
       </button>
+      <button class="act" ${canFirebat ? "" : "disabled"} id="a-firebat">
+        Train Firebat <span class="cost">— ${C.firebat.cost} 💎 ${C.firebat.gasCost} ⛽ · ${C.firebat.build}s · splash</span>
+      </button>
+      ${fbNote ? `<div class="sheet-sub" style="margin-top:2px">${fbNote}</div>` : ""}
       ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
       <button class="act secondary" id="a-set-rally">
-        Rally: ${rallyLabel} <span class="cost">— new marines auto-move here</span>
+        Rally: ${rallyLabel} <span class="cost">— new units auto-move here</span>
       </button>
       <button class="act-close" id="a-close">Close</button>`;
-    bind("a-marine", () => { queueMarine(HUMAN, sel.node, null); refreshSheet(); });
+    bind("a-marine",  () => { queueMarine(HUMAN, sel.node, null);  refreshSheet(); });
+    bind("a-firebat", () => { queueFirebat(HUMAN, sel.node, null); refreshSheet(); });
     bind("a-set-rally", () => openSheet({ kind: "barracks-rally", node: sel.node }));
 
   } else if (sel.kind === "barracks-rally") {
@@ -1907,6 +2130,85 @@ function renderSheet() {
     bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
     bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "marine", dest, sel.mode); closeSheet(); render(); });
 
+  } else if (sel.kind === "firebat") {
+    const node = sel.node;
+    const pool = state.units.filter(u => u.owner === HUMAN && u.node === node && u.type === "firebat" && u.task === "idle");
+    const max = Math.max(1, pool.length);
+    sel.n = Math.min(Math.max(1, sel.n || pool.length), max);
+    sel.mode = sel.mode || "attack";
+    const n = sel.n;
+    const mAtk = sel.mode === "attack";
+    sheet.innerHTML = `
+      <h2>Firebats at ${nodeName(node)}</h2>
+      <div class="sheet-sub">${pool.length} ready · splash damage vs crowds</div>
+      <div class="stepper">
+        <button id="n-minus">−</button>
+        <div class="count" id="n-count">${n}</div>
+        <button id="n-plus">+</button>
+        <div class="label">selected</div>
+      </div>
+      <input type="range" id="n-range" min="1" max="${max}" value="${n}">
+      <div class="mode-toggle">
+        <button id="mode-move" class="${!mAtk ? "sel" : ""}">📦 Move</button>
+        <button id="mode-attack" class="${mAtk ? "sel" : ""}">⚔️ Move &amp; Attack</button>
+      </div>
+      ${destButtonsHtml(node, n, pool.length)}
+      <button class="act-close" id="a-close">Close</button>`;
+    const setN2 = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
+    bind("n-minus", () => setN2(sel.n - 1));
+    bind("n-plus",  () => setN2(sel.n + 1));
+    $("n-range").oninput = e => setN2(parseInt(e.target.value, 10));
+    bind("mode-move",   () => { sel.mode = "move";   renderSheet(); });
+    bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
+    bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "firebat", dest, sel.mode); closeSheet(); render(); });
+
+  } else if (sel.kind === "academy") {
+    const b = state.buildings.find(b => b.id === sel.ref);
+    if (!b) { closeSheet(); return; }
+    const done = state.upgrades[HUMAN].includes("u238");
+    const up = UPGRADES.u238;
+    const gasNow = Math.floor(state.gas[HUMAN]);
+    const canResearch = !done && !b.research && mineNow >= up.minerals && gasNow >= up.gas;
+    const resNote = done ? "✓ Already researched."
+      : b.research ? `Researching… ${Math.floor(b.research.progress / b.research.total * 100)}%`
+      : mineNow < up.minerals ? `Need ${up.minerals} 💎.`
+      : gasNow < up.gas ? `Need ${up.gas} ⛽.` : "";
+    sheet.innerHTML = `
+      <h2>Academy</h2>
+      <div class="sheet-sub">${nodeName(sel.node)} · HP ${Math.ceil(b.hp)}/${b.maxHp}</div>
+      ${hpBar(b.hp, b.maxHp)}
+      <button class="act" ${canResearch ? "" : "disabled"} id="a-u238">
+        Research U-238 Shells <span class="cost">— ${up.minerals} 💎 ${up.gas} ⛽ · ${up.time}s · Marines +1 range</span>
+      </button>
+      ${resNote ? `<div class="sheet-sub" style="margin-top:8px">${resNote}</div>` : ""}
+      <button class="act-close" id="a-close">Close</button>`;
+    bind("a-u238", () => { startResearch(HUMAN, "u238"); refreshSheet(); });
+
+  } else if (sel.kind === "bunker") {
+    const b = state.buildings.find(b => b.id === sel.ref);
+    if (!b) { closeSheet(); return; }
+    const node = sel.node;
+    const loaded = b.loaded || [];
+    const loadedUnits = loaded.map(id => state.units.find(u => u.id === id)).filter(Boolean);
+    const avail = state.units.filter(u =>
+      u.owner === HUMAN && u.node === node && u.task === "idle" &&
+      (u.type === "marine" || u.type === "firebat")).length;
+    const full = loaded.length >= C.bunker.capacity;
+    sheet.innerHTML = `
+      <h2>Bunker</h2>
+      <div class="sheet-sub">${nodeName(node)} · ${loaded.length}/${C.bunker.capacity} loaded · HP ${Math.ceil(b.hp)}/${b.maxHp}</div>
+      ${hpBar(b.hp, b.maxHp)}
+      ${loadedUnits.length ? `<div class="sheet-sub" style="margin-top:8px">Inside: ${loadedUnits.map(u => `${u.type} HP ${Math.ceil(u.hp)}/${u.maxHp}`).join(", ")}</div>` : ""}
+      <button class="act" ${full || !avail ? "disabled" : ""} id="a-load">
+        Load infantry <span class="cost">— fills from ${avail} idle here</span>
+      </button>
+      <button class="act secondary" ${!loaded.length ? "disabled" : ""} id="a-unload">
+        Unload all <span class="cost">— ${loaded.length} ejected</span>
+      </button>
+      <button class="act-close" id="a-close">Close</button>`;
+    bind("a-load",   () => { loadBunker(HUMAN, node, b.id);  refreshSheet(); });
+    bind("a-unload", () => { unloadBunker(HUMAN, b.id);      refreshSheet(); });
+
   } else {
     // SCV group sheet — split into Move / Build / Mine submenus to avoid clutter.
     const node = sel.node;
@@ -1926,6 +2228,9 @@ function renderSheet() {
     const refBuilding = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "refinery");
     const gasAvail    = state.gasField[node] > 0;
     const refOK       = all.length >= 1 && mineNow >= C.refinery.cost && !refBuilding && gasAvail;
+    const acadOK      = all.length >= 1 && mineNow >= C.academy.cost &&
+                        !state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "academy");
+    const bunkerOK    = all.length >= 1 && mineNow >= C.bunker.cost;
     const minSatPct   = mineralSatPct(miningN, state.field[node]);
     const gasSatPct   = Math.round(gasN / GAS_OPT * 100);
     const hasMinerals = state.field[node] > 0;
@@ -1955,14 +2260,18 @@ function renderSheet() {
                     if (scv) { scv.task = "mining"; refreshSheet(); } } });
 
     const buildActs = [];
-    if (depotOK) buildActs.push({ id: "a-bf0", html: `🏗 Build Supply Depot <span class="cost">— ${C.depot.cost} 💎 · ${C.depot.build}s</span>`,
+    if (depotOK)  buildActs.push({ id: "a-bf0", html: `🏗 Build Supply Depot <span class="cost">— ${C.depot.cost} 💎 · ${C.depot.build}s</span>`,
       fn: () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); } });
-    if (raxOK)   buildActs.push({ id: "a-bf1", html: `🏗 Build Barracks <span class="cost">— ${C.barracks.cost} 💎 · ${C.barracks.build}s</span>`,
+    if (raxOK)    buildActs.push({ id: "a-bf1", html: `🏗 Build Barracks <span class="cost">— ${C.barracks.cost} 💎 · ${C.barracks.build}s</span>`,
       fn: () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); } });
-    if (refOK)   buildActs.push({ id: "a-bf2", html: `🏗 Build Refinery <span class="cost">— ${C.refinery.cost} 💎 · ${C.refinery.build}s</span>`,
+    if (refOK)    buildActs.push({ id: "a-bf2", html: `🏗 Build Refinery <span class="cost">— ${C.refinery.cost} 💎 · ${C.refinery.build}s</span>`,
       fn: () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); } });
-    if (ccOK)    buildActs.push({ id: "a-bf3", html: `🏗 Build Command Center <span class="cost">— ${C.cc.cost} 💎 · ${C.cc.build}s</span>`,
+    if (ccOK)     buildActs.push({ id: "a-bf3", html: `🏗 Build Command Center <span class="cost">— ${C.cc.cost} 💎 · ${C.cc.build}s</span>`,
       fn: () => { startBuilding(HUMAN, node, "cc"); refreshSheet(); } });
+    if (acadOK)   buildActs.push({ id: "a-bf4", html: `🏗 Build Academy <span class="cost">— ${C.academy.cost} 💎 · ${C.academy.build}s · unlocks Firebat + research</span>`,
+      fn: () => { startBuilding(HUMAN, node, "academy"); refreshSheet(); } });
+    if (bunkerOK) buildActs.push({ id: "a-bf5", html: `🏗 Build Bunker <span class="cost">— ${C.bunker.cost} 💎 · ${C.bunker.build}s · shelters ${C.bunker.capacity} infantry</span>`,
+      fn: () => { startBuilding(HUMAN, node, "bunker"); refreshSheet(); } });
 
     if (tab === "move") {
       sel.mode = sel.mode || "move"; // SCVs default to move mode
@@ -1997,6 +2306,12 @@ function renderSheet() {
         </button>` : ""}
         <button class="act secondary" id="a-cc" ${ccOK ? "" : "disabled"}>
           Build Command Center <span class="cost">— ${C.cc.cost} 💎 · ${C.cc.build}s · +${C.cc.supply} supply</span>
+        </button>
+        <button class="act secondary" id="a-academy" ${acadOK ? "" : "disabled"}>
+          Build Academy <span class="cost">— ${C.academy.cost} 💎 · ${C.academy.build}s · unlocks Firebat + research</span>
+        </button>
+        <button class="act secondary" id="a-bunker" ${bunkerOK ? "" : "disabled"}>
+          Build Bunker <span class="cost">— ${C.bunker.cost} 💎 · ${C.bunker.build}s · shelters ${C.bunker.capacity} infantry</span>
         </button>
         <button class="act-close" id="a-back">‹ Back</button>`;
     } else if (tab === "mine") {
@@ -2049,10 +2364,12 @@ function renderSheet() {
       bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
       bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "scv", dest, sel.mode); closeSheet(); render(); });
     } else if (tab === "build") {
-      bind("a-cc",    () => { startBuilding(HUMAN, node, "cc"); refreshSheet(); });
-      bind("a-depot", () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); });
-      bind("a-rax",   () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
-      bind("a-ref",   () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); });
+      bind("a-cc",      () => { startBuilding(HUMAN, node, "cc");       refreshSheet(); });
+      bind("a-depot",   () => { startBuilding(HUMAN, node, "depot");    refreshSheet(); });
+      bind("a-rax",     () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
+      bind("a-ref",     () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); });
+      bind("a-academy", () => { startBuilding(HUMAN, node, "academy");  refreshSheet(); });
+      bind("a-bunker",  () => { startBuilding(HUMAN, node, "bunker");   refreshSheet(); });
     } else if (tab === "mine") {
       bind("a-mine-all", () => { setTask(HUMAN, node, idleN, "idle", "mining", "scv"); refreshSheet(); });
       bind("a-idle-all", () => { setTask(HUMAN, node, miningN, "mining", "idle", "scv"); refreshSheet(); });
@@ -2414,6 +2731,80 @@ function runTests() {
       const aHp0 = a.hp, bHp0 = b.hp;
       tick();
       ok(a.hp < aHp0 && b.hp < bHp0, "equal-range units trade symmetrically after engage delay");
+    },
+    "firebat: splash hits a second target when multiple enemies present"() {
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.units = [];
+      const fb = newFirebat(HUMAN, HOME); fb.task = "idle";
+      const e1 = newMarine(BOT, HOME); e1.task = "idle";
+      const e2 = newMarine(BOT, HOME); e2.task = "idle";
+      const hp1 = e1.hp, hp2 = e2.hp;
+      // Firebat closeDelay = ENGAGE_DELAY + max(0, marineRange - firebatRange) = 5+3 = 8.
+      run(ENGAGE_DELAY + C.marine.range + 4);
+      ok(e1.hp < hp1 && e2.hp < hp2, "splash dealt damage to both enemies");
+    },
+    "firebat: single enemy still takes damage (no second target to splash)"() {
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.units = [];
+      const fb = newFirebat(HUMAN, HOME); fb.task = "idle";
+      const e1 = newMarine(BOT, HOME); e1.task = "idle";
+      run(ENGAGE_DELAY + C.marine.range + 2);
+      ok(e1.hp < C.marine.hp, "enemy takes damage even without a second splash target");
+    },
+    "bunker: occupants protected from targeting; ejected when bunker dies"() {
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.units = [];
+      const bunk = { id: idSeq++, owner: HUMAN, node: HOME, type: "bunker",
+        hp: C.bunker.hp, maxHp: C.bunker.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: [], research: null, rally: null };
+      state.buildings.push(bunk);
+      const m = newMarine(HUMAN, HOME); m.task = "idle";
+      loadBunker(HUMAN, HOME, bunk.id);
+      eq(m.task, "bunker", "marine loaded into bunker");
+      eq(bunk.loaded.length, 1, "bunker has 1 occupant");
+      // targetsAt(HUMAN, HOME) = what an attacker would see on the HUMAN side.
+      // The loaded marine must be absent; the bunker building must be present.
+      const targets = targetsAt(HUMAN, HOME);
+      ok(!targets.some(t => t.id === m.id), "bunker occupant not in targetsAt");
+      ok(targets.some(t => t.id === bunk.id), "bunker building IS a valid target");
+      // Kill the bunker directly and trigger cleanup — marine should eject.
+      bunk.hp = 0;
+      cleanupDead();
+      const ejected = state.units.find(u => u.id === m.id);
+      ok(ejected && ejected.task === "idle", "marine ejected and idle after bunker destroyed");
+    },
+    "academy: research u238 adds upgrade; marine range increases"() {
+      resetState(1);
+      eq(state.upgrades[HUMAN].length, 0, "no upgrades at start");
+      const acad = { id: idSeq++, owner: HUMAN, node: HOME, type: "academy",
+        hp: C.academy.hp, maxHp: C.academy.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: undefined, research: null, rally: null };
+      state.buildings.push(acad);
+      state.minerals[HUMAN] = 500; state.gas[HUMAN] = 500;
+      const ok2 = startResearch(HUMAN, "u238");
+      ok(ok2, "startResearch returns true");
+      ok(acad.research !== null, "research started");
+      const m = newMarine(HUMAN, HOME); m.task = "idle";
+      const rangeBefore = unitRange(m);
+      run(UPGRADES.u238.time + 1);
+      ok(state.upgrades[HUMAN].includes("u238"), "upgrade recorded");
+      ok(unitRange(m) > rangeBefore, "marine range increased after u238");
+    },
+    "bunker: loaded marines gain +1 range"() {
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.units = [];
+      const bunk = { id: idSeq++, owner: HUMAN, node: HOME, type: "bunker",
+        hp: C.bunker.hp, maxHp: C.bunker.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: [], research: null, rally: null };
+      state.buildings.push(bunk);
+      const m = newMarine(HUMAN, HOME); m.task = "idle";
+      const rangeBefore = unitRange(m);
+      loadBunker(HUMAN, HOME, bunk.id);
+      ok(unitRange(m) > rangeBefore, "bunker gives +1 range to occupant");
     },
     "fog: enemy buildings unknown until scouted, then remembered"() {
       resetState(1);
