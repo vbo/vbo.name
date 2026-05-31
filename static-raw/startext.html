@@ -1047,16 +1047,24 @@ function appendForces(container, owner, node, interactive) {
   const depots = buildings.filter(b => b.type === "depot");
   if (depots.length) {
     any = true;
-    const done = depots.filter(b => !b.construct).length;
-    const underC = depots.filter(b => b.construct).length;
+    const depotsDone  = depots.filter(b => !b.construct);
+    const depotsUnderC = depots.filter(b => b.construct);
     const parts = [];
-    if (done) parts.push(`${done} complete · +${done * C.depot.supply} supply`);
-    if (underC) parts.push(`${underC} building`);
+    if (depotsDone.length) parts.push(`${depotsDone.length} complete · +${depotsDone.length * C.depot.supply} supply`);
+    let depotBar = "";
+    if (depotsUnderC.length) {
+      const lead = depotsUnderC.slice().sort((a, b) =>
+        (b.construct.progress / b.construct.total) - (a.construct.progress / a.construct.total))[0];
+      const pct = Math.floor(lead.construct.progress / lead.construct.total * 100);
+      parts.push(`${depotsUnderC.length} building… ${pct}%`);
+      if (interactive) depotBar = progBar(lead.construct.progress, lead.construct.total);
+    }
     const row = document.createElement("div");
     row.className = "row static";
     row.innerHTML = `${svgIcon("depot")}<div class="body">
         <div class="name">Supply Depot${depots.length > 1 ? ` ×${depots.length}` : ""}</div>
         <div class="meta">${parts.join(" · ") || "—"}</div>
+        ${depotBar}
       </div>`;
     container.appendChild(row);
   }
