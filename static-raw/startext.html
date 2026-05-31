@@ -1686,6 +1686,33 @@ function renderSheet() {
     const summary = `<div class="sheet-sub">${all.length} available · ${idleN} idle${hasMinerals || miningN ? ` · ${miningN} mining (${minSatPct}% sat)` : ""}${gasN ? ` · ${gasN} gas (${gasSatPct}% sat)` : ""}</div>`;
     let title = `SCVs at ${nodeName(node)}`, body;
 
+    // Actions available right now (enabled). Used both to build the root body and to wire bindings.
+    const mineActs = [];
+    if (hasMinerals && idleN > 0)
+      mineActs.push({ id: "a-mf0", html: `⛏ Set ${idleN} idle → mining`,
+        fn: () => { setTask(HUMAN, node, idleN, "idle", "mining", "scv"); refreshSheet(); } });
+    if (hasMinerals && miningN > 0)
+      mineActs.push({ id: "a-mf1", html: `⛏ Set ${miningN} mining → idle`,
+        fn: () => { setTask(HUMAN, node, miningN, "mining", "idle", "scv"); refreshSheet(); } });
+    if (hasRef && idleN + miningN > 0 && gasN < GAS_OPT)
+      mineActs.push({ id: "a-mf2", html: `⛏ Assign 1 SCV → gas <span class="cost">— ${gasN}/${GAS_OPT} optimal</span>`,
+        fn: () => { const scv = unitsOf(HUMAN, node, "idle", "scv")[0] || unitsOf(HUMAN, node, "mining", "scv")[0];
+                    if (scv) { scv.task = "gas"; refreshSheet(); } } });
+    if (hasRef && gasN > 0)
+      mineActs.push({ id: "a-mf3", html: `⛏ Pull 1 gas SCV → mining`,
+        fn: () => { const scv = unitsOf(HUMAN, node, "gas", "scv")[0];
+                    if (scv) { scv.task = "mining"; refreshSheet(); } } });
+
+    const buildActs = [];
+    if (depotOK) buildActs.push({ id: "a-bf0", html: `🏗 Build Supply Depot <span class="cost">— ${C.depot.cost} 💎 · ${C.depot.build}s</span>`,
+      fn: () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); } });
+    if (raxOK)   buildActs.push({ id: "a-bf1", html: `🏗 Build Barracks <span class="cost">— ${C.barracks.cost} 💎 · ${C.barracks.build}s</span>`,
+      fn: () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); } });
+    if (refOK)   buildActs.push({ id: "a-bf2", html: `🏗 Build Refinery <span class="cost">— ${C.refinery.cost} 💎 · ${C.refinery.build}s</span>`,
+      fn: () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); } });
+    if (ccOK)    buildActs.push({ id: "a-bf3", html: `🏗 Build Command Center <span class="cost">— ${C.cc.cost} 💎 · ${C.cc.build}s</span>`,
+      fn: () => { startBuilding(HUMAN, node, "cc"); refreshSheet(); } });
+
     if (tab === "move") {
       sel.mode = sel.mode || "move"; // SCVs default to move mode
       title = `Move · ${nodeName(node)}`;
@@ -1740,10 +1767,16 @@ function renderSheet() {
         </button>` : ""}
         <button class="act-close" id="a-back">‹ Back</button>`;
     } else {
+      const flat = acts => acts.length === 1
+        ? `<button class="act secondary" id="${acts[0].id}">${acts[0].html}</button>` : "";
       body = `
         <button class="act" id="m-move">🚶 Move <span class="cost">— send SCVs to another node</span></button>
-        <button class="act secondary" id="m-build">🏗 Build <span class="cost">— depot, barracks${gasAvail ? ", refinery" : ""}</span></button>
-        ${canMine ? `<button class="act secondary" id="m-mine">⛏ Mine & Gas <span class="cost">— assign workers to resources</span></button>` : ""}
+        ${buildActs.length > 1
+          ? `<button class="act secondary" id="m-build">🏗 Build <span class="cost">— depot, barracks${gasAvail ? ", refinery" : ""}</span></button>`
+          : flat(buildActs)}
+        ${mineActs.length > 1
+          ? `<button class="act secondary" id="m-mine">⛏ Mine & Gas <span class="cost">— assign workers to resources</span></button>`
+          : flat(mineActs)}
         <button class="act-close" id="a-close">Close</button>`;
     }
     sheet.innerHTML = `<h2>${title}</h2>${summary}${body}`;
@@ -1753,6 +1786,8 @@ function renderSheet() {
     bind("m-build", () => setTab("build"));
     bind("m-mine",  () => setTab("mine"));
     bind("a-back",  () => setTab(null));
+    // Root-level flat shortcuts when a submenu would have only one option.
+    if (!tab) [...mineActs, ...buildActs].forEach(a => bind(a.id, a.fn));
 
     if (tab === "move") {
       const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
