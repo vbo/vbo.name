@@ -1095,9 +1095,18 @@ function freeIdle(owner, node) {
   return scv;
 }
 
+// Tech that needs a completed Barracks somewhere on the owner's side (SC1 tree).
+const hasFinishedBarracks = owner =>
+  state.buildings.some(b => b.owner === owner && b.type === "barracks" && !b.construct);
+
 function startBuilding(owner, node, type) {
   const cfg = C[type];
   if (!cfg || state.minerals[owner] < cfg.cost) return false;
+  // Academy and Bunker require a finished Barracks first.
+  if ((type === "academy" || type === "bunker") && !hasFinishedBarracks(owner)) {
+    if (owner === HUMAN) notify("Requires a completed Barracks first.", "warn", 4);
+    return false;
+  }
   // Refinery: max 1 per node (1 geyser) and geyser must have gas.
   if (type === "refinery") {
     if (state.gasField[node] <= 0) return false;
@@ -1438,7 +1447,7 @@ function botEval() {
   }
 
   // Tech: build Academy once a barracks is done, then research U-238.
-  const raxDone = state.buildings.some(b => b.owner === BOT && b.type === "barracks" && !b.construct);
+  const raxDone = hasFinishedBarracks(BOT);
   const academyExists = state.buildings.some(b => b.owner === BOT && b.type === "academy");
   if (raxDone && !academyExists && min() >= C.academy.cost && !underAttack)
     startBuilding(BOT, home, "academy");
@@ -2335,9 +2344,10 @@ function renderSheet() {
     const refBuilding = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "refinery");
     const gasAvail    = state.gasField[node] > 0;
     const refOK       = all.length >= 1 && mineNow >= C.refinery.cost && !refBuilding && gasAvail;
-    const acadOK      = all.length >= 1 && mineNow >= C.academy.cost &&
+    const raxDone     = hasFinishedBarracks(HUMAN); // Academy/Bunker prerequisite
+    const acadOK      = all.length >= 1 && mineNow >= C.academy.cost && raxDone &&
                         !state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "academy");
-    const bunkerOK    = all.length >= 1 && mineNow >= C.bunker.cost;
+    const bunkerOK    = all.length >= 1 && mineNow >= C.bunker.cost && raxDone;
     const minSatPct   = mineralSatPct(miningN, state.field[node]);
     const gasSatPct   = Math.round(gasN / GAS_OPT * 100);
     const hasMinerals = state.field[node] > 0;
@@ -2997,6 +3007,24 @@ function runTests() {
       const ejected = state.units.find(u => u.id === m.id);
       ok(ejected && ejected.task === "idle", "marine ejected and idle after bunker destroyed");
     },
+    "tech: Academy and Bunker require a finished Barracks"() {
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc"); // CC + SCVs only
+      state.minerals[HUMAN] = 999;
+      // No barracks yet → blocked.
+      ok(!startBuilding(HUMAN, HOME, "academy"), "academy blocked without a barracks");
+      ok(!startBuilding(HUMAN, HOME, "bunker"), "bunker blocked without a barracks");
+      // A barracks still under construction does not satisfy the prerequisite.
+      const rax = { id: idSeq++, owner: HUMAN, node: HOME, type: "barracks",
+        hp: C.barracks.hp, maxHp: C.barracks.hp, construct: { progress: 1, total: C.barracks.build },
+        train: null, queued: 0, queuedFirebats: 0, loaded: undefined, research: null, rally: null };
+      state.buildings.push(rax);
+      ok(!startBuilding(HUMAN, HOME, "academy"), "academy blocked while barracks still building");
+      // Finish it → now allowed.
+      rax.construct = null;
+      ok(startBuilding(HUMAN, HOME, "academy"), "academy allowed once barracks is done");
+      ok(startBuilding(HUMAN, HOME, "bunker"), "bunker allowed once barracks is done");
+    },
     "academy: research u238 adds upgrade; marine range increases"() {
       resetState(1);
       eq(state.upgrades[HUMAN].length, 0, "no upgrades at start");
@@ -3568,8 +3596,9 @@ function runTests() {
       resetState(5);
       state.minerals[HUMAN] = 500; state.gas[HUMAN] = 200;
       startBuilding(HUMAN, HOME, "barracks");
+      run(C.barracks.build + 1); // Academy needs a *finished* barracks
       startBuilding(HUMAN, HOME, "academy");
-      run(C.barracks.build + C.academy.build + 1);
+      run(C.academy.build + 1);
       queueFirebat(HUMAN, HOME);
       run(C.firebat.build + 1);
       const fb = state.units.find(u => u.owner === HUMAN && u.type === "firebat");
