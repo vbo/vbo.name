@@ -1283,7 +1283,7 @@ function renderGraph(visible) {
     const hasGas = visited && state.gasField[id] > 0;
     let resRow = "";
     if (hasMin || hasGas) {
-      const ry = (+cy + 9.8).toFixed(1);
+      const ry = (+cy - 9.8).toFixed(1);
       if (hasMin && hasGas)
         resRow = `<circle cx="${(+cx - 1.8).toFixed(1)}" cy="${ry}" r="1.4" fill="#41d6ff"/>` +
                  `<circle cx="${(+cx + 1.8).toFixed(1)}" cy="${ry}" r="1.4" fill="#4ade80"/>`;
