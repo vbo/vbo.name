@@ -237,9 +237,39 @@
     font-size: 14px; font-weight: 600; white-space: nowrap;
   }
   .pause:active { background: #243049; }
-  .surrender { color: #ff9a9a; border-color: #5a2a2a; }
-  .surrender:active { background: #3a1f24; }
   body.paused #board { opacity: .6; }
+
+  /* Pause menu (opening it pauses; Resume / tap-outside closes it) */
+  #menu {
+    position: fixed; inset: 0; z-index: 28; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(6,9,15,.82); padding: 24px;
+  }
+  #menu.open { display: flex; }
+  .menu-card {
+    width: 100%; max-width: 340px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 16px; padding: 20px;
+    text-align: center;
+  }
+  .menu-title { font-size: 26px; font-weight: 800; margin-bottom: 18px; }
+  .menu-label { color: var(--dim); font-size: 12px; text-align: left; margin-bottom: 6px; }
+  .speed-seg { display: flex; gap: 6px; margin-bottom: 18px; }
+  .speed-seg button {
+    flex: 1; min-height: 46px; border-radius: 10px; font-size: 13px; font-weight: 600;
+    background: var(--panel2); color: var(--dim); border: 1px solid var(--line);
+  }
+  .speed-seg button.sel { background: var(--accent); color: #06101f; border-color: transparent; }
+  .menu-primary {
+    display: block; width: 100%; min-height: 54px; border-radius: 14px;
+    font-size: 17px; font-weight: 700; background: var(--accent); color: #06101f; border: none;
+  }
+  .menu-primary:active { filter: brightness(.9); }
+  .menu-danger {
+    display: block; width: 100%; min-height: 48px; margin-top: 10px; border-radius: 12px;
+    font-size: 14px; font-weight: 600; background: var(--panel2);
+    color: #ff9a9a; border: 1px solid #5a2a2a;
+  }
+  .menu-danger:active { background: #3a1f24; }
 </style>
 </head>
 <body>
@@ -250,8 +280,7 @@
     <div class="stat supply" id="s-supwrap"><b id="s-sup">4 / 10</b><span>Supply</span></div>
     <div class="stat"><b id="s-time">0:00</b><span>Time</span></div>
     <div style="flex:1"></div>
-    <button id="pause-btn" class="pause">⏸ Pause</button>
-    <button id="surrender-btn" class="pause surrender">🏳️ Surrender</button>
+    <button id="menu-btn" class="pause">☰ Menu</button>
     <div id="supply-warn">⚠️ Additional supply depots required</div>
   </div>
 
@@ -268,6 +297,20 @@
   <div class="big" id="end-big">Victory</div>
   <p id="end-msg"></p>
   <button id="end-again">Play again</button>
+</div>
+
+<div id="menu">
+  <div class="menu-card">
+    <div class="menu-title" id="menu-title">StarText</div>
+    <div class="menu-label">Game speed</div>
+    <div class="speed-seg">
+      <button data-speed="slow">🐢 Slow</button>
+      <button data-speed="normal">▶ Normal</button>
+      <button data-speed="fast">⚡ Fast</button>
+    </div>
+    <button id="menu-resume" class="menu-primary">▶ Start game</button>
+    <button id="menu-surrender" class="menu-danger">🏳️ Surrender</button>
+  </div>
 </div>
 
 <script>
@@ -304,7 +347,16 @@ function rng() {
 }
 
 /* ----------------------------- Constants ----------------------------- */
-const TICK_MS = 1000;       // simulation runs at 1 tick / second
+const TICK_MS = 1000;       // baseline: 1 tick / second (the "normal" speed)
+// Player-selectable game speed. Early game is sparse so you may want it fast;
+// late game gets busy, so slow gives time to issue orders. Lower ms = faster.
+const SPEEDS = {
+  slow:   { ms: 2000, label: "🐢 Slow" },
+  normal: { ms: 1000, label: "▶ Normal" },
+  fast:   { ms: 400,  label: "⚡ Fast" },
+};
+const DEFAULT_SPEED = "normal";
+const tickMs = () => (SPEEDS[state.speed] || SPEEDS[DEFAULT_SPEED]).ms;
 const EDGE_TIME = 14;       // seconds to traverse one map edge (multi-hop trips cost more)
 const MAP_MIN_NODES = 5, MAP_MAX_NODES = 6; // random map size range
 const MINE_RATE = 0.7;      // minerals per mining SCV per second (below saturation)
@@ -531,6 +583,7 @@ function resetState(seed) {
     time: 0,
     over: null,                 // null | "win" | "loss"
     paused: false,
+    speed: DEFAULT_SPEED,       // "slow" | "normal" | "fast" — drives the tick interval
     map,
     field, gasField,
     visited,
@@ -561,7 +614,7 @@ function init() {
   resetState();
   closeSheet();
   document.getElementById("end").className = "";
-  setPaused(true);
+  openMenu(); // new game starts paused with the menu up — player taps Start
   render();
 }
 
@@ -994,6 +1047,8 @@ function endGame(result, reason) {
   if (typeof document === "undefined") return; // headless test: state only, no DOM
   stopLoop();
   closeSheet();
+  const menuEl = document.getElementById("menu");
+  if (menuEl) menuEl.className = ""; // dismiss the pause menu if the game ended from it
   const el = document.getElementById("end");
   el.className = "open " + result;
   document.getElementById("end-big").textContent = result === "win" ? "Victory!" : "Defeat";
@@ -2428,15 +2483,43 @@ function refreshSheet() { render(); if (ui.sheet) renderSheet(); }
 function bind(id, fn) { const el = $(id); if (el) el.onclick = fn; }
 
 /* ------------------------------- Loop -------------------------------- */
-function startLoop() { clearInterval(timer); timer = setInterval(() => { if (!state.paused) tick(); }, TICK_MS); }
+function startLoop() { clearInterval(timer); timer = setInterval(() => { if (!state.paused) tick(); }, tickMs()); }
 function stopLoop() { clearInterval(timer); }
-function setPaused(p) {
-  state.paused = p;
-  const btn = $("pause-btn");
-  if (btn) btn.textContent = p ? (state.time === 0 ? "▶ New game" : "▶ Resume") : "⏸ Pause";
-  if (p) render(); // reflect paused label immediately
+
+// The game has no separate pause button: the menu IS the pause. Opening the menu
+// freezes the sim; closing it (Resume) lets it run. It opens by default on a new
+// game, so the player starts the match deliberately.
+function openMenu() {
+  if (state.over) return; // end screen owns the post-game flow
+  state.paused = true;
+  const el = $("menu");
+  if (el) el.className = "open";
+  renderMenu();
+  render(); // dim the board immediately
 }
-function togglePause() { setPaused(!state.paused); }
+function closeMenu() {
+  state.paused = false;
+  const el = $("menu");
+  if (el) el.className = "";
+  render();
+}
+function setSpeed(s) {
+  if (!SPEEDS[s]) return;
+  state.speed = s;
+  startLoop();   // re-arm the interval at the new cadence
+  renderMenu();
+  persist();
+}
+// Paint the menu overlay's dynamic bits (resume label, active speed, surrender).
+function renderMenu() {
+  if (typeof document === "undefined") return;
+  const fresh = state.time === 0;
+  const title = $("menu-title"); if (title) title.textContent = fresh ? "StarText" : "Paused";
+  const resume = $("menu-resume"); if (resume) resume.textContent = fresh ? "▶ Start game" : "▶ Resume";
+  const surr = $("menu-surrender"); if (surr) surr.style.display = fresh ? "none" : "block";
+  document.querySelectorAll("#menu .speed-seg button").forEach(b =>
+    b.classList.toggle("sel", b.dataset.speed === state.speed));
+}
 
 /* ---------------------------- Persistence ---------------------------- */
 // The whole simulation is plain JSON-able data (map = arrays, sheet.ref holds
@@ -2489,8 +2572,9 @@ function restore() {
   if (!deserializeState(raw)) return false;
   closeSheet();
   document.getElementById("end").className = "";
+  if (!SPEEDS[state.speed]) state.speed = DEFAULT_SPEED; // tolerate old/garbled saves
   if (state.over) { render(); endGame(state.over, state.overReason); }
-  else { setPaused(true); render(); }
+  else { openMenu(); render(); } // resume paused with the menu up
   return true;
 }
 
@@ -3126,6 +3210,21 @@ function runTests() {
       if (!state.paused) tick();
       eq(state.time, t0, "no tick while paused");
     },
+    "game speed: tickMs maps state.speed and setSpeed validates"() {
+      resetState(1);
+      eq(state.speed, DEFAULT_SPEED, "new game defaults to normal speed");
+      state.speed = "fast"; eq(tickMs(), SPEEDS.fast.ms, "tickMs maps fast");
+      state.speed = "slow"; eq(tickMs(), SPEEDS.slow.ms, "tickMs maps slow");
+      state.speed = "bogus"; eq(tickMs(), SPEEDS[DEFAULT_SPEED].ms, "unknown speed → default cadence");
+      state.speed = "normal";
+      setSpeed("nonsense"); eq(state.speed, "normal", "setSpeed ignores an unknown speed");
+      setSpeed("fast");     eq(state.speed, "fast", "setSpeed applies a valid speed");
+      stopLoop(); // clear the interval setSpeed armed
+      // Speed survives a save/load round-trip.
+      const blob = serializeState();
+      resetState(1); eq(state.speed, DEFAULT_SPEED, "reset speed back to default");
+      deserializeState(blob); eq(state.speed, "fast", "restored game keeps its chosen speed");
+    },
     "under-attack alert fires per node (incl. forward positions) and links the node"() {
       resetState(1);
       // Player marine + enemy marine at a non-home node we hold.
@@ -3535,8 +3634,13 @@ if (HEADLESS) {
 } else {
   $("sheet-backdrop").onclick = closeSheet;
   $("end-again").onclick = init;
-  $("pause-btn").onclick = togglePause;
-  $("surrender-btn").onclick = surrender;
+  $("menu-btn").onclick = openMenu;
+  $("menu-resume").onclick = closeMenu;
+  $("menu-surrender").onclick = surrender;
+  // Tap the dimmed area outside the card to resume.
+  $("menu").onclick = e => { if (e.target.id === "menu") closeMenu(); };
+  document.querySelectorAll("#menu .speed-seg button").forEach(b =>
+    b.onclick = () => setSpeed(b.dataset.speed));
   if (!restore()) init(); // resume a saved game across refresh, else start fresh
   startLoop();
 }
