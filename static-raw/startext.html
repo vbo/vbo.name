@@ -905,9 +905,9 @@ function endGame(result) {
 // All actions are validated again here so the UI can never force an illegal move.
 // Queue an SCV at the CC. Minerals + supply are reserved up front, so a queued
 // SCV is guaranteed to build. maxQueue lets the bot train only when truly idle.
-function queueSCV(owner, maxQueue = C.cc.queueMax) {
+function queueSCV(owner, node, maxQueue = C.cc.queueMax) {
   const cc = state.buildings
-    .filter(b => b.owner === owner && b.type === "cc" && !b.construct)
+    .filter(b => b.owner === owner && b.type === "cc" && !b.construct && b.node === node)
     .sort((a, b) => ((a.train ? 1 : 0) + a.queued) - ((b.train ? 1 : 0) + b.queued))[0];
   if (!cc) return;
   const inQueue = (cc.train ? 1 : 0) + cc.queued; // active + waiting
@@ -1193,7 +1193,7 @@ function botEval() {
   const scvCap = skilled ? 18 : 12;
   if (min() >= C.cc.trainCost && supplyUsed(BOT) < supplyCap(BOT) &&
       (botSCVs < scvCap || !botRax)) {
-    queueSCV(BOT, 1);
+    queueSCV(BOT, home, 1);
   }
 
   // Tech: expand barracks over time so marine output scales with the player's.
@@ -1804,7 +1804,7 @@ function renderSheet() {
         Rally: ${rallyMining ? "⛏️ Mine" : "🛑 Idle"} <span class="cost">— new SCVs ${rallyMining ? "go mining" : "stay idle"}</span>
       </button>
       <button class="act-close" id="a-close">Close</button>`;
-    bind("a-train", () => { queueSCV(HUMAN); refreshSheet(); });
+    bind("a-train", () => { queueSCV(HUMAN, cc.node); refreshSheet(); });
     bind("a-rally", () => { cc.rally = rallyMining ? "idle" : "mining"; refreshSheet(); });
 
   } else if (sel.kind === "barracks" || sel.kind === "barracks-group") {
@@ -2094,7 +2094,7 @@ function runTests() {
     "SCV training costs, takes 12s, +1 supply"() {
       resetState(1);
       cheat(HUMAN, 50);
-      queueSCV(HUMAN);
+      queueSCV(HUMAN, HOME);
       eq(state.minerals.human, 0, "minerals spent on SCV");
       run(C.cc.trainTime);
       eq(unitsOf(HUMAN, HOME, null, "scv").length, 5, "SCV produced after 12s");
@@ -2104,12 +2104,12 @@ function runTests() {
       cheat(HUMAN, 9999);
       const cc1 = cc(HUMAN);
       eq(cc1.rally, "mining", "rally defaults to mining");
-      queueSCV(HUMAN);
+      queueSCV(HUMAN, HOME);
       run(C.cc.trainTime);
       ok(unitsOf(HUMAN, HOME, "mining", "scv").length >= 1, "newborn auto-mines on rally=mining");
       cc1.rally = "idle";
       const idleBefore = unitsOf(HUMAN, HOME, "idle", "scv").length;
-      queueSCV(HUMAN);
+      queueSCV(HUMAN, HOME);
       run(C.cc.trainTime);
       eq(unitsOf(HUMAN, HOME, "idle", "scv").length, idleBefore + 1, "newborn stays idle on rally=idle");
     },
@@ -2117,7 +2117,7 @@ function runTests() {
       resetState(1);
       cheat(HUMAN, 9999);
       state.field[HOME] = 0; // dry
-      queueSCV(HUMAN);
+      queueSCV(HUMAN, HOME);
       run(C.cc.trainTime);
       ok(unitsOf(HUMAN, HOME, "mining", "scv").length === 0, "no mining when field empty");
     },
@@ -2127,7 +2127,7 @@ function runTests() {
       // raise cap so supply isn't the limiter
       state.buildings.push({ id: idSeq++, owner: HUMAN, node: HOME, type: "depot",
         hp: 400, maxHp: 400, construct: null, train: null, queued: 0 });
-      for (let i = 0; i < 8; i++) queueSCV(HUMAN);
+      for (let i = 0; i < 8; i++) queueSCV(HUMAN, HOME);
       eq((cc(HUMAN).train ? 1 : 0) + cc(HUMAN).queued, 5, "queue capped at 5");
     },
     "supply hard-caps at 200"() {
@@ -2140,7 +2140,7 @@ function runTests() {
       resetState(1);
       cheat(HUMAN, 9999);
       // fill supply: 4 SCVs + queue to 10
-      for (let i = 0; i < 20; i++) queueSCV(HUMAN);
+      for (let i = 0; i < 20; i++) queueSCV(HUMAN, HOME);
       ok(supplyUsed(HUMAN) <= supplyCap(HUMAN), "never overshoot supply cap");
     },
     "mining SCV can be pulled to build (regression)"() {
@@ -2742,7 +2742,7 @@ function runTests() {
       cc1.train = { progress: 0, total: C.cc.trainTime };
       for (let i = 0; i < C.cc.queueMax - 1; i++) cc1.queued++;
       cheat(HUMAN, 200);
-      queueSCV(HUMAN);
+      queueSCV(HUMAN, HOME);
       eq(cc2.train && cc2.train.progress >= 0, true, "queueSCV routes to the idle CC");
       eq(cc1.queued, C.cc.queueMax - 1, "busy CC queue unchanged");
     },
