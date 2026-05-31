@@ -1787,7 +1787,7 @@ function renderSheet() {
     bind("m-mine",  () => setTab("mine"));
     bind("a-back",  () => setTab(null));
     // Root-level flat shortcuts when a submenu would have only one option.
-    if (!tab) [...mineActs, ...buildActs].forEach(a => bind(a.id, a.fn));
+    if (tab === "root") [...mineActs, ...buildActs].forEach(a => bind(a.id, a.fn));
 
     if (tab === "move") {
       const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
