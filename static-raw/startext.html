@@ -18,6 +18,7 @@
     --bad: #f87171;
     --warn: #fbbf24;
     --enemy: #ff7a7a;
+  --gas: #4ade80;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -41,6 +42,7 @@
   .stat b { font-size: 18px; }
   .stat span { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
   .stat.minerals b { color: var(--mineral); }
+  .stat.gas b { color: var(--gas); }
   .stat.supply.blocked b { color: var(--warn); }
 
   h1 { font-size: 15px; margin: 0; letter-spacing: .04em; }
@@ -190,6 +192,7 @@
 <div id="app">
   <div id="statusbar">
     <div class="stat minerals"><b id="s-min">50</b><span>Minerals</span></div>
+    <div class="stat gas"><b id="s-gas">0</b><span>Gas</span></div>
     <div class="stat supply" id="s-supwrap"><b id="s-sup">4 / 10</b><span>Supply</span></div>
     <div class="stat"><b id="s-time">0:00</b><span>Time</span></div>
     <div class="stat" style="flex:1; min-width:100px;">
@@ -243,21 +246,30 @@ function rng() {
 /* ----------------------------- Constants ----------------------------- */
 const TICK_MS = 1000;       // simulation runs at 1 tick / second
 const TRAVEL_TIME = 20;     // seconds to move between the two nodes
-const MINE_RATE = 0.7;      // minerals per mining SCV per second
+const MINE_RATE = 0.7;      // minerals per mining SCV per second (below saturation)
 const FIELD_TOTAL = 12000;  // 8 patches × 1500 — standard BW main base
+const MINERAL_PATCHES = 8;  // patches per base; 2 SCVs/patch = full efficiency (16 total)
+const PATCH_SIZE = FIELD_TOTAL / MINERAL_PATCHES; // 1500 minerals per patch
 const SUPPLY_MAX = 200;     // BW hard cap
+
+// Vespene gas: 1 geyser per base, optimal at GAS_OPT SCVs (100% utilisation).
+// Beyond that the extra SCVs add nothing (hard cap, like BW 3-worker optimum).
+const GAS_TOTAL = 5000;     // gas units per geyser
+const GAS_RATE  = 0.55;     // gas per collecting SCV per second at full efficiency
+const GAS_OPT   = 4;        // SCVs for 100% gas utilisation (capped — extras waste time)
 
 // `range` drives the melee/ranged model: when two units fight, a unit must
 // "close the distance" before it can strike, waiting max(0, enemyRange - ownRange)
 // ticks. So a ranged unit (marine) lands free hits while a melee unit (SCV, range 0)
 // advances. Buildings have no range entry → treated as 0.
 const C = {
-  scv:     { hp: 60,  dmg: 5, atk: 1.5, cost: 50, build: 12, range: 0 }, // melee
+  scv:      { hp: 60,  dmg: 5, atk: 1.5, cost: 50, build: 12, range: 0 }, // melee
   // Marine: BW stats — 40 HP, 6 dmg, 15-frame cooldown (~0.9 s at our tick rate)
-  marine:  { hp: 40,  dmg: 6, atk: 0.9, cost: 50, build: 24, queueMax: 5, range: 3 }, // ranged
-  cc:      { hp: 1500, supply: 10, trainCost: 50, trainTime: 12, queueMax: 5 },
-  depot:   { hp: 400,  cost: 100, build: 25, supply: 8 },
-  barracks:{ hp: 1000, cost: 150, build: 46 },
+  marine:   { hp: 40,  dmg: 6, atk: 0.9, cost: 50, build: 24, queueMax: 5, range: 3 }, // ranged
+  cc:       { hp: 1500, supply: 10, trainCost: 50, trainTime: 12, queueMax: 5 },
+  depot:    { hp: 400,  cost: 100, build: 25, supply: 8 },
+  barracks: { hp: 1000, cost: 150, build: 46 },
+  refinery: { hp: 500,  cost: 75,  build: 20 }, // builds on the geyser; no train queue
 };
 
 const HOME = 0, AWAY = 1;           // node indices from the human's perspective
@@ -276,8 +288,10 @@ function resetState(seed) {
     time: 0,
     over: null,                 // null | "win" | "loss"
     paused: false,
-    field: [FIELD_TOTAL, FIELD_TOTAL],
+    field:    [FIELD_TOTAL, FIELD_TOTAL],
+    gasField: [GAS_TOTAL,   GAS_TOTAL],  // vespene gas remaining per node
     minerals: { human: 50, bot: 50 },
+    gas:      { human: 0,  bot: 0  },    // gas collected (future: spent on advanced units)
     units: [],
     buildings: [],
     notes: [],                  // transient on-screen notifications
@@ -413,18 +427,55 @@ function fogStep() {
     state.seenUnits[node] = {
       time: state.time,
       marines: foes.filter(u => u.type === "marine").length,
-      scvs: foes.filter(u => u.type === "scv").length,
+      scvs:    foes.filter(u => u.type === "scv" && u.task !== "gas").length,
+      gasScvs: foes.filter(u => u.type === "scv" && u.task === "gas").length,
     };
   }
 }
 
+// Active patch count shrinks as the field depletes — patches go dry one by one.
+// Using ceil so the last partial patch still counts (it still has minerals to mine).
+const activePatchCount = field => Math.max(1, Math.ceil(field / PATCH_SIZE));
+
+// Mineral yield for a group of n miners at one base, given current field amount.
+// As patches deplete, the optimal miner count shrinks with them so sat% stays meaningful.
+// 2 SCVs/patch = full efficiency; a 3rd per patch adds ~33% (BW data); beyond 3/patch: zero.
+function mineralYield(n, field) {
+  const patches = activePatchCount(field);
+  const opt  = patches * 2; // full-efficiency threshold (dynamic)
+  const semi = patches;     // extra SCVs at 33% efficiency
+  return Math.min(n, opt) * MINE_RATE
+       + Math.max(0, Math.min(n - opt, semi)) * MINE_RATE * 0.33;
+}
+
+// Sat% = how close we are to the optimal miner count for current field conditions.
+const mineralSatPct = (n, field) =>
+  Math.min(100, Math.round(n / (activePatchCount(field) * 2) * 100));
+
 function mineStep() {
-  for (const u of state.units) {
-    if (u.task !== "mining") continue;
-    if (state.field[u.node] <= 0) { u.task = "idle"; continue; }
-    const got = Math.min(MINE_RATE, state.field[u.node]);
-    state.field[u.node] -= got;
-    state.minerals[u.owner] += got;
+  // Minerals: process per (owner, node) so group utilisation applies.
+  for (const owner of [HUMAN, BOT]) {
+    for (const node of [HOME, AWAY]) {
+      const miners = state.units.filter(u =>
+        u.owner === owner && u.node === node && u.task === "mining");
+      if (!miners.length) continue;
+      if (state.field[node] <= 0) { miners.forEach(u => u.task = "idle"); continue; }
+      const got = Math.min(mineralYield(miners.length, state.field[node]), state.field[node]);
+      state.field[node] -= got;
+      state.minerals[owner] += got;
+    }
+  }
+
+  // Gas collection from completed refineries.
+  for (const ref of state.buildings.filter(b => b.type === "refinery" && !b.construct)) {
+    const gasScvs = state.units.filter(u =>
+      u.owner === ref.owner && u.node === ref.node && u.task === "gas");
+    if (!gasScvs.length) continue;
+    if (state.gasField[ref.node] <= 0) { gasScvs.forEach(u => u.task = "idle"); continue; }
+    // Cap at GAS_OPT — beyond that SCVs are wasted (hard cap like BW 3-worker optimum).
+    const got = Math.min(Math.min(gasScvs.length, GAS_OPT) * GAS_RATE, state.gasField[ref.node]);
+    state.gasField[ref.node] -= got;
+    state.gas[ref.owner] += got;
   }
 }
 
@@ -519,6 +570,11 @@ function cleanupDead() {
     if (b.hp > 0) return true;
     const scv = state.units.find(u => u.buildingId === b.id);
     if (scv) { scv.task = "idle"; scv.buildingId = null; }
+    // When a refinery is destroyed its gas collectors are freed.
+    if (b.type === "refinery") {
+      state.units.filter(u => u.owner === b.owner && u.node === b.node && u.task === "gas")
+        .forEach(u => u.task = "idle");
+    }
     if (b.owner === HUMAN && b.type !== "cc") // CC loss is the defeat screen
       notify(`💥 Your ${BUILDING_LABEL[b.type]} was destroyed!`, "loss", 6);
     return false;
@@ -577,15 +633,21 @@ function queueSCV(owner, maxQueue = C.cc.queueMax) {
 }
 
 function freeIdle(owner, node) {
-  // Get an idle SCV, pulling one off mining if necessary.
+  // Get an idle SCV, pulling one off mining or gas collection if necessary.
   let scv = unitsOf(owner, node, "idle")[0];
   if (!scv) { scv = unitsOf(owner, node, "mining")[0]; if (scv) scv.task = "idle"; }
+  if (!scv) { scv = unitsOf(owner, node, "gas")[0];    if (scv) scv.task = "idle"; }
   return scv;
 }
 
 function startBuilding(owner, node, type) {
-  const cfg = type === "depot" ? C.depot : C.barracks;
-  if (state.minerals[owner] < cfg.cost) return false;
+  const cfg = C[type];
+  if (!cfg || state.minerals[owner] < cfg.cost) return false;
+  // Refinery: max 1 per node (1 geyser) and geyser must have gas.
+  if (type === "refinery") {
+    if (state.gasField[node] <= 0) return false;
+    if (state.buildings.some(b => b.owner === owner && b.node === node && b.type === "refinery")) return false;
+  }
   const scv = freeIdle(owner, node);
   if (!scv) return false;
   state.minerals[owner] -= cfg.cost;
@@ -761,7 +823,7 @@ function botEval() {
 /* ------------------------------ Rendering ---------------------------- */
 const $ = id => document.getElementById(id);
 const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks" };
+const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks", refinery: "Refinery" };
 
 function svgIcon(kind) {
   if (kind === "cc")
@@ -774,6 +836,10 @@ function svgIcon(kind) {
     return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#ffd27a" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M12 5v3M12 16v3M5 12h3M16 12h3"/></svg>`;
   if (kind === "marine")
     return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#ff9a9a" stroke-width="2"><circle cx="12" cy="8" r="3"/><path d="M6 21v-1a6 6 0 0112 0v1"/><path d="M17 13l4 1.5-4 1.5"/></svg>`;
+  if (kind === "refinery")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><rect x="5" y="13" width="14" height="8" rx="1"/><path d="M8 13V9l4-3 4 3v4M10 21v-3h4v3"/><path d="M9 6V4M15 6V4"/></svg>`;
+  if (kind === "gas")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="#4ade80" stroke="#0a2211" stroke-width="0.5"><path d="M12 3c0 0-4 5.5-4 10a4 4 0 008 0c0-2.5-1-4-2-5-.1 2-1.5 3-2 3-.5 0-1-1-1-2.5 1.5-1 2.5-3 1-5.5z"/></svg>`;
   if (kind === "mineral")
     return `<svg class="icon" viewBox="0 0 24 24" fill="#41d6ff" stroke="#0a1a22" stroke-width="1"><path d="M12 3l4 6-4 12-4-12z"/></svg>`;
   return "";
@@ -792,6 +858,7 @@ function render() {
   if (typeof document === "undefined") return; // headless test: no DOM to paint
   // Status bar (human numbers).
   $("s-min").textContent = Math.floor(state.minerals[HUMAN]);
+  $("s-gas").textContent = Math.floor(state.gas[HUMAN]);
   const used = supplyUsed(HUMAN), cap = supplyCap(HUMAN);
   $("s-sup").textContent = `${used} / ${cap}`;
   $("s-supwrap").className = "stat supply" + (used >= cap ? " blocked" : "");
@@ -815,12 +882,17 @@ function renderNode(node) {
   el.className = "node " + (node === HOME ? "home" : "away");
   const present = state.units.some(u => u.owner === HUMAN && u.node === node) ||
                   state.buildings.some(b => b.owner === HUMAN && b.node === node);
-  // Mineral field is the enemy's economy — only readable while we have vision there.
-  // (Our own base is always visible.) Otherwise it stays hidden behind the fog.
-  const fieldStr = present ? `💎 ${Math.ceil(state.field[node])} left` : "💎 ?";
+  // Resource fields — readable only when we have vision (fog hides enemy economy).
+  const hasRefinery = state.buildings.some(b => b.node === node && b.type === "refinery" && !b.construct);
+  const fieldStr = present
+    ? `💎 ${Math.ceil(state.field[node])} left`
+    : "💎 ?";
+  const gasStr = present
+    ? (hasRefinery ? `· ⛽ ${Math.ceil(state.gasField[node])} left` : `· ⛽ ${Math.ceil(state.gasField[node])} available`)
+    : (state.gasField[node] > 0 ? "· ⛽ ?" : "");
   el.innerHTML = `<div class="node-head">
       <h1>${NODE_NAMES[node]}</h1>
-      <span class="field">${fieldStr}</span>
+      <span class="field" style="color:var(--dim)">${fieldStr} ${gasStr}</span>
     </div>`;
 
   // --- Your forces (always visible) ---
@@ -865,11 +937,12 @@ function renderNode(node) {
 // stale count would be misleading — unlike buildings, which stay put).
 function appendSeenUnits(container, snap) {
   if (!snap || state.time - snap.time > SEEN_UNITS_TTL) return false;
-  if (!snap.marines && !snap.scvs) return false;
+  if (!snap.marines && !snap.scvs && !snap.gasScvs) return false;
   const age = state.time - snap.time;
+  const totalScvs = (snap.scvs || 0) + (snap.gasScvs || 0);
   const rows = [
     snap.marines && ["marine", `Marines — ~${snap.marines}`],
-    snap.scvs && ["scv", `SCVs — ~${snap.scvs}`],
+    totalScvs && ["scv", `SCVs — ~${totalScvs}`],
   ].filter(Boolean);
   for (const [icon, name] of rows) {
     const row = document.createElement("div");
@@ -906,8 +979,8 @@ function appendSeenBuildings(container, snap) {
     mkRow("cc", "Command Center", meta, b.hp, b.maxHp);
   }
 
-  // Supply Depots and Barracks — one summary row each.
-  for (const [type, label] of [["depot", "Supply Depot"], ["barracks", "Barracks"]]) {
+  // Supply Depots, Barracks, and Refineries — one summary row each.
+  for (const [type, label] of [["depot", "Supply Depot"], ["barracks", "Barracks"], ["refinery", "Refinery"]]) {
     const group = snap.filter(b => b.type === type);
     if (!group.length) continue;
     const underC = group.filter(b => b.construct).length;
@@ -1019,17 +1092,51 @@ function appendForces(container, owner, node, interactive) {
     container.appendChild(row);
   }
 
-  // SCVs — grouped.
+  // Refinery — one row per refinery (normally just one per base).
+  for (const b of buildings.filter(b => b.type === "refinery")) {
+    any = true;
+    let meta;
+    if (b.construct) {
+      meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%`;
+      if (interactive) meta += progBar(b.construct.progress, b.construct.total);
+    } else {
+      const gasScvs = state.units.filter(u => u.owner === owner && u.node === node && u.task === "gas").length;
+      const satPct = Math.round(gasScvs / GAS_OPT * 100);
+      meta = interactive
+        ? `${gasScvs}/${GAS_OPT} gas SCVs · ${satPct}% util · ⛽ ${Math.ceil(state.gasField[node])} left`
+        : `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
+    }
+    const row = document.createElement("div");
+    row.className = "row static";
+    row.innerHTML = `${svgIcon("refinery")}<div class="body">
+        <div class="name">Refinery</div>
+        <div class="meta">${meta}</div>
+        ${b.construct ? "" : hpBar(b.hp, b.maxHp)}
+      </div>`;
+    container.appendChild(row);
+  }
+
+  // SCVs — grouped; show mining/gas utilisation to help the player saturate.
   const scvs = unitsOf(owner, node, null, "scv");
   if (scvs.length) {
     any = true;
+    const miningN = scvs.filter(u => u.task === "mining").length;
+    const gasN    = scvs.filter(u => u.task === "gas").length;
+    const idleN   = scvs.filter(u => u.task === "idle").length;
+    const buildN  = scvs.filter(u => u.task === "building").length;
     const parts = [];
-    const m = scvs.filter(u => u.task === "mining").length;
-    const i = scvs.filter(u => u.task === "idle").length;
-    const bl = scvs.filter(u => u.task === "building").length;
-    if (m) parts.push(`${m} mining`);
-    if (i) parts.push(`${i} idle`);
-    if (bl) parts.push(`${bl} building`);
+    if (miningN) {
+      // Show sat% only in interactive (own base) view where it's actionable.
+      if (interactive) {
+        const satPct = mineralSatPct(miningN, state.field[node]);
+        parts.push(`${miningN} mining (${satPct}% sat)`);
+      } else {
+        parts.push(`${miningN} mining`);
+      }
+    }
+    if (gasN)   parts.push(`${gasN} gas`);
+    if (idleN)  parts.push(`${idleN} idle`);
+    if (buildN) parts.push(`${buildN} building`);
     const row = document.createElement(interactive ? "button" : "div");
     row.className = "row" + (interactive ? "" : " static");
     row.innerHTML = `${svgIcon("scv")}<div class="body">
@@ -1185,18 +1292,25 @@ function renderSheet() {
     // SCV group sheet.
     const node = sel.node;
     const all = controllable(HUMAN, node);
-    const idleN = unitsOf(HUMAN, node, "idle", "scv").length;
+    const idleN   = unitsOf(HUMAN, node, "idle",   "scv").length;
     const miningN = unitsOf(HUMAN, node, "mining", "scv").length;
+    const gasN    = unitsOf(HUMAN, node, "gas",    "scv").length;
     const max = Math.max(1, all.length);
     sel.n = Math.min(Math.max(1, sel.n || 1), max);
     const n = sel.n;
     const other = node === HOME ? AWAY : HOME;
-    const depotOK = all.length >= 1 && mineNow >= C.depot.cost;
-    const raxOK = all.length >= 1 && mineNow >= C.barracks.cost;
+    const depotOK     = all.length >= 1 && mineNow >= C.depot.cost;
+    const raxOK       = all.length >= 1 && mineNow >= C.barracks.cost;
+    const hasRef      = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "refinery" && !b.construct);
+    const refBuilding = state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "refinery");
+    const gasAvail    = state.gasField[node] > 0;
+    const refOK       = all.length >= 1 && mineNow >= C.refinery.cost && !refBuilding && gasAvail;
+    const minSatPct   = mineralSatPct(miningN, state.field[node]);
+    const gasSatPct   = Math.round(gasN / GAS_OPT * 100);
 
     sheet.innerHTML = `
       <h2>SCVs at ${NODE_NAMES[node]}</h2>
-      <div class="sheet-sub">${all.length} available · ${miningN} mining · ${idleN} idle</div>
+      <div class="sheet-sub">${all.length} available · ${miningN} mining (${minSatPct}% sat)${gasN ? ` · ${gasN} gas (${gasSatPct}% sat)` : ""} · ${idleN} idle</div>
 
       <button class="act" id="a-send-all" ${all.length ? "" : "disabled"}>
         Send ALL ${all.length} → ${NODE_NAMES[other]}
@@ -1207,6 +1321,13 @@ function renderSheet() {
       <button class="act secondary" id="a-idle-all" ${miningN ? "" : "disabled"}>
         Set ALL ${miningN} mining → idle
       </button>
+      ${hasRef ? `
+      <button class="act secondary" id="a-gas-add" ${idleN + miningN > 0 && gasN < GAS_OPT ? "" : "disabled"}>
+        ⛽ Assign 1 SCV → gas collection <span class="cost">— ${gasN}/${GAS_OPT} optimal</span>
+      </button>
+      <button class="act secondary" id="a-gas-rem" ${gasN ? "" : "disabled"}>
+        ⛽ Pull 1 gas SCV → mining <span class="cost">— frees a gas SCV</span>
+      </button>` : ""}
 
       <div class="stepper">
         <button id="n-minus">−</button>
@@ -1225,6 +1346,9 @@ function renderSheet() {
       <button class="act secondary" id="a-rax" ${raxOK ? "" : "disabled"}>
         Build Barracks <span class="cost">— ${C.barracks.cost} 💎 · ${C.barracks.build}s</span>
       </button>
+      <button class="act secondary" id="a-ref" ${refOK ? "" : "disabled"}>
+        Build Refinery <span class="cost">— ${C.refinery.cost} 💎 · ${C.refinery.build}s · unlock gas</span>
+      </button>
       <button class="act-close" id="a-close">Close</button>`;
 
     const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
@@ -1235,9 +1359,21 @@ function renderSheet() {
     bind("a-send-all", () => { sendUnits(HUMAN, node, all.length, "scv"); closeSheet(); render(); });
     bind("a-mine-all", () => { setTask(HUMAN, node, idleN, "idle", "mining", "scv"); refreshSheet(); });
     bind("a-idle-all", () => { setTask(HUMAN, node, miningN, "mining", "idle", "scv"); refreshSheet(); });
+    if (hasRef) {
+      bind("a-gas-add", () => {
+        // Move one SCV (prefer idle, then mining) to gas collection.
+        const scv = unitsOf(HUMAN, node, "idle", "scv")[0] || unitsOf(HUMAN, node, "mining", "scv")[0];
+        if (scv) { scv.task = "gas"; refreshSheet(); }
+      });
+      bind("a-gas-rem", () => {
+        const scv = unitsOf(HUMAN, node, "gas", "scv")[0];
+        if (scv) { scv.task = "mining"; refreshSheet(); }
+      });
+    }
     bind("a-send", () => { sendUnits(HUMAN, node, sel.n, "scv"); closeSheet(); render(); });
     bind("a-depot", () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); });
-    bind("a-rax", () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
+    bind("a-rax",   () => { startBuilding(HUMAN, node, "barracks"); refreshSheet(); });
+    bind("a-ref",   () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); });
   }
   bind("a-close", closeSheet);
 }
@@ -1442,20 +1578,20 @@ function runTests() {
     },
     "melee/ranged: SCV fights back once it has closed"() {
       resetState(1);
-      state.buildings = [];
+      state.buildings = state.buildings.filter(b => b.type === "cc"); // keep CCs so checkEnd doesn't fire
+      state.units = []; // clear auto-spawned units; newMarine/newSCV will push below
       const m = newMarine(HUMAN, AWAY); m.task = "idle";
       const s = newSCV(BOT, AWAY);      s.task = "idle";
-      state.units = [m, s];
       const mHp0 = m.hp;
       run(C.marine.range + 1); // past the closing window
       ok(m.hp < mHp0, "SCV deals damage after closing the distance");
     },
     "melee/ranged: marine vs marine has no closing delay (symmetric)"() {
       resetState(1);
-      state.buildings = [];
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.units = []; // clear auto-spawned units
       const a = newMarine(HUMAN, AWAY); a.task = "idle";
       const b = newMarine(BOT, AWAY);   b.task = "idle";
-      state.units = [a, b];
       const aHp0 = a.hp, bHp0 = b.hp;
       tick();
       ok(a.hp < aHp0 && b.hp < bHp0, "equal-range units trade from tick 1");
@@ -1600,6 +1736,87 @@ function runTests() {
       // emulate the loop's guard
       if (!state.paused) tick();
       eq(state.time, t0, "no tick while paused");
+    },
+
+    // ── Gas + utilisation ───────────────────────────────────────────────
+    "mineralYield: linear below saturation (< 16 miners) at full field"() {
+      near(mineralYield(1,  FIELD_TOTAL), 0.7,  0.001, "1 miner = MINE_RATE");
+      near(mineralYield(8,  FIELD_TOTAL), 5.6,  0.001, "8 miners = 8 × 0.7");
+      near(mineralYield(16, FIELD_TOTAL), 11.2, 0.001, "16 miners = full sat, 16 × 0.7");
+    },
+    "mineralYield: diminishing returns above saturation at full field"() {
+      const at16 = mineralYield(16, FIELD_TOTAL);
+      const at24 = mineralYield(24, FIELD_TOTAL);
+      ok(at24 > at16, "24 miners gives more than 16");
+      ok(at24 < at16 * 1.5, "but less than 50% more (diminishing)");
+      near(mineralYield(25, FIELD_TOTAL), mineralYield(24, FIELD_TOTAL), 0.001, "no return beyond 24 miners");
+    },
+    "mineralYield: optimal count shrinks as patches deplete"() {
+      // 4 patches left (half-depleted field): optimal = 4 × 2 = 8 miners.
+      const halfField = FIELD_TOTAL / 2;
+      near(mineralYield(8, halfField), 5.6, 0.001, "8 miners = full efficiency on 4 patches");
+      // 9 miners on 4 patches → one over the semi-sat threshold (4 patches × 3 = 12 cap).
+      ok(mineralYield(9, halfField) > mineralYield(8, halfField), "9th miner still adds yield (semi-sat)");
+      near(mineralYield(13, halfField), mineralYield(12, halfField), 0.001, "no return beyond 3/patch (12 for 4 patches)");
+    },
+    "refinery can be built and gas field is present"() {
+      resetState(1);
+      ok(state.gasField[HOME] === GAS_TOTAL, "gas field starts full");
+      ok(state.gas.human === 0, "no gas collected yet");
+    },
+    "gas SCVs collect gas from a completed refinery"() {
+      resetState(1);
+      cheat(HUMAN, 500);
+      startBuilding(HUMAN, HOME, "refinery");
+      // Fast-forward past build time so refinery completes.
+      run(C.refinery.build + 1);
+      const ref = state.buildings.find(b => b.owner === HUMAN && b.type === "refinery" && !b.construct);
+      ok(ref != null, "refinery completed");
+      // Assign 3 SCVs to gas.
+      const gasScvs = unitsOf(HUMAN, HOME, null, "scv").slice(0, 3);
+      gasScvs.forEach(u => u.task = "gas");
+      const gasBefore = state.gas.human;
+      const fieldBefore = state.gasField[HOME];
+      tick();
+      ok(state.gas.human > gasBefore, "gas collected after assigning SCVs");
+      ok(state.gasField[HOME] < fieldBefore, "gas field depleted");
+    },
+    "gas capped at GAS_OPT SCVs — extra SCVs add nothing"() {
+      resetState(1);
+      cheat(HUMAN, 500);
+      startBuilding(HUMAN, HOME, "refinery");
+      run(C.refinery.build + 1);
+      // Collect with exactly GAS_OPT SCVs.
+      const all = unitsOf(HUMAN, HOME, null, "scv");
+      all.slice(0, GAS_OPT).forEach(u => u.task = "gas");
+      tick(); const gasAt4 = state.gas.human;
+      all.forEach(u => u.task = "idle");
+      state.gas.human = 0;
+      // Collect with GAS_OPT+2 SCVs (over-staff).
+      all.slice(0, GAS_OPT + 2).forEach(u => u.task = "gas");
+      tick(); const gasAtMore = state.gas.human;
+      near(gasAt4, gasAtMore, 0.001, "extra SCVs beyond GAS_OPT add no gas");
+    },
+    "can't build a second refinery at the same node"() {
+      resetState(1);
+      cheat(HUMAN, 500);
+      const r1 = startBuilding(HUMAN, HOME, "refinery");
+      const r2 = startBuilding(HUMAN, HOME, "refinery");
+      ok(r1 === true,  "first refinery starts");
+      ok(r2 === false, "second refinery at same node rejected");
+    },
+    "gas SCVs go idle when refinery is destroyed"() {
+      resetState(1);
+      cheat(HUMAN, 500);
+      startBuilding(HUMAN, HOME, "refinery");
+      run(C.refinery.build + 1);
+      unitsOf(HUMAN, HOME, null, "scv").slice(0, 2).forEach(u => u.task = "gas");
+      eq(unitsOf(HUMAN, HOME, "gas", "scv").length, 2, "2 gas SCVs assigned");
+      // Destroy the refinery.
+      const ref = state.buildings.find(b => b.owner === HUMAN && b.type === "refinery");
+      ref.hp = 0;
+      cleanupDead();
+      eq(unitsOf(HUMAN, HOME, "gas", "scv").length, 0, "gas SCVs freed when refinery dies");
     },
   };
 
