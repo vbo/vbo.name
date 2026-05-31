@@ -62,17 +62,17 @@
   .map .edge { stroke: #3a465c; stroke-width: 1.1; }
   .map-legend { font-size: 10px; color: var(--dim); text-align: center; margin-top: 4px; }
   .gnode { cursor: pointer; }
-  .gnode circle { fill: var(--panel2); stroke: var(--line); stroke-width: 1.4; transition: stroke .1s; }
+  .gnode .ncircle { fill: var(--panel2); stroke: var(--line); stroke-width: 1.4; transition: stroke .1s; }
   .gnode .glyph { fill: var(--txt); font-size: 6px; font-weight: 700; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
   .gnode .ncount { fill: var(--accent); font-size: 4.2px; font-weight: 700; text-anchor: middle; pointer-events: none; }
-  .gnode.home circle  { fill: #1d3350; stroke: var(--accent); }
-  .gnode.foe circle   { fill: #4a1f28; stroke: var(--enemy); }
-  .gnode.owned circle { fill: #21304a; stroke: #3a5170; }
-  .gnode.unknown circle { fill: #141a26; stroke: var(--dim); stroke-dasharray: 2.2 2; }
+  .gnode.home .ncircle  { fill: #1d3350; stroke: var(--accent); }
+  .gnode.foe .ncircle   { fill: #4a1f28; stroke: var(--enemy); }
+  .gnode.owned .ncircle { fill: #21304a; stroke: #3a5170; }
+  .gnode.unknown .ncircle { fill: #141a26; stroke: var(--dim); stroke-dasharray: 2.2 2; }
   .gnode.unknown .glyph { fill: var(--dim); }
-  .gnode.threat circle { stroke: var(--bad); stroke-width: 2.4; }
-  .gnode.selected circle { stroke: var(--warn); stroke-width: 2.8; }
-  .gnode:active circle { fill: #2b3a55; }
+  .gnode.threat .ncircle { stroke: var(--bad); stroke-width: 2.4; }
+  .gnode.selected .ncircle { stroke: var(--warn); stroke-width: 2.8; }
+  .gnode:active .ncircle { fill: #2b3a55; }
 
   .node {
     background: var(--panel); border: 1px solid var(--line);
@@ -741,7 +741,14 @@ function buildingStep() {
           if (b.rally === "mining" && state.field[b.node] > 0) scv.task = "mining";
           if (b.queued > 0) { b.queued--; b.train = { progress: 0, total: C.cc.trainTime }; }
         } else if (b.type === "barracks") {
-          newMarine(b.owner, b.node);
+          const marine = newMarine(b.owner, b.node);
+          if (typeof b.rally === "number" && b.rally !== b.node) {
+            const path = bfsPathVisited(b.owner, b.node, b.rally, state.map.adj, state.map.n);
+            if (path && path.length > 1) {
+              marine.transit = { to: b.rally, path, pathIdx: 1, progress: 0, mode: "move", dwellStart: null };
+              marine.task = "moving"; marine.node = -1;
+            }
+          }
           if (b.queued > 0) { b.queued--; b.train = { progress: 0, total: C.marine.build }; }
         }
       }
@@ -899,7 +906,9 @@ function endGame(result) {
 // Queue an SCV at the CC. Minerals + supply are reserved up front, so a queued
 // SCV is guaranteed to build. maxQueue lets the bot train only when truly idle.
 function queueSCV(owner, maxQueue = C.cc.queueMax) {
-  const cc = state.buildings.find(b => b.owner === owner && b.type === "cc" && !b.construct);
+  const cc = state.buildings
+    .filter(b => b.owner === owner && b.type === "cc" && !b.construct)
+    .sort((a, b) => ((a.train ? 1 : 0) + a.queued) - ((b.train ? 1 : 0) + b.queued))[0];
   if (!cc) return;
   const inQueue = (cc.train ? 1 : 0) + cc.queued; // active + waiting
   if (inQueue >= maxQueue) return;
@@ -912,9 +921,9 @@ function queueSCV(owner, maxQueue = C.cc.queueMax) {
 
 function freeIdle(owner, node) {
   // Get an idle SCV, pulling one off mining or gas collection if necessary.
-  let scv = unitsOf(owner, node, "idle")[0];
-  if (!scv) { scv = unitsOf(owner, node, "mining")[0]; if (scv) scv.task = "idle"; }
-  if (!scv) { scv = unitsOf(owner, node, "gas")[0];    if (scv) scv.task = "idle"; }
+  let scv = unitsOf(owner, node, "idle", "scv")[0];
+  if (!scv) { scv = unitsOf(owner, node, "mining", "scv")[0]; if (scv) scv.task = "idle"; }
+  if (!scv) { scv = unitsOf(owner, node, "gas",    "scv")[0]; if (scv) scv.task = "idle"; }
   return scv;
 }
 
@@ -927,12 +936,16 @@ function startBuilding(owner, node, type) {
     if (state.buildings.some(b => b.owner === owner && b.node === node && b.type === "refinery")) return false;
   }
   const scv = freeIdle(owner, node);
-  if (!scv) return false;
+  if (!scv) {
+    if (owner === HUMAN) notify("No SCV available to build — free one first.", "warn", 4);
+    return false;
+  }
   state.minerals[owner] -= cfg.cost;
   const b = {
     id: idSeq++, owner, node, type,
     hp: cfg.hp, maxHp: cfg.hp,
     construct: { progress: 0, total: cfg.build }, train: null, queued: 0,
+    rally: type === "cc" ? "mining" : null,
   };
   state.buildings.push(b);
   scv.task = "building";
@@ -1072,6 +1085,9 @@ function botEval() {
       state.bot.enemyArmy = state.units.filter(u => u.owner === HUMAN && u.node === target &&
         (u.type === "marine" || u.type === "scv")).length;
       state.bot.scoutTime = state.time;
+      // Base cleared — reset so the discovery loop can find a new enemy base next eval.
+      if (!state.buildings.some(b => b.owner === HUMAN && b.node === target))
+        state.bot.enemyBase = null;
     }
     const intelFresh = state.bot.scoutTime != null && state.time - state.bot.scoutTime <= 120;
     // Any bot unit with a transit heading away from home (scout or attack wave).
@@ -1145,6 +1161,22 @@ function botEval() {
             if (homeScvAvail > 10) sendUnits(BOT, home, 1, "scv", expNode);
           }
         }
+      }
+    }
+  }
+
+  // Mop-up: idle bot marines at non-home nodes march toward the current enemy base (or home).
+  {
+    const mopTarget = state.bot.enemyBase;
+    for (let n = 0; n < state.map.n; n++) {
+      if (n === home) continue;
+      const idle = state.units.filter(u =>
+        u.owner === BOT && u.node === n && !u.transit && u.task === "idle" && u.type === "marine");
+      if (!idle.length) continue;
+      const dest = mopTarget !== null && canSendTo(BOT, mopTarget) ? mopTarget : home;
+      if (dest !== n) {
+        const mode = dest === mopTarget ? "attack" : "move";
+        sendUnits(BOT, n, idle.length, "marine", dest, mode);
       }
     }
   }
@@ -1342,7 +1374,7 @@ function renderGraph(visible) {
         resRow = `<circle cx="${cx}" cy="${ry}" r="1.4" fill="#4ade80"/>`;
     }
     nodes += `<g class="gnode ${cls}" data-id="${id}">
-        <circle cx="${cx}" cy="${cy}" r="7"/>
+        <circle class="ncircle" cx="${cx}" cy="${cy}" r="7"/>
         <text class="glyph" x="${cx}" y="${(+cy + 2.3).toFixed(1)}">${nodeLetter(id)}</text>
         ${resRow}${below}
       </g>`;
@@ -1541,7 +1573,11 @@ function appendForces(container, owner, node, interactive) {
     const depotsDone  = depots.filter(b => !b.construct);
     const depotsUnderC = depots.filter(b => b.construct);
     const parts = [];
-    if (depotsDone.length) parts.push(`${depotsDone.length} complete · +${depotsDone.length * C.depot.supply} supply`);
+    if (depotsDone.length) {
+      const dHp = depotsDone.reduce((s, b) => s + Math.ceil(b.hp), 0);
+      const dMax = depotsDone.reduce((s, b) => s + b.maxHp, 0);
+      parts.push(`${depotsDone.length} complete · +${depotsDone.length * C.depot.supply} supply · HP ${dHp}/${dMax}`);
+    }
     let depotBar = "";
     if (depotsUnderC.length) {
       const lead = depotsUnderC.slice().sort((a, b) =>
@@ -1550,12 +1586,14 @@ function appendForces(container, owner, node, interactive) {
       parts.push(`${depotsUnderC.length} building… ${pct}%`);
       if (interactive) depotBar = progBar(lead.construct.progress, lead.construct.total);
     }
+    const dHp = depotsDone.reduce((s, b) => s + b.hp, 0);
+    const dMax = depotsDone.reduce((s, b) => s + b.maxHp, 0);
     const row = document.createElement("div");
     row.className = "row static";
     row.innerHTML = `${svgIcon("depot")}<div class="body">
         <div class="name">Supply Depot${depots.length > 1 ? ` ×${depots.length}` : ""}</div>
         <div class="meta">${parts.join(" · ") || "—"}</div>
-        ${depotBar}
+        ${depotsDone.length ? hpBar(dHp, dMax) : depotBar}
       </div>`;
     container.appendChild(row);
   }
@@ -1579,9 +1617,12 @@ function appendForces(container, owner, node, interactive) {
         meta += progBar(bl.construct.progress, bl.construct.total);
       }
     }
+    const raxHp = readyRax.reduce((s, b) => s + b.hp, 0);
+    const raxMax = readyRax.reduce((s, b) => s + b.maxHp, 0);
     row.innerHTML = `${svgIcon("barracks")}<div class="body">
         <div class="name">Barracks${allRax.length > 1 ? ` ×${allRax.length}` : ""}</div>
         <div class="meta">${meta}</div>
+        ${readyRax.length ? hpBar(raxHp, raxMax) : ""}
       </div>${tappable ? '<span class="chev">›</span>' : ""}`;
     if (tappable) row.onclick = () => openSheet({ kind: "barracks-group", node });
     container.appendChild(row);
@@ -1780,6 +1821,8 @@ function renderSheet() {
     const trainingRax = allRax.filter(b => b.train).sort((a, b) => b.train.progress - a.train.progress);
     const eta = trainingRax.length ? C.marine.build - trainingRax[0].train.progress : 0;
     const label = allRax.length > 1 ? `Barracks ×${allRax.length}` : "Barracks";
+    const rallyNode = allRax[0].rally;
+    const rallyLabel = typeof rallyNode === "number" ? `→ ${nodeName(rallyNode)}` : "Stay here";
     sheet.innerHTML = `
       <h2>${label}</h2>
       <div class="sheet-sub">${nodeName(sel.node)} · ${totalQ} training${trainingRax.length ? ` · next ready in ${eta}s` : ""}</div>
@@ -1787,8 +1830,26 @@ function renderSheet() {
         Train Marine <span class="cost">— ${C.marine.cost} 💎 · ${C.marine.build}s · +1 supply</span>
       </button>
       ${note ? `<div class="sheet-sub" style="margin-top:8px">${note}</div>` : ""}
+      <button class="act secondary" id="a-set-rally">
+        Rally: ${rallyLabel} <span class="cost">— new marines auto-move here</span>
+      </button>
       <button class="act-close" id="a-close">Close</button>`;
     bind("a-marine", () => { queueMarine(HUMAN, sel.node, null); refreshSheet(); });
+    bind("a-set-rally", () => openSheet({ kind: "barracks-rally", node: sel.node }));
+
+  } else if (sel.kind === "barracks-rally") {
+    const allRax = buildingsOf(HUMAN, sel.node).filter(b => b.type === "barracks" && !b.construct);
+    if (!allRax.length) { closeSheet(); return; }
+    const dests = sendDests(sel.node);
+    const setRally = dest => { allRax.forEach(b => b.rally = dest); openSheet({ kind: "barracks-group", node: sel.node }); };
+    sheet.innerHTML = `
+      <h2>Set Rally Point</h2>
+      <div class="sheet-sub">New marines from ${nodeName(sel.node)} auto-move to the rally node</div>
+      <button class="act secondary" id="rally-home">Stay here — no rally</button>
+      ${dests.map(d => `<button class="act secondary" id="rally-${d}">→ ${nodeName(d)} <span class="cost">— ${hopDist(sel.node, d) * EDGE_TIME}s travel</span></button>`).join("")}
+      <button class="act-close" id="a-close">Close</button>`;
+    bind("rally-home", () => setRally(null));
+    for (const d of dests) bind(`rally-${d}`, () => setRally(d));
 
   } else if (sel.kind === "marine") {
     const node = sel.node;
@@ -2668,6 +2729,43 @@ function runTests() {
       botEval();
       const ccStarted = state.buildings.some(b => b.owner === BOT && b.node === expNode && b.type === "cc");
       ok(ccStarted, "bot starts CC at expansion when SCV is present");
+    },
+
+    "queueSCV uses least-busy CC when multiple exist"() {
+      resetState(1);
+      // Add a second CC at HOME with an empty queue.
+      const cc2 = { id: idSeq++, owner: HUMAN, type: "cc", node: HOME,
+        hp: C.cc.hp, maxHp: C.cc.hp, construct: null, train: null, queued: 0, rally: "mining" };
+      state.buildings.push(cc2);
+      // Fill the first CC's queue to max.
+      const cc1 = state.buildings.find(b => b.type === "cc" && b.id !== cc2.id && b.owner === HUMAN);
+      cc1.train = { progress: 0, total: C.cc.trainTime };
+      for (let i = 0; i < C.cc.queueMax - 1; i++) cc1.queued++;
+      cheat(HUMAN, 200);
+      queueSCV(HUMAN);
+      eq(cc2.train && cc2.train.progress >= 0, true, "queueSCV routes to the idle CC");
+      eq(cc1.queued, C.cc.queueMax - 1, "busy CC queue unchanged");
+    },
+
+    "barracks rally auto-dispatches new marines"() {
+      resetState(1);
+      const dest = state.map.adj[HOME][0];
+      state.visited.human[dest] = true;
+      // Build a barracks at HOME and set its rally.
+      cheat(HUMAN, 300);
+      startBuilding(HUMAN, HOME, "barracks");
+      run(C.barracks.build + 1);
+      const rax = state.buildings.find(b => b.type === "barracks" && !b.construct && b.owner === HUMAN);
+      ok(rax, "barracks completed");
+      rax.rally = dest;
+      // Queue and complete a marine.
+      cheat(HUMAN, 100);
+      queueMarine(HUMAN, HOME, rax.id);
+      run(C.marine.build + 1);
+      // The new marine should be in transit toward dest, not idle at HOME.
+      const inTransit = state.units.some(u =>
+        u.owner === HUMAN && u.type === "marine" && u.transit && u.transit.to === dest);
+      ok(inTransit, "new marine auto-dispatched to rally node");
     },
 
     bot_mines_expansion_after_cc() {
