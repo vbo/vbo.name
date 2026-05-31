@@ -47,9 +47,26 @@
 
   h1 { font-size: 15px; margin: 0; letter-spacing: .04em; }
 
-  /* Board */
-  #board { display: grid; grid-template-columns: 1fr; gap: 10px; }
-  @media (min-width: 560px) { #board { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); } }
+  /* Board: map graph on top, focused-node detail below */
+  #board { display: flex; flex-direction: column; gap: 10px; }
+
+  /* Map graph */
+  .map { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
+  .map svg { width: 100%; height: auto; display: block; max-height: 320px; }
+  .map .edge { stroke: #3a465c; stroke-width: 1.1; }
+  .map-legend { font-size: 10px; color: var(--dim); text-align: center; margin-top: 4px; }
+  .gnode { cursor: pointer; }
+  .gnode circle { fill: var(--panel2); stroke: var(--line); stroke-width: 1.4; transition: stroke .1s; }
+  .gnode .glyph { fill: var(--txt); font-size: 6px; font-weight: 700; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+  .gnode .ncount { fill: var(--accent); font-size: 4.2px; font-weight: 700; text-anchor: middle; pointer-events: none; }
+  .gnode.home circle  { fill: #1d3350; stroke: var(--accent); }
+  .gnode.foe circle   { fill: #4a1f28; stroke: var(--enemy); }
+  .gnode.owned circle { fill: #21304a; stroke: #3a5170; }
+  .gnode.unknown circle { fill: #141a26; stroke: var(--dim); stroke-dasharray: 2.2 2; }
+  .gnode.unknown .glyph { fill: var(--dim); }
+  .gnode.threat circle { stroke: var(--bad); stroke-width: 2.4; }
+  .gnode.selected circle { stroke: var(--warn); stroke-width: 2.8; }
+  .gnode:active circle { fill: #2b3a55; }
 
   .node {
     background: var(--panel); border: 1px solid var(--line);
@@ -341,7 +358,29 @@ function genMap() {
     for (let j = i + 1; j < n; j++)
       if (dist[i][j] > best) { best = dist[i][j]; starts = [i, j]; }
   const names = Array.from({ length: n }, (_, i) => "Sector " + String.fromCharCode(65 + i));
-  return { n, adj: adjArr, dist, starts, names };
+  const pos = layoutNodes(n, adjArr, dist, starts);
+  return { n, adj: adjArr, dist, starts, names, pos };
+}
+
+// Stable, readable graph layout: columns by hop-distance from the human base
+// (your base on the left, the enemy base on the right), nodes in each column
+// spread vertically. Positions are normalised to [0,1] and fixed at map-gen time
+// so revealed nodes never jump around. Returns [{x,y}, …] per node id.
+function layoutNodes(n, adj, dist, starts) {
+  const d = dist[starts[0]];
+  const maxD = Math.max(1, ...d.filter(x => x < Infinity));
+  const layers = {};
+  for (let i = 0; i < n; i++) (layers[d[i]] = layers[d[i]] || []).push(i);
+  const pos = new Array(n);
+  for (const dl in layers) {
+    const group = layers[dl].sort((a, b) => a - b);
+    const x = (+dl) / maxD;
+    group.forEach((node, k) => {
+      const y = group.length === 1 ? 0.5 : k / (group.length - 1);
+      pos[node] = { x, y };
+    });
+  }
+  return pos;
 }
 
 // Nodes an owner may currently send units to: every visited node and each of
@@ -403,7 +442,7 @@ function resetState(seed) {
   // Each side: 1 Command Center + 4 idle SCVs at its home node.
   spawnBase(HUMAN, HOME);
   spawnBase(BOT, AWAY);
-  ui = { sheet: null };          // sheet: { kind, node, ref, n }
+  ui = { sheet: null, selectedNode: HOME };  // sheet: { kind, node, ref, n }; selectedNode = map focus
 }
 
 function init() {
@@ -945,14 +984,15 @@ const $ = id => document.getElementById(id);
 const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks", refinery: "Refinery" };
 
-// Display name for a node, assigned the first time the player sees it. Naming by
-// discovery order (rather than the underlying node id) means the labels never hint
-// at how many unseen nodes exist beyond the explored frontier.
-function nodeName(node) {
+// Display names, assigned the first time the player sees a node. Naming by discovery
+// order (not the underlying node id) means the labels never hint at how many unseen
+// nodes exist beyond the explored frontier. nodeLetter is the short graph label.
+function nodeLetter(node) {
   if (state.labels[node] == null)
-    state.labels[node] = "Sector " + String.fromCharCode(65 + state.labels.filter(Boolean).length);
+    state.labels[node] = String.fromCharCode(65 + state.labels.filter(Boolean).length);
   return state.labels[node];
 }
+const nodeName = node => "Sector " + nodeLetter(node);
 
 function svgIcon(kind) {
   if (kind === "cc")
@@ -995,18 +1035,77 @@ function render() {
   if (typeof document.body !== "undefined" && document.body)
     document.body.classList.toggle("paused", !!state.paused);
 
-  // Nodes — you only see what you've explored plus the immediate neighbours of
-  // explored nodes (the frontier). The rest of the map stays hidden, so its shape
-  // is revealed only as you scout outward. Ordered by distance from your base.
+  // Map — drawn as a node-link graph. You only see nodes you've explored plus the
+  // immediate neighbours of explored nodes (the frontier); the rest stays hidden,
+  // so the map's shape is revealed only as you scout outward. Tap a node to focus
+  // it; its details (forces, resources, orders) show in the panel below.
   const board = $("board");
   board.innerHTML = "";
-  const visible = [...reachableSet(HUMAN)]
-    .sort((a, b) => state.map.dist[HOME][a] - state.map.dist[HOME][b] || a - b);
-  for (const node of visible) board.appendChild(renderNode(node));
+  const visible = new Set(reachableSet(HUMAN));
+  if (!visible.has(ui.selectedNode)) ui.selectedNode = HOME;
+  // Assign display letters in proximity order so your base is "A", then outward.
+  [...visible].sort((a, b) => state.map.dist[HOME][a] - state.map.dist[HOME][b] || a - b).forEach(nodeLetter);
+  board.appendChild(renderGraph(visible));
+  board.appendChild(renderNode(ui.selectedNode));
 
   renderTransit();
   $("notes").innerHTML = state.notes.map(n => `<div class="note ${n.kind}">${n.text}</div>`).join("");
   if (ui.sheet) renderSheet();
+}
+
+// Draw the explored map as a node-link graph (SVG). Only `visible` nodes are drawn;
+// edges appear only when at least one endpoint is visited (so frontier-to-frontier
+// links stay hidden). Tapping a node focuses it for the detail panel below.
+function renderGraph(visible) {
+  const wrap = document.createElement("div");
+  wrap.className = "map";
+  const { n, adj, pos } = state.map;
+
+  // Stable height from the tallest column so revealed nodes never reflow.
+  const colCount = {};
+  for (let i = 0; i < n; i++) { const k = pos[i].x.toFixed(3); colCount[k] = (colCount[k] || 0) + 1; }
+  const maxLayer = Math.max(1, ...Object.values(colCount));
+  const H = Math.max(48, 24 + (maxLayer - 1) * 26);
+  const PADX = 14, PADY = 14;
+  const X = x => (PADX + x * (100 - 2 * PADX)).toFixed(1);
+  const Y = y => (PADY + y * (H - 2 * PADY)).toFixed(1);
+
+  let edges = "";
+  for (let u = 0; u < n; u++) if (visible.has(u))
+    for (const v of adj[u]) if (v > u && visible.has(v) && (state.visited.human[u] || state.visited.human[v]))
+      edges += `<line class="edge" x1="${X(pos[u].x)}" y1="${Y(pos[u].y)}" x2="${X(pos[v].x)}" y2="${Y(pos[v].y)}"/>`;
+
+  let nodes = "";
+  for (let id = 0; id < n; id++) if (visible.has(id)) {
+    const cx = X(pos[id].x), cy = Y(pos[id].y);
+    const isHome = id === HOME, isAway = id === AWAY;
+    const present = state.units.some(u => u.owner === HUMAN && u.node === id) ||
+                    state.buildings.some(b => b.owner === HUMAN && b.node === id);
+    const visited = state.visited.human[id];
+    const seenCC = Array.isArray(state.seen[id]) && state.seen[id].some(b => b.type === "cc");
+    const enemyBaseKnown = isAway && (present || seenCC);
+    const su = state.seenUnits[id];
+    const enemyHere = present
+      ? state.units.some(u => u.owner === BOT && u.node === id)
+      : !!(su && state.time - su.time <= SEEN_UNITS_TTL && (su.marines || su.scvs || su.gasScvs));
+    let cls = isHome ? "home" : enemyBaseKnown ? "foe" : visited ? "owned" : "unknown";
+    if (enemyHere) cls += " threat";
+    if (id === ui.selectedNode) cls += " selected";
+    const army = state.units.filter(u => u.owner === HUMAN && u.node === id).length;
+    const below = army ? `<text class="ncount" x="${cx}" y="${(+cy + 12).toFixed(1)}">▲${army}</text>` : "";
+    nodes += `<g class="gnode ${cls}" data-id="${id}">
+        <circle cx="${cx}" cy="${cy}" r="7"/>
+        <text class="glyph" x="${cx}" y="${(+cy + 2.3).toFixed(1)}">${nodeLetter(id)}</text>
+        ${below}
+      </g>`;
+  }
+
+  wrap.innerHTML =
+    `<svg viewBox="0 0 100 ${H}" preserveAspectRatio="xMidYMid meet" role="img">${edges}${nodes}</svg>` +
+    `<div class="map-legend">Tap a node to focus · <b style="color:var(--accent)">blue</b> your base · <b style="color:var(--enemy)">red</b> enemy base · dashed = unexplored · ▲ your forces</div>`;
+  wrap.querySelectorAll(".gnode").forEach(g =>
+    g.onclick = () => { ui.selectedNode = +g.dataset.id; render(); });
+  return wrap;
 }
 
 function renderNode(node) {
