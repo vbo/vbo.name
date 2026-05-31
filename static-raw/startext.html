@@ -187,6 +187,13 @@
   .act .cost { font-weight: 400; font-size: 12px; opacity: .8; }
   .act-close { background: transparent; color: var(--dim); border: none; font-size: 14px; margin-top: 12px; width: 100%; padding: 10px; }
 
+  .mode-toggle { display: flex; gap: 6px; margin: 10px 0 4px; }
+  .mode-toggle button {
+    flex: 1; min-height: 42px; border-radius: 10px; font-size: 13px; font-weight: 600;
+    background: var(--panel2); color: var(--dim); border: 1px solid var(--line);
+  }
+  .mode-toggle button.sel { background: var(--accent); color: #06101f; border-color: transparent; }
+
   /* End screen */
   #end {
     position: fixed; inset: 0; z-index: 30; display: none;
@@ -253,8 +260,9 @@
 // Map: a random connected graph of 5–6 nodes (genMap). Only the two farthest-apart
 // nodes (the players' bases) hold resources. Movement is exploration-gated — you can
 // only send units to a node adjacent to one you've already visited (canSendTo) — and
-// travel time scales with shortest-path distance (hopDist × EDGE_TIME). Transit is
-// abstract: units are off-map mid-trip and don't fight en route.
+// travel is hop-by-hop: EDGE_TIME per segment + DWELL_TIME pause at each intermediate
+// node (where units can scout and fight before moving on). Two modes: "move" (leave
+// after DWELL_TIME regardless) and "attack" (stay until the node is clear).
 //
 // See runTests() near the bottom. Add an assert there whenever you add behaviour.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -293,6 +301,7 @@ const GAS_OPT   = 4;        // SCVs for 100% gas utilisation (capped — extras 
 // alert, and — crucially — lets a lone scout record what it sees (fogStep runs every
 // tick) before it gets cut down.
 const ENGAGE_DELAY = 5;
+const DWELL_TIME  = 10; // seconds spent at each intermediate node in "move" mode (explore + fight window)
 
 // `range` adds asymmetry on top of that windup: a unit waits an *extra*
 // max(0, enemyRange - ownRange) ticks, so a ranged unit (marine) lands free hits
@@ -666,13 +675,43 @@ function buildingStep() {
 
 function unitStep() {
   for (const u of state.units) {
-    if (u.task === "moving") {
-      u.transit.progress++;
-      if (u.transit.progress >= u.transit.total) {
-        u.node = u.transit.to;
+    if (!u.transit) continue;
+    const tr = u.transit;
+
+    if (tr.dwellStart !== null) {
+      // Unit is stationed at an intermediate node — decide when to advance.
+      const atFinal = tr.pathIdx >= tr.path.length - 1;
+      if (atFinal) { u.task = "idle"; u.transit = null; continue; }
+      const dwellTime = state.time - tr.dwellStart;
+      const foes = targetsAt(enemy(u.owner), u.node);
+      const shouldAdvance = tr.mode === "move"
+        ? dwellTime >= DWELL_TIME
+        : foes.length === 0 && dwellTime >= ENGAGE_DELAY; // attack: clear the node first
+      if (shouldAdvance) {
+        tr.pathIdx++;
+        tr.progress = 0;
+        tr.dwellStart = null;
+        u.task = "moving";
+        u.node = -1;
+        u.atkCd = 0;
+        u.engaged = 0;
+      }
+      continue;
+    }
+
+    // Traveling between nodes — advance progress and check arrival.
+    tr.progress++;
+    if (tr.progress >= EDGE_TIME) {
+      u.node = tr.path[tr.pathIdx];
+      state.visited[u.owner][u.node] = true;
+      tr.progress = 0;
+      const atFinal = tr.pathIdx >= tr.path.length - 1;
+      if (atFinal) {
         u.task = "idle";
         u.transit = null;
-        state.visited[u.owner][u.node] = true; // arriving explores the node
+      } else {
+        tr.dwellStart = state.time;
+        u.task = "idle"; // allow combatStep and fogStep to engage at this node
       }
     }
   }
@@ -841,18 +880,19 @@ function queueMarine(owner, node, raxId) {
   else rax.queued++;
 }
 
-function sendUnits(owner, node, n, unitType = "scv", dest) {
+function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
   const pool = unitType === "marine" ? idleMarines(owner, node) : controllable(owner, node);
   // For SCVs, send idle ones before pulling miners off duty.
   if (unitType === "scv") pool.sort((a, b) => (a.task === "idle" ? 0 : 1) - (b.task === "idle" ? 0 : 1));
   // Default destination keeps old call sites working: nearest reachable enemy-ward node.
   if (dest === undefined) dest = node === HOME ? AWAY : HOME;
   if (dest === node) return;
-  const total = Math.max(1, hopDist(node, dest)) * EDGE_TIME; // travel scales with map distance
+  const path = bfsPath(node, dest, state.map.adj, state.map.n);
+  if (path.length < 2) return;
   for (const u of pool.slice(0, n)) {
     u.task = "moving";
-    u.node = -1; // off-map: not minable, not targetable, hidden from fog
-    u.transit = { to: dest, progress: 0, total };
+    u.node = -1; // off-map until the first hop completes
+    u.transit = { to: dest, path, pathIdx: 1, progress: 0, mode, dwellStart: null };
   }
 }
 
@@ -916,8 +956,8 @@ function botEval() {
       state.bot.scoutTime = state.time;
     }
     const intelFresh = state.bot.scoutTime != null && state.time - state.bot.scoutTime <= 120;
-    const scoutOut = state.units.some(u =>
-      u.owner === BOT && u.node < 0 && u.task === "moving"); // a unit already en route
+    // Any bot unit with a transit heading away from home (scout or attack wave).
+    const scoutOut = state.units.some(u => u.owner === BOT && u.transit != null && u.transit.to !== home);
 
     // Next unvisited node along the path AWAY → HOME (the frontier to claim).
     const path = bfsPath(home, HOME, state.map.adj, state.map.n);
@@ -931,7 +971,7 @@ function botEval() {
       // there or already heading there.
       const atFrontier = state.units.some(u => u.owner === BOT && u.node === frontier);
       const headed = state.units.some(u =>
-        u.owner === BOT && u.task === "moving" && u.transit.to === frontier);
+        u.owner === BOT && u.transit && u.transit.path.includes(frontier));
       if (!atFrontier && !headed) {
         if (marines.length > 1) sendUnits(BOT, home, 1, "marine", frontier);
         else {
@@ -944,12 +984,12 @@ function botEval() {
       // Enemy base in reach — scout for intel, then commit a real wave that clearly
       // beats the scouted defense (no cheating: enemyArmy is scouted, not read).
       if (!intelFresh && !scoutOut && marines.length > reserve) {
-        sendUnits(BOT, home, 1, "marine", HOME); // scout the player's strength
+        sendUnits(BOT, home, 1, "marine", HOME); // scout — move mode, will observe then leave
       } else if (waveDue && intelFresh) {
         const strike = marines.length - reserve;
         const needed = Math.max(12, Math.ceil(state.bot.enemyArmy * 1.4) + 4);
         if (strike >= needed) {
-          sendUnits(BOT, home, strike, "marine", HOME);
+          sendUnits(BOT, home, strike, "marine", HOME, "attack"); // attack wave — fight through each node
           state.bot.lastWave = state.time;
         }
       }
@@ -1437,8 +1477,8 @@ function appendForces(container, owner, node, interactive) {
 
 function renderTransit() {
   const wrap = $("transit");
-  // Fog: only the player's own units are visible while crossing the map.
-  const mine = state.units.filter(u => u.owner === HUMAN && u.task === "moving");
+  // Show all player units with active transit (traveling or dwelling at intermediate node).
+  const mine = state.units.filter(u => u.owner === HUMAN && u.transit != null);
   if (!mine.length) { wrap.innerHTML = ""; return; }
   const byDir = {};
   for (const u of mine) {
@@ -1448,17 +1488,31 @@ function renderTransit() {
   let html = `<div class="section-label">In transit</div>`;
   for (const to in byDir) {
     const group = byDir[to];
-    const total = group[0].transit.total; // same destination → same trip length
-    const avg = group.reduce((s, u) => s + u.transit.progress, 0) / group.length;
-    const eta = Math.max(0, total - Math.round(avg));
     const scvN = group.filter(u => u.type === "scv").length;
     const marN = group.filter(u => u.type === "marine").length;
     const label = [scvN && `${scvN} SCV${scvN > 1 ? "s" : ""}`,
                    marN && `${marN} Marine${marN > 1 ? "s" : ""}`].filter(Boolean).join(", ");
+    const mode = group[0].transit.mode;
+    const modeLabel = mode === "attack" ? " ⚔️" : " 📦";
+    const hops = group[0].transit.path.length - 1;
+    const dwellPer = mode === "attack" ? ENGAGE_DELAY : DWELL_TIME;
+    const totalTime = hops * EDGE_TIME + Math.max(0, hops - 1) * dwellPer;
+    // Estimate overall progress as completed hops + current segment/dwell fraction.
+    const avgDone = group.reduce((s, u) => {
+      const done = (u.transit.pathIdx - 1) * (EDGE_TIME + dwellPer);
+      const frac = u.transit.dwellStart != null
+        ? EDGE_TIME + Math.min(state.time - u.transit.dwellStart, dwellPer)
+        : u.transit.progress;
+      return s + done + frac;
+    }, 0) / group.length;
+    const eta = Math.max(0, Math.round(totalTime - avgDone));
+    // Show current position if dwelling at an intermediate node.
+    const dwelling = group.filter(u => u.transit.dwellStart != null && u.transit.pathIdx < hops);
+    const atNote = dwelling.length ? ` · at ${nodeName(dwelling[0].node)}` : "";
     html += `<div class="transit-row">
-        <div class="name">${label} → ${nodeName(to)}</div>
+        <div class="name">${label}${modeLabel} → ${nodeName(parseInt(to))}${atNote}</div>
         <div class="meta">ETA ${eta}s</div>
-        ${progBar(avg, total)}
+        ${progBar(Math.min(avgDone, totalTime), totalTime)}
       </div>`;
   }
   wrap.innerHTML = html;
@@ -1554,7 +1608,9 @@ function renderSheet() {
     const pool = idleMarines(HUMAN, node);
     const max = Math.max(1, pool.length);
     sel.n = Math.min(Math.max(1, sel.n || pool.length), max);
+    sel.mode = sel.mode || "attack"; // marines default to attack mode
     const n = sel.n;
+    const mAtk = sel.mode === "attack";
     sheet.innerHTML = `
       <h2>Marines at ${nodeName(node)}</h2>
       <div class="sheet-sub">${pool.length} ready · pick a destination</div>
@@ -1565,13 +1621,19 @@ function renderSheet() {
         <div class="label">selected</div>
       </div>
       <input type="range" id="n-range" min="1" max="${max}" value="${n}">
+      <div class="mode-toggle">
+        <button id="mode-move" class="${!mAtk ? "sel" : ""}">📦 Move</button>
+        <button id="mode-attack" class="${mAtk ? "sel" : ""}">⚔️ Move &amp; Attack</button>
+      </div>
       ${destButtonsHtml(node, n, pool.length)}
       <button class="act-close" id="a-close">Close</button>`;
     const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
     bind("n-minus", () => setN(sel.n - 1));
     bind("n-plus", () => setN(sel.n + 1));
     $("n-range").oninput = e => setN(parseInt(e.target.value, 10));
-    bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "marine", dest); closeSheet(); render(); });
+    bind("mode-move",   () => { sel.mode = "move";   renderSheet(); });
+    bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
+    bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "marine", dest, sel.mode); closeSheet(); render(); });
 
   } else {
     // SCV group sheet — split into Move / Build / Mine submenus to avoid clutter.
@@ -1600,7 +1662,9 @@ function renderSheet() {
     let title = `SCVs at ${nodeName(node)}`, body;
 
     if (tab === "move") {
+      sel.mode = sel.mode || "move"; // SCVs default to move mode
       title = `Move · ${nodeName(node)}`;
+      const mAtk = sel.mode === "attack";
       body = `
         <div class="stepper">
           <button id="n-minus">−</button>
@@ -1609,6 +1673,10 @@ function renderSheet() {
           <div class="label">SCVs<br>selected</div>
         </div>
         <input type="range" id="n-range" min="1" max="${max}" value="${n}">
+        <div class="mode-toggle">
+          <button id="mode-move" class="${!mAtk ? "sel" : ""}">📦 Move</button>
+          <button id="mode-attack" class="${mAtk ? "sel" : ""}">⚔️ Move &amp; Attack</button>
+        </div>
         ${destButtonsHtml(node, n, all.length)}
         <button class="act-close" id="a-back">‹ Back</button>`;
     } else if (tab === "build") {
@@ -1666,7 +1734,9 @@ function renderSheet() {
       bind("n-minus", () => setN(sel.n - 1));
       bind("n-plus", () => setN(sel.n + 1));
       const rng = $("n-range"); if (rng) rng.oninput = e => setN(parseInt(e.target.value, 10));
-      bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "scv", dest); closeSheet(); render(); });
+      bind("mode-move",   () => { sel.mode = "move";   renderSheet(); });
+      bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
+      bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "scv", dest, sel.mode); closeSheet(); render(); });
     } else if (tab === "build") {
       bind("a-cc",    () => { startBuilding(HUMAN, node, "cc"); refreshSheet(); });
       bind("a-depot", () => { startBuilding(HUMAN, node, "depot"); refreshSheet(); });
@@ -1893,15 +1963,15 @@ function runTests() {
       const dealt = 1000 - e.hp;
       ok(dealt > 0 && dealt % C.marine.dmg === 0, `marine damage is a multiple of 6 (got ${dealt})`);
     },
-    "travel takes hopDist×EDGE_TIME and hides unit in transit"() {
+    "travel takes EDGE_TIME per hop and hides unit in transit"() {
       resetState(1);
       const dest = state.map.adj[HOME][0]; // a neighbour of your base (1 hop)
       sendUnits(HUMAN, HOME, 1, "scv", dest);
       const u = state.units.find(x => x.task === "moving");
       eq(u.node, -1, "in transit: off-map");
-      eq(u.transit.total, EDGE_TIME, "1-hop trip costs EDGE_TIME");
+      ok(u.transit && u.transit.path.length === 2 && u.transit.to === dest, "1-hop path correct");
       run(EDGE_TIME);
-      eq(u.node, dest, "arrived at the neighbouring node");
+      eq(u.node, dest, "arrived at the neighbouring node after EDGE_TIME ticks");
       eq(u.task, "idle", "arrives idle");
       ok(state.visited.human[dest], "arrival marks the node explored");
     },
@@ -1989,7 +2059,9 @@ function runTests() {
       resetState(1);
       eq(state.seen[AWAY], null, "AWAY unknown at start");
       sendUnits(HUMAN, HOME, 2, "scv", AWAY); // march straight to the enemy base
-      run(hopDist(HOME, AWAY) * EDGE_TIME + 2);
+      // Multi-hop travel: each hop takes EDGE_TIME, plus DWELL_TIME at each intermediate node.
+      const hops = hopDist(HOME, AWAY);
+      run(hops * EDGE_TIME + Math.max(0, hops - 1) * DWELL_TIME + 2);
       ok(Array.isArray(state.seen[AWAY]) && state.seen[AWAY].length >= 1, "scouted: CC remembered");
       const snapLen = state.seen[AWAY].length;
       // remove our scouts; bot snapshot must freeze
