@@ -158,6 +158,13 @@
      * at 3 and decays 3→2→1 with each first-try success; any miss resets to
      * 3. Engagement bait for the topic she fears.
      *
+     * SESSION vs LIFETIME
+     * `coins` is a per-session counter — the wallet always shows a small
+     * number that's easy to add to ("0 + 120" instead of "1230 + 120").
+     * The reset button next to the wallet zeros it. `lifetimeCoins` is
+     * never reset and drives the chest chip (1 chest per
+     * COINS_PER_CHEST). Resetting feels like a deposit, not a wipe.
+     *
      * PACE METRIC
      * Header chip = coins/min averaged over the last 100 answer events.
      * Corrections record 0 coins so time on mistakes drags the rate down.
@@ -178,11 +185,16 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.24';
+    const VERSION = '1.25';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
     const DISTRACTION_MS = 60_000;
+    // The wallet shows session coins so she can read a small number easily
+    // (1230 + 120 is hard mental math at 8). lifetimeCoins persists across
+    // resets and rolls every COINS_PER_CHEST into a chest for long-term
+    // progress framing — reset feels like "deposit" rather than "delete".
+    const COINS_PER_CHEST = 100;
 
     // Kinetic typography: comic-book praise words that pop near the solved
     // equation on a first-try correct answer. The streak itself is hidden —
@@ -895,6 +907,10 @@
             "pace: 5 coins in 60s ⇒ 5.0 c/min");
         assert(computePace([]) === null, "pace: no events ⇒ null");
 
+        // Chest math: lifetime / COINS_PER_CHEST, floored.
+        assert(Math.floor(0 / COINS_PER_CHEST) === 0, "chests: 0 lifetime ⇒ 0 chests");
+        assert(Math.floor(1230 / COINS_PER_CHEST) === 12, "chests: 1230 lifetime ⇒ 12 chests");
+
         // Praise picker — streak milestones beat lightspeed beats default pool.
         const fastEvents = Array.from({ length: 6 }, () => ({ coins: 1, ms: 10_000 }));
         assert(pickPraise(9_000, fastEvents, 5) === 'UNSTOPPABLE!',
@@ -1020,17 +1036,21 @@
             const saved = localStorage.getItem(STORAGE_KEY);
             if (saved) {
                 const parsed = JSON.parse(saved);
+                const coins = parsed.coins || 0;
                 return {
-                    coins: parsed.coins || 0,
+                    coins,
                     deck: parsed.deck || {},
                     queue: parsed.queue || [],
                     paceEvents: parsed.paceEvents || [],
+                    // Existing users get lifetime seeded from their current wallet
+                    // so the chest counter reflects work already done.
+                    lifetimeCoins: parsed.lifetimeCoins ?? coins,
                 };
             }
         } catch (e) {
             console.error("Failed to load initial state", e);
         }
-        return { coins: 0, deck: {}, queue: [], paceEvents: [] };
+        return { coins: 0, deck: {}, queue: [], paceEvents: [], lifetimeCoins: 0 };
     };
 
     // Average answering pace in coins/minute. Returns null when there's
@@ -1309,7 +1329,10 @@
 
     const App = () => {
         const initialState = useRef(loadSavedState()).current;
+        // Session counter (resettable via the reset button next to the wallet).
         const [coins, setCoins] = useState(initialState.coins);
+        // Never-resets total — drives the chest counter.
+        const [lifetimeCoins, setLifetimeCoins] = useState(initialState.lifetimeCoins);
         const [deck, setDeck] = useState(initialState.deck);
         const [queue, setQueue] = useState(initialState.queue);
         const [inputValue, setInputValue] = useState('');
@@ -1364,8 +1387,8 @@
         }, []);
 
         useEffect(() => {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents }));
-        }, [coins, deck, queue, paceEvents]);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents, lifetimeCoins }));
+        }, [coins, deck, queue, paceEvents, lifetimeCoins]);
 
         // Summon the cat when the *displayed* (1-decimal)
         // pace drops, e.g. 20.6 → 20.5. Never fires during correction so she
@@ -1582,6 +1605,7 @@
                 triggerCoinAnimation(reward);
                 setTimeout(() => {
                     setCoins(prev => prev + reward);
+                    setLifetimeCoins(prev => prev + reward);
                     setDeck(prev => ({ ...prev, [updated.id]: updated }));
                     const nextQueue = [...queue.slice(1)];
                     while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
@@ -1659,11 +1683,23 @@
                                 </div>
                             );
                         })()}
+                        <div className="flex flex-col items-end bg-amber-50 text-amber-700 px-3 py-1.5 rounded-xl font-bold text-sm leading-tight border border-amber-200">
+                            <span className="text-base font-black">{Math.floor(lifetimeCoins / COINS_PER_CHEST)}</span>
+                            <span className="text-[10px] text-amber-400 uppercase tracking-widest font-bold">chests</span>
+                        </div>
                         <div ref={walletRef} className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md transition-transform hover:scale-105">
                             <Icon name="Wallet" className="text-yellow-900" />
                             <span className="font-black text-2xl text-yellow-900">{coins}</span>
                             <Icon name="Coins" className="text-yellow-700 animate-bounce" />
                         </div>
+                        <button
+                            onClick={() => setCoins(0)}
+                            aria-label="Reset session coins to zero (chests stay)"
+                            title="Reset session coins to zero (chests stay)"
+                            className="bg-slate-100 hover:bg-slate-200 text-slate-500 p-2 rounded-xl transition-colors"
+                        >
+                            <Icon name="RotateCcw" size={16} />
+                        </button>
                     </div>
                 </div>
 
