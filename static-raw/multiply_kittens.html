@@ -158,12 +158,14 @@
      * at 3 and decays 3→2→1 with each first-try success; any miss resets to
      * 3. Engagement bait for the topic she fears.
      *
-     * SESSION vs LIFETIME
-     * `coins` is a per-session counter — the wallet always shows a small
-     * number that's easy to add to ("0 + 120" instead of "1230 + 120").
-     * The reset button next to the wallet zeros it. `lifetimeCoins` is
-     * never reset and drives the chest chip (1 chest per
-     * COINS_PER_CHEST). Resetting feels like a deposit, not a wipe.
+     * KITTEN SHOP
+     * `coins` is what the wallet shows. To stop the number ballooning into
+     * mental-math nightmare territory she SPENDS coins in the kitten shop:
+     * any cat emoji from KITTEN_SHOP costs KITTEN_PRICE and gets appended
+     * to the kid's `kittens` collection (persisted, never resets). The
+     * shop is reachable via the paw-print header button and replaces the
+     * old auto-chest counter — agency + a visible collection instead of a
+     * silent lifetime number.
      *
      * PACE METRIC
      * Header chip = coins/min averaged over the last 100 answer events.
@@ -185,16 +187,17 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.25';
+    const VERSION = '1.26';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
     const DISTRACTION_MS = 60_000;
-    // The wallet shows session coins so she can read a small number easily
-    // (1230 + 120 is hard mental math at 8). lifetimeCoins persists across
-    // resets and rolls every COINS_PER_CHEST into a chest for long-term
-    // progress framing — reset feels like "deposit" rather than "delete".
-    const COINS_PER_CHEST = 100;
+    // Kitten shop: spend session coins on cat emojis to keep the wallet
+    // number small (no mental "1230 + 120") AND give the kid a visible
+    // collection that grows over time. Multi-buy allowed — she can have a
+    // hundred 🐱 if she wants.
+    const KITTEN_PRICE = 100;
+    const KITTEN_SHOP = ['🐱', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿', '😾', '🐈', '🐈‍⬛'];
 
     // Kinetic typography: comic-book praise words that pop near the solved
     // equation on a first-try correct answer. The streak itself is hidden —
@@ -907,9 +910,10 @@
             "pace: 5 coins in 60s ⇒ 5.0 c/min");
         assert(computePace([]) === null, "pace: no events ⇒ null");
 
-        // Chest math: lifetime / COINS_PER_CHEST, floored.
-        assert(Math.floor(0 / COINS_PER_CHEST) === 0, "chests: 0 lifetime ⇒ 0 chests");
-        assert(Math.floor(1230 / COINS_PER_CHEST) === 12, "chests: 1230 lifetime ⇒ 12 chests");
+        // Kitten shop sanity: prices are positive integers, shop is a real catalogue.
+        assert(Number.isInteger(KITTEN_PRICE) && KITTEN_PRICE > 0, "KITTEN_PRICE is a positive integer");
+        assert(Array.isArray(KITTEN_SHOP) && KITTEN_SHOP.length >= 6, "KITTEN_SHOP has at least 6 cats to pick from");
+        assert(new Set(KITTEN_SHOP).size === KITTEN_SHOP.length, "KITTEN_SHOP entries are unique");
 
         // Praise picker — streak milestones beat lightspeed beats default pool.
         const fastEvents = Array.from({ length: 6 }, () => ({ coins: 1, ms: 10_000 }));
@@ -1042,15 +1046,13 @@
                     deck: parsed.deck || {},
                     queue: parsed.queue || [],
                     paceEvents: parsed.paceEvents || [],
-                    // Existing users get lifetime seeded from their current wallet
-                    // so the chest counter reflects work already done.
-                    lifetimeCoins: parsed.lifetimeCoins ?? coins,
+                    kittens: parsed.kittens || [],
                 };
             }
         } catch (e) {
             console.error("Failed to load initial state", e);
         }
-        return { coins: 0, deck: {}, queue: [], paceEvents: [], lifetimeCoins: 0 };
+        return { coins: 0, deck: {}, queue: [], paceEvents: [], kittens: [] };
     };
 
     // Average answering pace in coins/minute. Returns null when there's
@@ -1327,12 +1329,83 @@
         );
     };
 
+    // Kitten shop + collection screen. Reached via the paw-print button in
+    // the game header. The kid spends `coins` (the wallet) on cat emojis;
+    // every purchase appends to `kittens` and the wallet ticks down.
+    // Shop items are tap-to-buy with no confirm — if she can't afford one
+    // it's dimmed and inert.
+    const KittensScreen = ({ coins, kittens, onBuy, onBack }) => {
+        const ownedCounts = kittens.reduce((acc, e) => { acc[e] = (acc[e] || 0) + 1; return acc; }, {});
+        return (
+            <div className="min-h-screen p-4 md:p-8 font-sans text-slate-800 bg-slate-50">
+                <div className="max-w-3xl mx-auto flex justify-between items-center mb-8 bg-white p-4 rounded-3xl shadow-sm border border-purple-200">
+                    <div className="flex items-center gap-2">
+                        <button onClick={onBack} aria-label="Back to math"
+                                className="bg-indigo-100 hover:bg-indigo-200 active:scale-95 p-2 rounded-xl transition-all">
+                            <Icon name="ArrowLeft" className="text-indigo-600" />
+                        </button>
+                        <div>
+                            <h1 className="font-bold text-base md:text-lg leading-tight">🐱 Kittens</h1>
+                            <p className="text-xs text-slate-400 uppercase tracking-widest font-bold whitespace-nowrap">v{VERSION}</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md">
+                        <Icon name="Wallet" className="text-yellow-900" />
+                        <span className="font-black text-2xl text-yellow-900">{coins}</span>
+                        <Icon name="Coins" className="text-yellow-700" />
+                    </div>
+                </div>
+
+                <main className="max-w-3xl mx-auto space-y-6">
+                    <section className="bg-white rounded-[2rem] p-6 shadow-lg border-4 border-pink-200">
+                        <div className="flex items-baseline justify-between mb-3">
+                            <h2 className="font-black text-xl text-slate-700">Your collection</h2>
+                            <span className="text-sm font-bold text-slate-400">{kittens.length} kitten{kittens.length === 1 ? '' : 's'}</span>
+                        </div>
+                        {kittens.length === 0 ? (
+                            <p className="text-slate-400 italic">No kittens yet — adopt one below!</p>
+                        ) : (
+                            <div className="flex flex-wrap gap-2 text-3xl">
+                                {kittens.map((emoji, i) => <span key={i}>{emoji}</span>)}
+                            </div>
+                        )}
+                    </section>
+
+                    <section className="bg-white rounded-[2rem] p-6 shadow-lg border-4 border-indigo-200">
+                        <div className="flex items-baseline justify-between mb-3">
+                            <h2 className="font-black text-xl text-slate-700">Adopt a kitten</h2>
+                            <span className="text-sm font-bold text-slate-400">{KITTEN_PRICE} coins each</span>
+                        </div>
+                        <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+                            {KITTEN_SHOP.map(emoji => {
+                                const affordable = coins >= KITTEN_PRICE;
+                                const owned = ownedCounts[emoji] || 0;
+                                return (
+                                    <button key={emoji} onClick={() => affordable && onBuy(emoji)}
+                                            disabled={!affordable}
+                                            className={`flex flex-col items-center gap-1 p-4 rounded-2xl border-2 transition-all ${affordable
+                                                ? 'bg-pink-50 border-pink-200 hover:bg-pink-100 active:scale-95 cursor-pointer'
+                                                : 'bg-slate-50 border-slate-200 opacity-40 cursor-not-allowed'}`}>
+                                        <span className="text-5xl leading-none">{emoji}</span>
+                                        <span className="text-xs font-bold text-slate-500">
+                                            {owned > 0 ? `×${owned}` : `${KITTEN_PRICE}c`}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </section>
+                </main>
+            </div>
+        );
+    };
+
     const App = () => {
         const initialState = useRef(loadSavedState()).current;
         // Session counter (resettable via the reset button next to the wallet).
         const [coins, setCoins] = useState(initialState.coins);
-        // Never-resets total — drives the chest counter.
-        const [lifetimeCoins, setLifetimeCoins] = useState(initialState.lifetimeCoins);
+        // The kid's adopted-cat-emoji collection; persisted, never resets.
+        const [kittens, setKittens] = useState(initialState.kittens);
         const [deck, setDeck] = useState(initialState.deck);
         const [queue, setQueue] = useState(initialState.queue);
         const [inputValue, setInputValue] = useState('');
@@ -1387,8 +1460,8 @@
         }, []);
 
         useEffect(() => {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents, lifetimeCoins }));
-        }, [coins, deck, queue, paceEvents, lifetimeCoins]);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ coins, deck, queue, paceEvents, kittens }));
+        }, [coins, deck, queue, paceEvents, kittens]);
 
         // Summon the cat when the *displayed* (1-decimal)
         // pace drops, e.g. 20.6 → 20.5. Never fires during correction so she
@@ -1605,7 +1678,6 @@
                 triggerCoinAnimation(reward);
                 setTimeout(() => {
                     setCoins(prev => prev + reward);
-                    setLifetimeCoins(prev => prev + reward);
                     setDeck(prev => ({ ...prev, [updated.id]: updated }));
                     const nextQueue = [...queue.slice(1)];
                     while (nextQueue.length < QUEUE_SIZE) nextQueue.push(getNextFromDeck(nextQueue));
@@ -1654,6 +1726,15 @@
             return <PracticeMenu deck={deck} coins={coins} onPick={startPractice} />;
         }
 
+        if (screen === 'kittens') {
+            const buyKitten = (emoji) => {
+                if (coins < KITTEN_PRICE) return;
+                setCoins(prev => prev - KITTEN_PRICE);
+                setKittens(prev => [...prev, emoji]);
+            };
+            return <KittensScreen coins={coins} kittens={kittens} onBuy={buyKitten} onBack={() => setScreen('game')} />;
+        }
+
         if (queue.length === 0) return null;
         const currentProblem = queue[0];
 
@@ -1683,22 +1764,19 @@
                                 </div>
                             );
                         })()}
-                        <div className="flex flex-col items-end bg-amber-50 text-amber-700 px-3 py-1.5 rounded-xl font-bold text-sm leading-tight border border-amber-200">
-                            <span className="text-base font-black">{Math.floor(lifetimeCoins / COINS_PER_CHEST)}</span>
-                            <span className="text-[10px] text-amber-400 uppercase tracking-widest font-bold">chests</span>
-                        </div>
                         <div ref={walletRef} className="flex items-center gap-3 bg-yellow-400 px-5 py-2 rounded-2xl shadow-md transition-transform hover:scale-105">
                             <Icon name="Wallet" className="text-yellow-900" />
                             <span className="font-black text-2xl text-yellow-900">{coins}</span>
                             <Icon name="Coins" className="text-yellow-700 animate-bounce" />
                         </div>
                         <button
-                            onClick={() => setCoins(0)}
-                            aria-label="Reset session coins to zero (chests stay)"
-                            title="Reset session coins to zero (chests stay)"
-                            className="bg-slate-100 hover:bg-slate-200 text-slate-500 p-2 rounded-xl transition-colors"
+                            onClick={() => setScreen('kittens')}
+                            aria-label="Adopt a kitten"
+                            title="Adopt a kitten"
+                            className="flex items-center gap-1 bg-pink-100 hover:bg-pink-200 active:scale-95 text-pink-700 px-3 py-2 rounded-xl transition-all font-bold"
                         >
-                            <Icon name="RotateCcw" size={16} />
+                            <span className="text-xl leading-none">🐱</span>
+                            <span className="text-sm">{kittens.length}</span>
                         </button>
                     </div>
                 </div>
