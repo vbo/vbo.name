@@ -405,6 +405,42 @@ const C = {
   academy:  { hp: 600,  cost: 150, build: 80 }, // unlocks firebat + U-238 Shells research
   bunker:   { hp: 350,  cost: 100, build: 30, capacity: 4 }, // shelters up to 4 infantry
 };
+// Bot behaviour parameters — every numeric threshold lives here so the
+// evolutionary optimizer can tune them without touching logic.
+const BOT_CONFIG_DEFAULT = {
+  scvCapBase: 15,
+  scvCapSkilled: 13,
+  scvExpCap: 10,
+  expandMinScv: 9,
+  keepMining: 3,
+  reserveBase: 19,
+  reserveSkilled: 14,
+  waveIntervalInit: 90,
+  waveIntervalMin: 39,
+  waveIntervalMax: 120,
+  waveMin: 11,
+  waveMultiplier: 1.23,
+  waveOffset: 4,
+  blindAttackMin: 17,
+  raxCapBase: 3,
+  raxCapSkilled: 5,
+  raxTimeBase: 107,
+  raxTimeSkilled: 99,
+  uScv: 1,
+  uMarine: 1,
+  uFirebat: 0.45,
+  uRax: 0.95,
+  uAcademy: 0.38,
+  uBunker: 0.10,
+  uExpand: 0.80,
+  uDepot: 1.11,
+  uU238: 0.72,
+};
+let BOT_CONFIG   = { ...BOT_CONFIG_DEFAULT };
+let HUMAN_CONFIG = { ...BOT_CONFIG_DEFAULT };
+// Set to true in the evolutionary script so tick() also drives the human side.
+let ENABLE_HUMAN_BOT = false;
+
 // Tech upgrades researched at the Academy.
 const UPGRADES = {
   u238: { minerals: 150, gas: 150, time: 100, label: "U-238 Shells (+1 Marine range)" },
@@ -597,12 +633,10 @@ function resetState(seed) {
     seen: new Array(n).fill(null),      // per-node last-seen enemy buildings (null = never scouted)
     seenUnits: new Array(n).fill(null), // per-node last-seen enemy units (fades after a few s)
     upgrades: { human: [], bot: [] }, // researched upgrade keys per owner
-    bot: {
-      lastEval: 0, lastWave: 30, waveInterval: 90, // adaptive; starts at 90s between waves
-      enemyBase: null, // null until a bot unit visits a node with enemy buildings
-      enemyArmy: 0,    // player army size last scouted at enemyBase
-      scoutTime: null, // tick of that last sighting; null = never scouted
-    },
+    bot:     { lastEval: 0, lastWave: 30, waveInterval: BOT_CONFIG.waveIntervalInit,
+               enemyBase: null, enemyArmy: 0, scoutTime: null },
+    humanAI: { lastEval: 0, lastWave: 30, waveInterval: HUMAN_CONFIG.waveIntervalInit,
+               enemyBase: null, enemyArmy: 0, scoutTime: null },
   };
   // Each side: 1 Command Center + 4 idle SCVs at its home node.
   spawnBase(HUMAN, HOME);
@@ -701,7 +735,9 @@ function tick() {
   cleanupDead();
   alertStep();
   fogStep();
-  if (state.time - state.bot.lastEval >= 3) { botEval(); state.bot.lastEval = state.time; }
+  if (state.time - state.bot.lastEval >= 3)     { botEval();      state.bot.lastEval     = state.time; }
+  if (ENABLE_HUMAN_BOT && state.humanAI &&
+      state.time - state.humanAI.lastEval >= 3) { humanBotEval(); state.humanAI.lastEval = state.time; }
 
   checkEnd();
   render();
@@ -1278,231 +1314,308 @@ function setTask(owner, node, n, from, to, unitType) {
 }
 
 /* -------------------------------- Bot -------------------------------- */
-function botEval() {
-  const home = AWAY;
-  const min = () => state.minerals[BOT];
-  const underAttack = state.units.some(u => u.owner === HUMAN && u.node === home);
-  const botRax = state.buildings.find(b =>
-    b.owner === BOT && b.type === "barracks" && !b.construct);
 
-  // Adaptive difficulty: check player pace every 30s and nudge wave frequency.
-  if (state.time % 30 === 0 && state.time > 0) {
-    const humanMarines = state.units.filter(u => u.owner === HUMAN && u.type === "marine").length;
-    const humanTotal = state.units.filter(u => u.owner === HUMAN).length;
-    const iv = state.bot.waveInterval;
-    if (humanMarines >= 5) state.bot.waveInterval = Math.max(50, iv - 6);
-    else if (humanMarines >= 2 && state.time < 200) state.bot.waveInterval = Math.max(55, iv - 4);
-    if (humanTotal <= 3) state.bot.waveInterval = Math.min(120, iv + 8); // player struggling → ease off
+function sendFirebats(owner, node, dest, mode) {
+  const n = idleFirebats(owner, node).length;
+  if (n > 0) sendUnits(owner, node, n, "firebat", dest, mode);
+}
+
+// Generic AI driver — works for either player.
+// owner/home/oppHome/opp identify the perspective; ai is the per-side intel object;
+// cfg is the tunable parameter set (BOT_CONFIG or HUMAN_CONFIG).
+function evalSide(owner, home, oppHome, opp, ai, cfg) {
+  const min = () => state.minerals[owner];
+  const gas = () => state.gas[owner];
+
+  // ── TOPOLOGY ─────────────────────────────────────────────────────────────
+  const adj = state.map.adj;
+  const mapN = state.map.n;
+  const distE = state.map.dist[oppHome];          // distance from each node → enemy home
+  const distFromHome = bfsDist(home, adj, mapN);
+
+  // Forward node: home's neighbour closest to the enemy (natural choke / rally line).
+  const homeNeighbours = [...adj[home]];
+  const fwd = homeNeighbours.length
+    ? homeNeighbours.reduce((best, nb) => distE[nb] < distE[best] ? nb : best, homeNeighbours[0])
+    : home;
+  const fwdVisited = fwd !== home && !!state.visited[owner][fwd];
+
+  // Weakest-path strike target: prefer the enemy-adjacent node with fewest defenders.
+  function strikeTarget() {
+    const base = ai.enemyBase;
+    if (base === null || !canSendTo(owner, base)) return base;
+    const candidates = [...adj[oppHome]].filter(n => canSendTo(owner, n));
+    if (!candidates.length) return base;
+    const defScore = n =>
+      state.units.filter(u => u.owner === opp && u.node === n &&
+        (u.type === "marine" || u.type === "firebat")).length +
+      state.buildings.filter(b => b.owner === opp && b.node === n &&
+        b.type === "bunker" && !b.construct).length * 4;
+    const weakest = candidates.reduce((a, b) => defScore(a) <= defScore(b) ? a : b);
+    return defScore(weakest) < defScore(oppHome) ? weakest : base;
   }
 
-  // "Skilled" = adaptive difficulty has ramped the bot up against a strong player.
-  const skilled = state.bot.waveInterval <= 60;
-
-  if (underAttack) {
-    // Marines defend automatically (they're idle and auto-fight). Only pull SCVs
-    // off mining when the marines alone can't hold — and only enough to cover the
-    // shortfall, always keeping a core of miners so income never fully stops.
-    // (Throwing the whole worker line at every attack was what killed the bot's
-    // economy: it lost all SCVs in wave 1 and couldn't rebuild for wave 2.)
-    const attackers = state.units.filter(u =>
-      u.owner === HUMAN && u.node === home && u.hp > 0).length;
-    const defenders = idleMarines(BOT, home).length;
-    const miners = unitsOf(BOT, home, "mining", "scv");
-    const KEEP_MINING = 6; // protect income: never conscript below this many miners
-    if (defenders < attackers) {
-      const need = Math.min(attackers - defenders, Math.max(0, miners.length - KEEP_MINING));
-      miners.slice(0, need).forEach(u => u.task = "idle");
-    } else {
-      // Marines have it covered — return any panicked SCVs to mining.
-      if (state.field[home] > 0)
-        unitsOf(BOT, home, "idle", "scv").forEach(u => u.task = "mining");
-    }
-  } else {
-    // Not under attack. Bot explores outward (toward any unvisited frontier node) until
-    // it discovers the enemy base; once found and reachable, it scouts then attacks.
-    const marines = idleMarines(BOT, home);
-    const reserve = skilled ? 8 : 14; // marines held back to defend
-    const waveDue = state.time - state.bot.lastWave >= state.bot.waveInterval;
-
-    // Discover enemy base: first visited node that has enemy buildings.
-    if (state.bot.enemyBase === null) {
-      for (let n = 0; n < state.map.n; n++) {
-        if (state.visited[BOT][n] && state.buildings.some(b => b.owner === HUMAN && b.node === n)) {
-          state.bot.enemyBase = n; break;
-        }
+  // ── INTEL ────────────────────────────────────────────────────────────────
+  if (ai.enemyBase === null) {
+    for (let n = 0; n < mapN; n++) {
+      if (state.visited[owner][n] && state.buildings.some(b => b.owner === opp && b.node === n)) {
+        ai.enemyBase = n; break;
       }
     }
-    const target = state.bot.enemyBase;
+  }
+  const target = ai.enemyBase;
+  if (target !== null && state.units.some(u => u.owner === owner && u.node === target)) {
+    ai.enemyArmy = state.units.filter(u =>
+      u.owner === opp && u.node === target &&
+      (u.type === "marine" || u.type === "scv")).length;
+    ai.scoutTime = state.time;
+    if (!state.buildings.some(b => b.owner === opp && b.node === target))
+      ai.enemyBase = null;
+  }
+  const intelFresh = ai.scoutTime != null && state.time - ai.scoutTime <= 120;
 
-    // Update intel whenever any bot unit stands at the discovered enemy base.
-    if (target !== null && state.units.some(u => u.owner === BOT && u.node === target)) {
-      state.bot.enemyArmy = state.units.filter(u => u.owner === HUMAN && u.node === target &&
-        (u.type === "marine" || u.type === "scv")).length;
-      state.bot.scoutTime = state.time;
-      // Base cleared — reset so the discovery loop can find a new enemy base next eval.
-      if (!state.buildings.some(b => b.owner === HUMAN && b.node === target))
-        state.bot.enemyBase = null;
+  // ── ADAPTIVE DIFFICULTY ──────────────────────────────────────────────────
+  if (state.time % 30 === 0 && state.time > 0) {
+    const oppMarines = state.units.filter(u => u.owner === opp && u.type === "marine").length;
+    const oppTotal   = state.units.filter(u => u.owner === opp).length;
+    const iv = ai.waveInterval;
+    if (oppMarines >= 5) ai.waveInterval = Math.max(cfg.waveIntervalMin, iv - 6);
+    else if (oppMarines >= 2 && state.time < 200) ai.waveInterval = Math.max(cfg.waveIntervalMin + 5, iv - 4);
+    if (oppTotal <= 3) ai.waveInterval = Math.min(cfg.waveIntervalMax, iv + 8);
+  }
+  const skilled = ai.waveInterval <= 60;
+  const reserve = skilled ? cfg.reserveSkilled : cfg.reserveBase;
+
+  // ── THREAT DETECTION ─────────────────────────────────────────────────────
+  const enemyAtHome = state.units.some(u => u.owner === opp && u.node === home);
+  const enemyAtFwd  = fwdVisited && state.units.some(u => u.owner === opp && u.node === fwd);
+  const underAttack = enemyAtHome || enemyAtFwd;
+  const threatNode  = enemyAtHome ? home : fwd;
+
+  // ── DEFENSE ──────────────────────────────────────────────────────────────
+  if (underAttack) {
+    const attackers = state.units.filter(u =>
+      u.owner === opp && u.node === threatNode && u.hp > 0).length;
+    const defenders = state.units.filter(u =>
+      u.owner === owner && u.node === threatNode && !u.transit &&
+      (u.type === "marine" || u.type === "firebat")).length;
+    const miners = unitsOf(owner, home, "mining", "scv");
+    if (defenders < attackers) {
+      const need = Math.min(attackers - defenders, Math.max(0, miners.length - cfg.keepMining));
+      miners.slice(0, need).forEach(u => u.task = "idle");
+    } else {
+      if (state.field[home] > 0)
+        unitsOf(owner, home, "idle", "scv").forEach(u => u.task = "mining");
     }
-    const intelFresh = state.bot.scoutTime != null && state.time - state.bot.scoutTime <= 120;
-    // Any bot unit with a transit heading away from home (scout or attack wave).
-    const scoutOut = state.units.some(u => u.owner === BOT && u.transit != null && u.transit.to !== home);
+  } else {
+    // ── EXPLORATION & ATTACK ─────────────────────────────────────────────
+    const homeMarines = idleMarines(owner, home);
+    const fwdMarines  = idleMarines(owner, fwd);
+    const waveDue = state.time - ai.lastWave >= ai.waveInterval;
+    const scoutOut = state.units.some(u =>
+      u.owner === owner && u.transit && u.transit.to !== home && u.transit.to !== fwd);
 
-    // Frontier: nearest unvisited node (any direction, not hard-coded toward HOME).
-    const distFromHome = bfsDist(home, state.map.adj, state.map.n);
     let frontier = -1, frontierDist = Infinity;
-    for (let n = 0; n < state.map.n; n++) {
-      if (!state.visited[BOT][n] && distFromHome[n] < frontierDist) {
+    for (let n = 0; n < mapN; n++) {
+      if (!state.visited[owner][n] && distFromHome[n] < frontierDist) {
         frontierDist = distFromHome[n]; frontier = n;
       }
     }
-    const targetReachable = target !== null && canSendTo(BOT, target);
+    const targetReachable = target !== null && canSendTo(owner, target);
 
     if (!targetReachable && frontier !== -1) {
-      // Claim the frontier: send one marine (or a spare SCV early) if nobody is
-      // there or already heading there.
-      const atFrontier = state.units.some(u => u.owner === BOT && u.node === frontier);
+      const atFrontier = state.units.some(u => u.owner === owner && u.node === frontier);
       const headed = state.units.some(u =>
-        u.owner === BOT && u.transit && u.transit.path.includes(frontier));
+        u.owner === owner && u.transit && u.transit.path.includes(frontier));
       if (!atFrontier && !headed) {
-        if (marines.length > 1) sendUnits(BOT, home, 1, "marine", frontier);
+        if (homeMarines.length > 1) sendUnits(owner, home, 1, "marine", frontier);
         else {
-          const scvsHome = state.units.filter(u => u.owner === BOT && u.node === home &&
-            u.type === "scv" && (u.task === "idle" || u.task === "mining"));
-          if (scvsHome.length >= 10) sendUnits(BOT, home, 1, "scv", frontier);
+          const scvsHome = state.units.filter(u =>
+            u.owner === owner && u.node === home && u.type === "scv" &&
+            (u.task === "idle" || u.task === "mining"));
+          if (scvsHome.length >= cfg.expandMinScv) sendUnits(owner, home, 1, "scv", frontier);
         }
       }
     } else if (targetReachable) {
-      // Enemy base discovered and reachable — scout for intel, then commit a real wave.
-      // If the wave is overdue and overwhelming force is available, commit blind rather
-      // than drip-feeding scouts that keep dying en route.
-      const strike = marines.length - reserve;
-      const blindAttack = waveDue && !intelFresh && strike >= 20;
-      if (blindAttack) {
-        sendUnits(BOT, home, strike, "marine", target, "attack");
-        state.bot.lastWave = state.time;
-      } else if (!intelFresh && !scoutOut && marines.length > reserve) {
-        sendUnits(BOT, home, 1, "marine", target); // scout — move mode, observe then leave
-      } else if (waveDue && intelFresh) {
-        const needed = Math.max(12, Math.ceil(state.bot.enemyArmy * 1.4) + 4);
-        if (strike >= needed) {
-          sendUnits(BOT, home, strike, "marine", target, "attack"); // attack wave
-          state.bot.lastWave = state.time;
-        }
+      const allStrike = homeMarines.length + fwdMarines.length;
+      const surplus   = allStrike - reserve;
+      const dest      = strikeTarget() ?? target;
+      const needed    = Math.max(cfg.waveMin, Math.ceil(ai.enemyArmy * 1.4) + cfg.waveOffset);
+      const launch    = (waveDue && !intelFresh && surplus >= cfg.blindAttackMin) ||
+                        (waveDue && intelFresh && surplus >= needed);
+
+      if (launch) {
+        if (fwdMarines.length > 0)
+          sendUnits(owner, fwd, fwdMarines.length, "marine", dest, "attack");
+        const homeStrike = homeMarines.length - reserve;
+        if (homeStrike > 0)
+          sendUnits(owner, home, homeStrike, "marine", dest, "attack");
+        sendFirebats(owner, fwd,  dest, "attack");
+        sendFirebats(owner, home, dest, "attack");
+        ai.lastWave = state.time;
+      } else if (!intelFresh && !scoutOut && allStrike > reserve) {
+        sendUnits(owner, home, 1, "marine", target); // scout
       }
     }
 
-    // Expansion: send an SCV to claim visited resource nodes without a bot CC.
-    if (!underAttack && min() >= C.cc.cost + 200) {
-      const noExpanding = !state.buildings.some(
-        b => b.owner === BOT && b.type === "cc" && b.construct && b.node !== home);
-      if (noExpanding) {
-        let expNode = -1, expDist = Infinity;
-        for (let n = 0; n < state.map.n; n++) {
-          if (n === home || !state.visited[BOT][n] || state.field[n] <= 0) continue;
-          if (state.buildings.some(b => b.owner === BOT && b.node === n && b.type === "cc")) continue;
-          if (distFromHome[n] < expDist) { expDist = distFromHome[n]; expNode = n; }
-        }
-        if (expNode !== -1) {
-          const scvThere = unitsOf(BOT, expNode, null, "scv").length > 0;
-          const scvEnRoute = state.units.some(u =>
-            u.owner === BOT && u.type === "scv" && u.transit && u.transit.to === expNode);
-          if (scvThere) {
-            startBuilding(BOT, expNode, "cc");
-          } else if (!scvEnRoute) {
-            const homeScvAvail = state.units.filter(u =>
-              u.owner === BOT && u.node === home && u.type === "scv" &&
-              (u.task === "idle" || u.task === "mining")).length;
-            if (homeScvAvail > 10) sendUnits(BOT, home, 1, "scv", expNode);
+    // ── FORWARD STAGING ─────────────────────────────────────────────────
+    // Move surplus home marines to the forward node (natural defensive line).
+    if (fwdVisited) {
+      const surplus = homeMarines.length - reserve;
+      if (surplus > 0) sendUnits(owner, home, surplus, "marine", fwd, "move");
+    }
+  }
+
+  // ── MOP-UP ───────────────────────────────────────────────────────────────
+  // Idle combat units at non-home, non-fwd nodes march toward enemy or rally to fwd.
+  for (let n = 0; n < mapN; n++) {
+    if (n === home || n === fwd) continue;
+    const idle = state.units.filter(u =>
+      u.owner === owner && u.node === n && !u.transit && u.task === "idle" &&
+      (u.type === "marine" || u.type === "firebat"));
+    if (!idle.length) continue;
+    const mopDest = (target !== null && canSendTo(owner, target)) ? target
+                  : fwdVisited ? fwd : home;
+    if (mopDest === n) continue;
+    const mode = mopDest === target ? "attack" : "move";
+    const marines  = idle.filter(u => u.type === "marine").length;
+    const firebats = idle.filter(u => u.type === "firebat").length;
+    if (marines)  sendUnits(owner, n, marines,  "marine",  mopDest, mode);
+    if (firebats) sendFirebats(owner, n, mopDest, mode);
+  }
+
+  // ── ECONOMY STATE ────────────────────────────────────────────────────────
+  const scvCount  = state.units.filter(u => u.owner === owner && u.type === "scv").length;
+  const scvCap    = skilled ? cfg.scvCapSkilled : cfg.scvCapBase;
+  const raxCount  = state.buildings.filter(b => b.owner === owner && b.type === "barracks").length;
+  const raxTarget = skilled ? Math.min(cfg.raxCapSkilled, 1 + Math.floor(state.time / cfg.raxTimeSkilled))
+                            : Math.min(cfg.raxCapBase,    1 + Math.floor(state.time / cfg.raxTimeBase));
+  const raxDone       = hasFinishedBarracks(owner);
+  const academyExists = state.buildings.some(b => b.owner === owner && b.type === "academy");
+  const academyReady  = state.buildings.find(b =>
+    b.owner === owner && b.type === "academy" && !b.construct && !b.research);
+  const hasAcademy    = state.buildings.some(b =>
+    b.owner === owner && b.type === "academy" && !b.construct);
+
+  // ── EXPANSION ────────────────────────────────────────────────────────────
+  let savingForCC = false;
+  if (!underAttack) {
+    const noExpanding = !state.buildings.some(
+      b => b.owner === owner && b.type === "cc" && b.construct && b.node !== home);
+    if (noExpanding) {
+      let expNode = -1, expDist = Infinity;
+      for (let n = 0; n < mapN; n++) {
+        if (n === home || !state.visited[owner][n] || state.field[n] <= 0) continue;
+        if (state.buildings.some(b => b.owner === owner && b.node === n && b.type === "cc")) continue;
+        if (distFromHome[n] < expDist) { expDist = distFromHome[n]; expNode = n; }
+      }
+      if (expNode !== -1) {
+        const scvThere = unitsOf(owner, expNode, null, "scv").length > 0;
+        const scvEnRoute = state.units.some(u =>
+          u.owner === owner && u.type === "scv" && u.transit && u.transit.to === expNode);
+        if (scvThere) {
+          startBuilding(owner, expNode, "cc");
+          savingForCC = min() < C.cc.cost;
+        } else if (scvEnRoute) {
+          savingForCC = min() < C.cc.cost;
+        } else {
+          const homeScvAvail = state.units.filter(u =>
+            u.owner === owner && u.node === home && u.type === "scv" &&
+            (u.task === "idle" || u.task === "mining")).length;
+          if (homeScvAvail > cfg.expandMinScv) {
+            sendUnits(owner, home, 1, "scv", expNode);
+            const escort = Math.min(2, idleMarines(owner, home).length);
+            if (escort > 0) sendUnits(owner, home, escort, "marine", expNode, "move");
+            savingForCC = min() < C.cc.cost;
           }
         }
       }
     }
-  }
-
-  // Mop-up: idle bot marines at non-home nodes march toward the current enemy base (or home).
-  {
-    const mopTarget = state.bot.enemyBase;
-    for (let n = 0; n < state.map.n; n++) {
-      if (n === home) continue;
-      const idle = state.units.filter(u =>
-        u.owner === BOT && u.node === n && !u.transit && u.task === "idle" && u.type === "marine");
-      if (!idle.length) continue;
-      const dest = mopTarget !== null && canSendTo(BOT, mopTarget) ? mopTarget : home;
-      if (dest !== n) {
-        const mode = dest === mopTarget ? "attack" : "move";
-        sendUnits(BOT, n, idle.length, "marine", dest, mode);
-      }
+    for (const ccB of state.buildings.filter(
+        b => b.owner === owner && b.type === "cc" && !b.construct && b.node !== home)) {
+      if (state.field[ccB.node] <= 0) continue;
+      const expMiners = unitsOf(owner, ccB.node, "mining", "scv").length;
+      const enRoute = state.units.filter(u =>
+        u.owner === owner && u.type === "scv" && u.transit && u.transit.to === ccB.node).length;
+      const homeScvAvail = state.units.filter(u =>
+        u.owner === owner && u.node === home && u.type === "scv" &&
+        (u.task === "idle" || u.task === "mining")).length;
+      const send = Math.min(Math.max(0, cfg.scvExpCap - expMiners - enRoute),
+                            Math.max(0, homeScvAvail - cfg.keepMining));
+      if (send > 0) sendUnits(owner, home, send, "scv", ccB.node);
     }
   }
 
-  // Supply: build depots with a healthy buffer so production never stalls.
-  if (supplyUsed(BOT) >= supplyCap(BOT) - 4 && supplyCap(BOT) < SUPPLY_MAX &&
-      min() >= C.depot.cost &&
-      !state.buildings.some(b => b.owner === BOT && b.type === "depot" && b.construct)) {
-    startBuilding(BOT, home, "depot");
+  // ── UTILITY BUILD SYSTEM ─────────────────────────────────────────────────
+  // Each candidate action gets a utility score; build/tech actions fire one per
+  // eval (highest score wins), train actions all fire while affordable.
+  const supplyP   = Math.max(0, (supplyUsed(owner) - supplyCap(owner) + 6) / 6);
+  const armyRatio = Math.max(0.1, 1 - scvCount / Math.max(1, scvCount + raxCount * 3));
+
+  const builds = [];
+  const add = (score, exec, kind = "build") => { if (score > 0) builds.push({ score, exec, kind }); };
+
+  if (supplyCap(owner) < SUPPLY_MAX &&
+      !state.buildings.some(b => b.owner === owner && b.type === "depot" && b.construct))
+    add(cfg.uDepot * 10 * supplyP * supplyP,
+        () => startBuilding(owner, home, "depot"));
+
+  if (raxDone && !academyExists && !underAttack)
+    add(cfg.uAcademy * 5,
+        () => startBuilding(owner, home, "academy"));
+
+  if (academyReady && !state.upgrades[owner].includes("u238"))
+    add(cfg.uU238 * 4, () => startResearch(owner, "u238"), "tech");
+
+  if (!state.buildings.some(b => b.owner === owner && b.type === "barracks" && b.construct))
+    add(cfg.uRax * 6 * Math.max(0, 1 - raxCount / raxTarget),
+        () => startBuilding(owner, home, "barracks"));
+
+  if (raxDone && fwdVisited && !underAttack &&
+      !state.buildings.some(b => b.owner === owner && b.node === fwd && b.type === "bunker"))
+    add(cfg.uBunker * 4, () => startBuilding(owner, fwd, "bunker"));
+
+  add(cfg.uScv * 8 * Math.max(0.1, 1 - scvCount / scvCap),
+      () => queueSCV(owner, home, 1), "train");
+
+  if (!savingForCC && raxDone) {
+    for (let i = 0; i < raxCount; i++) {
+      if (hasAcademy && gas() >= C.firebat.gasCost * 3)
+        add(cfg.uFirebat * 7 * armyRatio, () => queueFirebat(owner, home), "train");
+      else
+        add(cfg.uMarine * 7 * armyRatio, () => queueMarine(owner, home), "train");
+    }
   }
 
-  // Economy: keep SCVs coming (bigger cap than before so the army is funded).
-  const botSCVs = state.units.filter(u => u.owner === BOT && u.type === "scv").length;
-  const scvCap = skilled ? 18 : 12;
-  if (min() >= C.cc.trainCost && supplyUsed(BOT) < supplyCap(BOT) &&
-      (botSCVs < scvCap || !botRax)) {
-    queueSCV(BOT, home, 1);
+  builds.sort((a, b) => b.score - a.score);
+  let builtOne = false;
+  for (const bld of builds) {
+    if (supplyUsed(owner) >= supplyCap(owner) && bld.kind === "train") continue;
+    if (bld.kind !== "train") {
+      if (builtOne) continue;
+      const before = min();
+      bld.exec();
+      if (min() < before) builtOne = true;
+    } else {
+      const before = min();
+      bld.exec();
+      if (min() === before) break;
+    }
   }
 
-  // Tech: build Academy once a barracks is done, then research U-238.
-  const raxDone = hasFinishedBarracks(BOT);
-  const academyExists = state.buildings.some(b => b.owner === BOT && b.type === "academy");
-  if (raxDone && !academyExists && min() >= C.academy.cost && !underAttack)
-    startBuilding(BOT, home, "academy");
-  const academyReady = state.buildings.find(b => b.owner === BOT && b.type === "academy" && !b.construct && !b.research);
-  if (academyReady && !state.upgrades[BOT].includes("u238"))
-    startResearch(BOT, "u238");
-
-  // Tech: expand barracks over time so marine output scales with the player's.
-  const raxCount = state.buildings.filter(b => b.owner === BOT && b.type === "barracks").length;
-  const raxTarget = skilled ? Math.min(6, 1 + Math.floor(state.time / 60))
-                            : Math.min(3, 1 + Math.floor(state.time / 120));
-  const raxBuilding = state.buildings.some(b => b.owner === BOT && b.type === "barracks" && b.construct);
-  if (raxCount < raxTarget && min() >= C.barracks.cost && !raxBuilding) {
-    startBuilding(BOT, home, "barracks");
-  }
-
-  // Pump marines/firebats from every idle barracks (one top-up per barracks per eval).
-  const hasAcademy = state.buildings.some(b => b.owner === BOT && b.type === "academy" && !b.construct);
-  let guard = raxCount;
-  while (botRax && supplyUsed(BOT) < supplyCap(BOT) && guard-- > 0) {
-    const before = min();
-    // Use firebats when academy is ready and gas is plentiful; otherwise marines.
-    if (hasAcademy && state.gas[BOT] >= C.firebat.gasCost * 3 && min() >= C.firebat.cost) {
-      queueFirebat(BOT, home);
-    } else if (min() >= C.marine.cost) {
-      queueMarine(BOT, home);
-    } else break;
-    if (min() === before) break; // all barracks queues full
-  }
-
-  // Set idle SCVs to mining at every completed bot CC node.
-  for (const ccB of state.buildings.filter(b => b.owner === BOT && b.type === "cc" && !b.construct)) {
+  // ── SCV TASKS ────────────────────────────────────────────────────────────
+  for (const ccB of state.buildings.filter(b => b.owner === owner && b.type === "cc" && !b.construct)) {
     if (state.field[ccB.node] <= 0) continue;
     if (underAttack && ccB.node === home) continue;
-    unitsOf(BOT, ccB.node, "idle", "scv").forEach(u => u.task = "mining");
+    unitsOf(owner, ccB.node, "idle", "scv").forEach(u => u.task = "mining");
   }
-  // Trickle extra SCVs to undermanned expansion nodes (up to 8 miners, keep 10+ at home).
-  if (!underAttack) {
-    for (const ccB of state.buildings.filter(
-        b => b.owner === BOT && b.type === "cc" && !b.construct && b.node !== home)) {
-      if (state.field[ccB.node] <= 0) continue;
-      const expMiners = unitsOf(BOT, ccB.node, "mining", "scv").length;
-      const enRoute = state.units.filter(u =>
-        u.owner === BOT && u.type === "scv" && u.transit && u.transit.to === ccB.node).length;
-      const homeScvAvail = state.units.filter(u =>
-        u.owner === BOT && u.node === home && u.type === "scv" &&
-        (u.task === "idle" || u.task === "mining")).length;
-      const send = Math.min(Math.max(0, 8 - expMiners - enRoute), Math.max(0, homeScvAvail - 10));
-      if (send > 0) sendUnits(BOT, home, send, "scv", ccB.node);
-    }
-  }
+}
+
+function botEval() {
+  evalSide(BOT, AWAY, HOME, HUMAN, state.bot, BOT_CONFIG);
+}
+function humanBotEval() {
+  if (state.humanAI) evalSide(HUMAN, HOME, AWAY, BOT, state.humanAI, HUMAN_CONFIG);
 }
 
 /* ------------------------------ Rendering ---------------------------- */
@@ -2589,6 +2702,8 @@ function deserializeState(raw) {
   HOME = state.map.starts[0];
   AWAY = state.map.starts[1];
   NODE_NAMES = state.map.names;
+  if (!state.humanAI)
+    state.humanAI = { lastEval: 0, lastWave: 30, waveInterval: 90, enemyBase: null, enemyArmy: 0, scoutTime: null };
   return true;
 }
 
@@ -3661,6 +3776,31 @@ function runTests() {
       // Marines shown in forces panel should exclude bunker occupants.
       const visibleMarines = unitsOf(HUMAN, HOME, null, "marine").filter(u => u.task !== "bunker");
       eq(visibleMarines.length, 0, "loaded marine not shown as idle in forces panel");
+    },
+
+    "bot expands to mineral nodes": function () {
+      // Across 20 seeded games, on maps that have non-home mineral nodes, the bot
+      // should establish a second CC in at least 70% of eligible cases.
+      const TICKS = 6000;
+      let eligible = 0, expanded = 0;
+      for (let seed = 0; seed < 20; seed++) {
+        resetState(seed);
+        const botHome = AWAY;
+        const hasExpNodes = Array.from({length: state.map.n}, (_, n) => n)
+          .some(n => n !== HOME && n !== botHome && state.field[n] > 0);
+        if (!hasExpNodes) continue;
+        eligible++;
+        let botExpanded = false;
+        for (let t = 0; t < TICKS && !botExpanded; t++) {
+          tick();
+          botExpanded = state.buildings.some(b =>
+            b.owner === BOT && b.type === "cc" && b.node !== botHome);
+        }
+        if (botExpanded) expanded++;
+      }
+      ok(eligible >= 5, `need ≥5 expansion-eligible seeds in first 20 (got ${eligible})`);
+      ok(expanded >= Math.ceil(eligible * 0.7),
+        `bot expanded in ${expanded}/${eligible} eligible seeds (need ≥70%)`);
     },
   };
 
