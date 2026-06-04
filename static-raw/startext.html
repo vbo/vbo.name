@@ -409,32 +409,32 @@ const C = {
 // evolutionary optimizer can tune them without touching logic.
 const BOT_CONFIG_DEFAULT = {
   scvCapBase: 15,
-  scvCapSkilled: 13,
-  scvExpCap: 10,
-  expandMinScv: 9,
-  keepMining: 3,
-  reserveBase: 19,
-  reserveSkilled: 14,
-  waveIntervalInit: 90,
-  waveIntervalMin: 39,
-  waveIntervalMax: 120,
-  waveMin: 11,
-  waveMultiplier: 1.23,
+  scvCapSkilled: 16,
+  scvExpCap: 13,
+  expandMinScv: 14,
+  keepMining: 7,
+  reserveBase: 18,
+  reserveSkilled: 13,
+  waveIntervalInit: 88,
+  waveIntervalMin: 35,
+  waveIntervalMax: 114,
+  waveMin: 10,
+  waveMultiplier: 1.10,
   waveOffset: 4,
-  blindAttackMin: 17,
+  blindAttackMin: 20,
   raxCapBase: 3,
-  raxCapSkilled: 5,
-  raxTimeBase: 107,
-  raxTimeSkilled: 99,
+  raxCapSkilled: 4,
+  raxTimeBase: 148,
+  raxTimeSkilled: 96,
   uScv: 1,
   uMarine: 1,
-  uFirebat: 0.45,
-  uRax: 0.95,
-  uAcademy: 0.38,
-  uBunker: 0.10,
+  uFirebat: 0.86,
+  uRax: 1.07,
+  uAcademy: 0.56,
+  uBunker: 0.26,
   uExpand: 0.80,
-  uDepot: 1.11,
-  uU238: 0.72,
+  uDepot: 0.96,
+  uU238: 0.38,
 };
 let BOT_CONFIG   = { ...BOT_CONFIG_DEFAULT };
 let HUMAN_CONFIG = { ...BOT_CONFIG_DEFAULT };
@@ -1392,6 +1392,10 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
   const underAttack = enemyAtHome || enemyAtFwd;
   const threatNode  = enemyAtHome ? home : fwd;
 
+  // Forward bunker (finished) at the choke, if any — the garrison anchor.
+  const fwdBunker = () => state.buildings.find(b =>
+    b.owner === owner && b.node === fwd && b.type === "bunker" && !b.construct);
+
   // ── DEFENSE ──────────────────────────────────────────────────────────────
   if (underAttack) {
     const attackers = state.units.filter(u =>
@@ -1407,8 +1411,25 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
       if (state.field[home] > 0)
         unitsOf(owner, home, "idle", "scv").forEach(u => u.task = "mining");
     }
+    // Choke held: stuff idle infantry into the forward bunker (protected, +1 range).
+    if (enemyAtFwd) {
+      const bk = fwdBunker();
+      if (bk && bk.loaded.length < C.bunker.capacity && idleMarines(owner, fwd).length)
+        loadBunker(owner, fwd, bk.id);
+    }
+    // Threat reached home — the choke is moot, so release the forward garrison to help.
+    if (enemyAtHome) {
+      const bk = fwdBunker();
+      if (bk && bk.loaded.length) {
+        unloadBunker(owner, bk.id);
+        const back = idleMarines(owner, fwd).length;
+        if (back) sendUnits(owner, fwd, back, "marine", home, "attack");
+        sendFirebats(owner, fwd, home, "attack");
+      }
+    }
   } else {
     // ── EXPLORATION & ATTACK ─────────────────────────────────────────────
+    let launched = false;
     const homeMarines = idleMarines(owner, home);
     const fwdMarines  = idleMarines(owner, fwd);
     const waveDue = state.time - ai.lastWave >= ai.waveInterval;
@@ -1437,7 +1458,9 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
         }
       }
     } else if (targetReachable) {
-      const allStrike = homeMarines.length + fwdMarines.length;
+      // Garrisoned infantry count as available army — they're released on launch.
+      const bunkerLoaded = (fwdBunker()?.loaded.length) || 0;
+      const allStrike = homeMarines.length + fwdMarines.length + bunkerLoaded;
       const surplus   = allStrike - reserve;
       const dest      = strikeTarget() ?? target;
       const needed    = Math.max(cfg.waveMin, Math.ceil(ai.enemyArmy * 1.4) + cfg.waveOffset);
@@ -1445,8 +1468,13 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
                         (waveDue && intelFresh && surplus >= needed);
 
       if (launch) {
-        if (fwdMarines.length > 0)
-          sendUnits(owner, fwd, fwdMarines.length, "marine", dest, "attack");
+        launched = true;
+        // Commit the forward garrison to the wave — empty the bunker first.
+        const bk = fwdBunker();
+        if (bk && bk.loaded.length) unloadBunker(owner, bk.id);
+        const fwdStrike = idleMarines(owner, fwd).length; // recount post-unload
+        if (fwdStrike > 0)
+          sendUnits(owner, fwd, fwdStrike, "marine", dest, "attack");
         const homeStrike = homeMarines.length - reserve;
         if (homeStrike > 0)
           sendUnits(owner, home, homeStrike, "marine", dest, "attack");
@@ -1463,6 +1491,13 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     if (fwdVisited) {
       const surplus = homeMarines.length - reserve;
       if (surplus > 0) sendUnits(owner, home, surplus, "marine", fwd, "move");
+
+      // Keep the forward bunker garrisoned as a standing anchor (not while attacking).
+      if (!launched) {
+        const bk = fwdBunker();
+        if (bk && bk.loaded.length < C.bunker.capacity && idleMarines(owner, fwd).length)
+          loadBunker(owner, fwd, bk.id);
+      }
     }
   }
 
@@ -3377,6 +3412,73 @@ function runTests() {
         u.owner === BOT && u.type === "marine" && (u.task === "moving" || u.node === HOME)).length;
       ok(committed >= 12, `commits a real strike vs a weak scouted army (committed ${committed})`);
     },
+    "bot garrisons its forward bunker when idle"() {
+      resetState(1);
+      cheat(BOT, 0); // freeze economy; isolate the garrison decision
+      const adj = state.map.adj, distE = state.map.dist[HOME];
+      const nbs = [...adj[AWAY]];
+      if (!nbs.length) { ok(true, "degenerate map — skip"); return; }
+      const fwd = nbs.reduce((b, nb) => distE[nb] < distE[b] ? nb : b, nbs[0]);
+      if (fwd === AWAY) { ok(true, "no distinct forward node — skip"); return; }
+      state.visited.bot[fwd] = true;
+      const bunk = { id: idSeq++, owner: BOT, node: fwd, type: "bunker",
+        hp: C.bunker.hp, maxHp: C.bunker.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: [], research: null, rally: null };
+      state.buildings.push(bunk);
+      for (let i = 0; i < 3; i++) { const m = newMarine(BOT, fwd); m.task = "idle"; }
+      botEval();
+      ok(bunk.loaded.length > 0, `bot loads idle marines into the forward bunker (loaded ${bunk.loaded.length})`);
+    },
+    "bot empties its forward bunker to commit an attack"() {
+      resetState(1);
+      cheat(BOT, 0);
+      state.visited.bot = state.visited.bot.map(() => true); // fully scouted → enemy reachable
+      state.bot.lastWave = -999;        // wave overdue
+      state.bot.scoutTime = state.time; // fresh intel
+      state.bot.enemyArmy = 2;          // weak enemy → low launch threshold
+      const adj = state.map.adj, distE = state.map.dist[HOME];
+      const nbs = [...adj[AWAY]];
+      const fwd = nbs.reduce((b, nb) => distE[nb] < distE[b] ? nb : b, nbs[0]);
+      if (fwd === AWAY) { ok(true, "no forward node — skip"); return; }
+      const bunk = { id: idSeq++, owner: BOT, node: fwd, type: "bunker",
+        hp: C.bunker.hp, maxHp: C.bunker.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: [], research: null, rally: null };
+      state.buildings.push(bunk);
+      state.buildings.push({ id: idSeq++, owner: BOT, node: AWAY, type: "barracks",
+        hp: 1000, maxHp: 1000, construct: null, train: null, queued: 0 });
+      for (let i = 0; i < 4; i++) { const m = newMarine(BOT, fwd); m.task = "idle"; }
+      loadBunker(BOT, fwd, bunk.id);
+      ok(bunk.loaded.length === 4, "bunker starts full");
+      for (let i = 0; i < 30; i++) { const m = newMarine(BOT, AWAY); m.task = "idle"; }
+      botEval();
+      ok(bunk.loaded.length === 0, "bot unloaded the bunker to join the attack");
+      const committed = state.units.filter(u =>
+        u.owner === BOT && u.type === "marine" && u.task === "moving").length;
+      ok(committed >= 12, `forward garrison + home army committed (committed ${committed})`);
+    },
+    "bot releases its forward garrison when home is attacked"() {
+      resetState(1);
+      cheat(BOT, 0);
+      const adj = state.map.adj, distE = state.map.dist[HOME];
+      const nbs = [...adj[AWAY]];
+      const fwd = nbs.reduce((b, nb) => distE[nb] < distE[b] ? nb : b, nbs[0]);
+      if (fwd === AWAY) { ok(true, "no forward node — skip"); return; }
+      state.visited.bot[fwd] = true;
+      const bunk = { id: idSeq++, owner: BOT, node: fwd, type: "bunker",
+        hp: C.bunker.hp, maxHp: C.bunker.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: [], research: null, rally: null };
+      state.buildings.push(bunk);
+      for (let i = 0; i < 4; i++) { const m = newMarine(BOT, fwd); m.task = "idle"; }
+      loadBunker(BOT, fwd, bunk.id);
+      ok(bunk.loaded.length === 4, "bunker garrisoned");
+      // Enemy bypasses the choke and hits the bot's home directly.
+      for (let i = 0; i < 3; i++) { const e = newMarine(HUMAN, AWAY); e.task = "idle"; }
+      botEval();
+      ok(bunk.loaded.length === 0, "bot emptied the forward bunker to defend home");
+      const heading = state.units.filter(u =>
+        u.owner === BOT && u.type === "marine" && u.task === "moving").length;
+      ok(heading > 0, `released marines move to defend home (moving ${heading})`);
+    },
     "defending bot keeps SCVs mining when marines suffice"() {
       resetState(1);
       state.minerals.bot = 0; // stop botEval from building/consuming SCVs
@@ -3390,15 +3492,17 @@ function runTests() {
     },
     "defending bot pulls only the shortfall and keeps a mining core"() {
       resetState(1);
+      const keep = BOT_CONFIG.keepMining;
       state.minerals.bot = 0;
       for (let i = 0; i < 6; i++) newSCV(BOT, AWAY);              // 10 SCVs total
       unitsOf(BOT, AWAY, null, "scv").forEach(u => u.task = "mining");
       const m = newMarine(BOT, AWAY); m.task = "idle";           // 1 defender
       for (let i = 0; i < 5; i++) { const a = newMarine(HUMAN, AWAY); a.task = "idle"; } // 5 attackers
       botEval();
-      // need = min(5-1, 10-6) = 4 pulled; a 6-miner core stays on the minerals.
-      eq(unitsOf(BOT, AWAY, "mining", "scv").length, 6, "keeps a 6-miner income core");
-      eq(unitsOf(BOT, AWAY, "idle", "scv").length, 4, "pulls exactly the 4-SCV shortfall");
+      // need = min(attackers-defenders, miners-keepMining); a keepMining core stays.
+      const need = Math.min(5 - 1, 10 - keep);
+      eq(unitsOf(BOT, AWAY, "mining", "scv").length, 10 - need, `keeps a ${10 - need}-miner income core`);
+      eq(unitsOf(BOT, AWAY, "idle", "scv").length, need, `pulls exactly the ${need}-SCV shortfall`);
     },
     "pause flag freezes simulation in the loop"() {
       resetState(1);
