@@ -284,7 +284,6 @@
     <div class="stat minerals"><b id="s-min">50</b><span>Minerals</span></div>
     <div class="stat gas"><b id="s-gas">0</b><span>Gas</span></div>
     <div class="stat supply" id="s-supwrap"><b id="s-sup">4 / 10</b><span>Supply</span></div>
-    <div class="stat"><b id="s-time">0:00</b><span>Time</span></div>
     <div style="flex:1"></div>
     <button id="menu-btn" class="pause">☰</button>
     <div id="supply-warn">⚠️ Additional supply depots required</div>
@@ -1752,7 +1751,6 @@ function humanBotEval() {
 
 /* ------------------------------ Rendering ---------------------------- */
 const $ = id => document.getElementById(id);
-const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks", refinery: "Refinery", academy: "Academy", bunker: "Bunker", engBay: "Engineering Bay" };
 
 // Display names, assigned the first time the player sees a node. Naming by discovery
@@ -1821,7 +1819,6 @@ function render() {
   } else {
     idleWarn.style.display = "none";
   }
-  $("s-time").textContent = fmtTime(state.time);
   if (typeof document.body !== "undefined" && document.body)
     document.body.classList.toggle("paused", !!state.paused);
 
