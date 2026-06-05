@@ -414,39 +414,7 @@ const C = {
 };
 // Bot behaviour parameters — every numeric threshold lives here so the
 // evolutionary optimizer can tune them without touching logic.
-const BOT_CONFIG_RUSHER = {
-  scvCapBase: 6,
-  scvCapSkilled: 14,
-  scvExpCap: 12,
-  expandMinScv: 6,
-  keepMining: 6,
-  reserveBase: 19,
-  reserveSkilled: 5,
-  waveIntervalInit: 82,
-  waveIntervalMin: 34,
-  waveIntervalMax: 110,
-  waveMin: 6,
-  waveMultiplier: 1.74,
-  waveOffset: 2,
-  blindAttackMin: 10,
-  raxCapBase: 4,
-  raxCapSkilled: 3,
-  raxTimeBase: 102,
-  raxTimeSkilled: 65,
-  uScv: 1.26,
-  uMarine: 1.59,
-  uFirebat: 1.74,
-  uRax: 2,
-  uAcademy: 0.49,
-  uBunker: 0.37,
-  uEngBay: 0.22,
-  uInfWeapons: 0.28,
-  uInfArmor: 0.79,
-  uExpand: 0.30,
-  uDepot: 1,
-  uU238: 0.19,
-};
-const BOT_CONFIG_MACRO = {
+const BOT_CONFIG_DEFAULT = {
   scvCapBase: 16,
   scvCapSkilled: 23,
   scvExpCap: 7,
@@ -478,9 +446,8 @@ const BOT_CONFIG_MACRO = {
   uDepot: 1,
   uU238: 1.05,
 };
-const BOT_PROFILES = { rusher: BOT_CONFIG_RUSHER, macro: BOT_CONFIG_MACRO };
-let BOT_CONFIG   = { ...BOT_CONFIG_MACRO };
-let HUMAN_CONFIG = { ...BOT_CONFIG_MACRO };
+let BOT_CONFIG   = { ...BOT_CONFIG_DEFAULT };
+let HUMAN_CONFIG = { ...BOT_CONFIG_DEFAULT };
 // Set to true in the evolutionary script so tick() also drives the human side.
 let ENABLE_HUMAN_BOT = false;
 
@@ -639,7 +606,7 @@ let state, ui, timer, idSeq;
 function resetState(seed) {
   seedRng(seed === undefined ? (typeof Date !== "undefined" ? Date.now() : 1) : seed);
   if (typeof document !== 'undefined')
-    BOT_CONFIG = { ...BOT_PROFILES[rng() < 0.5 ? 'rusher' : 'macro'] };
+    BOT_CONFIG = { ...BOT_CONFIG_DEFAULT };
   idSeq = 1;
   const map = genMap();
   HOME = map.starts[0];
