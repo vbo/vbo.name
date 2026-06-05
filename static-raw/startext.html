@@ -2648,8 +2648,12 @@ function renderSheet() {
       const up = UPGRADES[key];
       const done = ups.includes(key);
       const prereqOK = !up.requires || ups.includes(up.requires);
-      const canRes = !done && prereqOK && !b.research && mineNow >= up.minerals && gasNow >= up.gas;
-      const note = done ? "✓ done" : !prereqOK ? "requires previous level"
+      const elsewhere = !done && state.buildings.some(eb =>
+        eb.owner === HUMAN && eb.type === "engBay" && eb.id !== b.id &&
+        eb.research && eb.research.type === key);
+      const canRes = !done && prereqOK && !b.research && !elsewhere && mineNow >= up.minerals && gasNow >= up.gas;
+      const note = done ? "✓ done" : elsewhere ? "in progress (other bay)"
+        : !prereqOK ? "requires previous level"
         : b.research ? "busy" : mineNow < up.minerals ? `need ${up.minerals}💎` : gasNow < up.gas ? `need ${up.gas}⛽` : "";
       return `<button class="act secondary" ${canRes ? "" : "disabled"} id="a-${key}">
         ${up.label} <span class="cost">— ${up.minerals}💎 ${up.gas}⛽ · ${up.time}s${note ? " · " + note : ""}</span>
@@ -2718,8 +2722,7 @@ function renderSheet() {
     const acadOK      = all.length >= 1 && mineNow >= C.academy.cost && raxDone &&
                         !state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "academy");
     const bunkerOK    = all.length >= 1 && mineNow >= C.bunker.cost && raxDone;
-    const engBayOK    = all.length >= 1 && mineNow >= C.engBay.cost && raxDone &&
-                        !state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "engBay");
+    const engBayOK    = all.length >= 1 && mineNow >= C.engBay.cost && raxDone;
     const minSatPct   = mineralSatPct(miningN, state.field[node]);
     const gasSatPct   = Math.round(gasN / GAS_OPT * 100);
     const hasMinerals = state.field[node] > 0;
