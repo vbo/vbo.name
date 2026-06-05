@@ -2324,13 +2324,13 @@ function appendForces(container, owner, node, interactive) {
     (ebDone ? tail : container).appendChild(row);
   }
 
-  // Bunker — tappable to load/unload. Group: non-full first, then fully loaded.
+  // Bunker — non-full bunkers are individual tappable rows; fully loaded bunkers
+  // collapse into a single summary row (nothing to do — they're already full).
   const allBunkers = buildings.filter(b => b.type === "bunker");
-  const sortedBunkers = [
-    ...allBunkers.filter(b => b.construct || (b.loaded || []).length < C.bunker.capacity),
-    ...allBunkers.filter(b => !b.construct && (b.loaded || []).length >= C.bunker.capacity),
-  ];
-  for (const b of sortedBunkers) {
+  const actionableBunkers = allBunkers.filter(b => b.construct || (b.loaded || []).length < C.bunker.capacity);
+  const fullBunkers       = allBunkers.filter(b => !b.construct && (b.loaded || []).length >= C.bunker.capacity);
+
+  for (const b of actionableBunkers) {
     any = true;
     const tappable = interactive && !b.construct;
     const row = document.createElement(tappable ? "button" : "div");
@@ -2343,7 +2343,7 @@ function appendForces(container, owner, node, interactive) {
       const loaded = (b.loaded || []).length;
       meta = interactive
         ? `${loaded}/${C.bunker.capacity} loaded · tap to manage`
-        : `HP ${Math.ceil(b.hp)}/${b.maxHp} · ${(b.loaded || []).length} inside`;
+        : `HP ${Math.ceil(b.hp)}/${b.maxHp} · ${loaded} inside`;
     }
     row.innerHTML = `${svgIcon("bunker")}<div class="body">
         <div class="name">Bunker</div>
@@ -2352,6 +2352,25 @@ function appendForces(container, owner, node, interactive) {
       </div>${tappable ? '<span class="chev">›</span>' : ""}`;
     if (tappable) row.onclick = () => openSheet({ kind: "bunker", node, ref: b.id });
     container.appendChild(row);
+  }
+
+  if (fullBunkers.length) {
+    any = true;
+    const tappable = interactive;
+    const row = document.createElement(tappable ? "button" : "div");
+    row.className = "row" + (tappable ? "" : " static");
+    const totalHp  = fullBunkers.reduce((s, b) => s + b.hp, 0);
+    const totalMax = fullBunkers.reduce((s, b) => s + b.maxHp, 0);
+    const meta = interactive
+      ? `${fullBunkers.length > 1 ? `×${fullBunkers.length} · ` : ""}${C.bunker.capacity}/${C.bunker.capacity} loaded · tap to unload`
+      : `HP ${Math.ceil(totalHp)}/${totalMax} · full`;
+    row.innerHTML = `${svgIcon("bunker")}<div class="body">
+        <div class="name">Bunker${fullBunkers.length > 1 ? ` ×${fullBunkers.length}` : ""}</div>
+        <div class="meta">${meta}</div>
+        ${hpBar(totalHp, totalMax)}
+      </div>${tappable ? '<span class="chev">›</span>' : ""}`;
+    if (tappable) row.onclick = () => openSheet({ kind: "bunker", node, ref: fullBunkers[0].id });
+    tail.appendChild(row);
   }
 
   // Passive/finished buildings deferred above land here, at the bottom of the list.
