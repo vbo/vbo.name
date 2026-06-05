@@ -121,6 +121,8 @@ function mutate(cfg, sigma = 0.12) {
     const isInt = Number.isInteger(cfg[key]);
     out[key] = isInt ? Math.round(clamp(raw, lo, hi)) : clamp(raw, lo, hi);
   }
+  // Cross-param: expansion threshold must be reachable within the base SCV cap.
+  out.expandMinScv = Math.min(out.expandMinScv, out.scvCapBase);
   return out;
 }
 
