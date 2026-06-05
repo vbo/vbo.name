@@ -96,6 +96,7 @@ const BOUNDS = {
   uScv:    [0.3, 2.0], uMarine:  [0.3, 2.0], uFirebat: [0.2, 2.0],
   uRax:    [0.3, 2.0], uAcademy: [0.2, 2.0], uBunker:  [0.1, 2.0],
   uDepot:  [0.5, 2.5], uU238:    [0.1, 2.0],
+  uEngBay: [0.1, 2.0], uInfWeapons: [0.1, 2.0], uInfArmor: [0.1, 2.0],
 };
 
 function clamp(val, lo, hi) { return Math.max(lo, Math.min(hi, val)); }

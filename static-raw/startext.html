@@ -404,37 +404,41 @@ const C = {
   refinery: { hp: 500,  cost: 75,  build: 20 }, // builds on the geyser; no train queue
   academy:  { hp: 600,  cost: 150, build: 80 }, // unlocks firebat + U-238 Shells research
   bunker:   { hp: 350,  cost: 100, build: 30, capacity: 4 }, // shelters up to 4 infantry
+  engBay:   { hp: 850,  cost: 150, build: 60 }, // unlocks infantry weapon/armor upgrades
 };
 // Bot behaviour parameters — every numeric threshold lives here so the
 // evolutionary optimizer can tune them without touching logic.
 const BOT_CONFIG_DEFAULT = {
   scvCapBase: 15,
   scvCapSkilled: 16,
-  scvExpCap: 13,
+  scvExpCap: 14,
   expandMinScv: 14,
-  keepMining: 7,
+  keepMining: 6,
   reserveBase: 18,
   reserveSkilled: 13,
-  waveIntervalInit: 88,
-  waveIntervalMin: 35,
-  waveIntervalMax: 114,
-  waveMin: 10,
-  waveMultiplier: 1.10,
-  waveOffset: 4,
+  waveIntervalInit: 89,
+  waveIntervalMin: 36,
+  waveIntervalMax: 111,
+  waveMin: 9,
+  waveMultiplier: 1.17,
+  waveOffset: 2,
   blindAttackMin: 20,
   raxCapBase: 3,
   raxCapSkilled: 4,
-  raxTimeBase: 148,
-  raxTimeSkilled: 96,
+  raxTimeBase: 185,
+  raxTimeSkilled: 83,
   uScv: 1,
   uMarine: 1,
-  uFirebat: 0.86,
-  uRax: 1.07,
-  uAcademy: 0.56,
-  uBunker: 0.26,
+  uFirebat: 1.39,
+  uRax: 1.25,
+  uAcademy: 0.20,
+  uBunker: 0.28,
+  uEngBay: 1.09,
+  uInfWeapons: 0.73,
+  uInfArmor: 0.62,
   uExpand: 0.80,
-  uDepot: 0.96,
-  uU238: 0.38,
+  uDepot: 1.00,
+  uU238: 0.45,
 };
 let BOT_CONFIG   = { ...BOT_CONFIG_DEFAULT };
 let HUMAN_CONFIG = { ...BOT_CONFIG_DEFAULT };
@@ -443,7 +447,27 @@ let ENABLE_HUMAN_BOT = false;
 
 // Tech upgrades researched at the Academy.
 const UPGRADES = {
-  u238: { minerals: 150, gas: 150, time: 100, label: "U-238 Shells (+1 Marine range)" },
+  u238:         { building: "academy", minerals: 150, gas: 150, time: 100,
+                  label: "U-238 Shells (+1 Marine range)",
+                  notify: "🔬 U-238 Shells complete! Marines have +1 range." },
+  infWeapons1:  { building: "engBay", minerals: 100, gas: 100, time: 100,
+                  requires: null,          label: "Infantry Weapons 1 (+1 attack)",
+                  notify: "🔧 Infantry Weapons 1 complete! +1 attack damage." },
+  infWeapons2:  { building: "engBay", minerals: 175, gas: 175, time: 150,
+                  requires: "infWeapons1", label: "Infantry Weapons 2 (+2 attack)",
+                  notify: "🔧 Infantry Weapons 2 complete! +2 attack damage." },
+  infWeapons3:  { building: "engBay", minerals: 250, gas: 250, time: 200,
+                  requires: "infWeapons2", label: "Infantry Weapons 3 (+3 attack)",
+                  notify: "🔧 Infantry Weapons 3 complete! +3 attack damage." },
+  infArmor1:    { building: "engBay", minerals: 100, gas: 100, time: 100,
+                  requires: null,          label: "Infantry Armor 1 (+1 armor)",
+                  notify: "🛡 Infantry Armor 1 complete! Marines/Firebats take -1 damage." },
+  infArmor2:    { building: "engBay", minerals: 175, gas: 175, time: 150,
+                  requires: "infArmor1",   label: "Infantry Armor 2 (+2 armor)",
+                  notify: "🛡 Infantry Armor 2 complete! Marines/Firebats take -2 damage." },
+  infArmor3:    { building: "engBay", minerals: 250, gas: 250, time: 200,
+                  requires: "infArmor2",   label: "Infantry Armor 3 (+3 armor)",
+                  notify: "🛡 Infantry Armor 3 complete! Marines/Firebats take -3 damage." },
 };
 
 // HOME/AWAY are the human's and bot's start-node ids on the generated map.
@@ -888,15 +912,16 @@ function buildingStep() {
         }
       }
     }
-    // Academy: advance research.
-    if (b.type === "academy" && !b.construct && b.research) {
+    // Research buildings (academy, engBay): advance research.
+    if (!b.construct && b.research) {
       b.research.progress++;
       if (b.research.progress >= b.research.total) {
-        if (!state.upgrades[b.owner].includes(b.research.type))
-          state.upgrades[b.owner].push(b.research.type);
+        const key = b.research.type;
+        if (!state.upgrades[b.owner].includes(key))
+          state.upgrades[b.owner].push(key);
         b.research = null;
         if (b.owner === HUMAN)
-          notify("🔬 U-238 Shells complete! Marines have +1 range.", "ok", 6);
+          notify(UPGRADES[key]?.notify || `✅ ${key} complete.`, "ok", 6);
       }
     }
     // Dequeue the next waiting unit into the training slot whenever it is free and
@@ -965,6 +990,18 @@ const unitRange = u => {
   if (u.task === "bunker") r++; // bunker elevation bonus
   return r;
 };
+// Infantry Weapons upgrade bonus (marines + firebats, applied to attacker).
+const unitWeapons = u => {
+  if (u.type !== "marine" && u.type !== "firebat") return 0;
+  const ups = state.upgrades[u.owner];
+  return ups.includes("infWeapons3") ? 3 : ups.includes("infWeapons2") ? 2 : ups.includes("infWeapons1") ? 1 : 0;
+};
+// Infantry Armor damage reduction (marines + firebats, applied to defender).
+const unitArmor = u => {
+  if (u.type !== "marine" && u.type !== "firebat") return 0;
+  const ups = state.upgrades[u.owner];
+  return ups.includes("infArmor3") ? 3 : ups.includes("infArmor2") ? 2 : ups.includes("infArmor1") ? 1 : 0;
+};
 
 function combatStep() {
   // Idle units (and bunker occupants) auto-attack, focusing whatever can shoot back.
@@ -989,11 +1026,12 @@ function combatStep() {
     while (u.atkCd <= 0 && guard++ < 3) {
       const t = pickTarget(enemy(u.owner), u.node);
       if (!t) break;
-      t.hp -= cfg.dmg;
+      const dmg = Math.max(1, cfg.dmg + unitWeapons(u) - unitArmor(t));
+      t.hp -= dmg;
       // Firebat splash: deal damage to a second random target too.
       if (cfg.splash && cfg.splash > 1) {
         const t2 = pickTarget(enemy(u.owner), u.node);
-        if (t2 && t2 !== t) t2.hp -= cfg.dmg;
+        if (t2 && t2 !== t) t2.hp -= Math.max(1, cfg.dmg + unitWeapons(u) - unitArmor(t2));
       }
       u.atkCd += cfg.atk;
     }
@@ -1142,8 +1180,8 @@ const hasFinishedBarracks = owner =>
 function startBuilding(owner, node, type) {
   const cfg = C[type];
   if (!cfg || state.minerals[owner] < cfg.cost) return false;
-  // Academy and Bunker require a finished Barracks first.
-  if ((type === "academy" || type === "bunker") && !hasFinishedBarracks(owner)) {
+  // Academy, Bunker, and Engineering Bay require a finished Barracks first.
+  if ((type === "academy" || type === "bunker" || type === "engBay") && !hasFinishedBarracks(owner)) {
     if (owner === HUMAN) notify("Requires a completed Barracks first.", "warn", 4);
     return false;
   }
@@ -1223,14 +1261,17 @@ function queueFirebat(owner, node, raxId) {
 
 function startResearch(owner, upgradeType) {
   if (state.upgrades[owner].includes(upgradeType)) return false;
-  const acad = state.buildings.find(b =>
-    b.owner === owner && b.type === "academy" && !b.construct && !b.research);
-  if (!acad) return false;
   const up = UPGRADES[upgradeType];
+  if (!up) return false;
+  if (up.requires && !state.upgrades[owner].includes(up.requires)) return false;
+  const bldType = up.building || "academy";
+  const bld = state.buildings.find(b =>
+    b.owner === owner && b.type === bldType && !b.construct && !b.research);
+  if (!bld) return false;
   if (state.minerals[owner] < up.minerals || state.gas[owner] < up.gas) return false;
   state.minerals[owner] -= up.minerals;
   state.gas[owner] -= up.gas;
-  acad.research = { type: upgradeType, progress: 0, total: up.time };
+  bld.research = { type: upgradeType, progress: 0, total: up.time };
   return true;
 }
 
@@ -1602,6 +1643,20 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
   if (academyReady && !state.upgrades[owner].includes("u238"))
     add(cfg.uU238 * 4, () => startResearch(owner, "u238"), "tech");
 
+  // Engineering Bay + weapon/armor research
+  const engBayExists = state.buildings.some(b => b.owner === owner && b.type === "engBay");
+  if (raxDone && !engBayExists && !underAttack)
+    add(cfg.uEngBay * 5, () => startBuilding(owner, home, "engBay"));
+  const engBayReady = state.buildings.find(b =>
+    b.owner === owner && b.type === "engBay" && !b.construct && !b.research);
+  if (engBayReady) {
+    const ups = state.upgrades[owner];
+    const wpnLvl = ups.includes("infWeapons3") ? 3 : ups.includes("infWeapons2") ? 2 : ups.includes("infWeapons1") ? 1 : 0;
+    const armLvl = ups.includes("infArmor3")   ? 3 : ups.includes("infArmor2")   ? 2 : ups.includes("infArmor1")   ? 1 : 0;
+    if (wpnLvl < 3) add(cfg.uInfWeapons * 4, () => startResearch(owner, "infWeapons" + (wpnLvl + 1)), "tech");
+    if (armLvl < 3) add(cfg.uInfArmor   * 3, () => startResearch(owner, "infArmor"   + (armLvl + 1)), "tech");
+  }
+
   if (!state.buildings.some(b => b.owner === owner && b.type === "barracks" && b.construct))
     add(cfg.uRax * 6 * Math.max(0, 1 - raxCount / raxTarget),
         () => startBuilding(owner, home, "barracks"));
@@ -1656,7 +1711,7 @@ function humanBotEval() {
 /* ------------------------------ Rendering ---------------------------- */
 const $ = id => document.getElementById(id);
 const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks", refinery: "Refinery", academy: "Academy", bunker: "Bunker" };
+const BUILDING_LABEL = { cc: "Command Center", depot: "Supply Depot", barracks: "Barracks", refinery: "Refinery", academy: "Academy", bunker: "Bunker", engBay: "Engineering Bay" };
 
 // Display names, assigned the first time the player sees a node. Naming by discovery
 // order (not the underlying node id) means the labels never hint at how many unseen
@@ -1689,6 +1744,8 @@ function svgIcon(kind) {
     return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><path d="M12 3l9 5v2H3V8z"/><rect x="5" y="10" width="14" height="9" rx="1"/><path d="M9 19v-5h6v5"/><path d="M12 6v2"/></svg>`;
   if (kind === "bunker")
     return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><rect x="3" y="10" width="18" height="10" rx="2"/><path d="M7 10V7h10v3"/><path d="M8 14h2M14 14h2"/></svg>`;
+  if (kind === "engBay")
+    return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#9ec1ff" stroke-width="2"><rect x="2" y="11" width="20" height="10" rx="1"/><path d="M6 11V7h12v4"/><circle cx="12" cy="8" r="2"/><path d="M9 16h6"/></svg>`;
   if (kind === "firebat")
     return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#ff9a9a" stroke-width="2"><circle cx="12" cy="8" r="3"/><path d="M6 21v-1a6 6 0 0112 0v1"/><path d="M9 14c1 1 2 3 3 3s2-2 3-3"/></svg>`;
   return "";
@@ -2176,6 +2233,37 @@ function appendForces(container, owner, node, interactive) {
     container.appendChild(row);
   }
 
+  // Engineering Bay — tappable to research weapon/armor upgrades.
+  for (const b of buildings.filter(b => b.type === "engBay")) {
+    any = true;
+    const tappable = interactive && !b.construct;
+    const row = document.createElement(tappable ? "button" : "div");
+    row.className = "row" + (tappable ? "" : " static");
+    let meta;
+    if (b.construct) {
+      meta = `Building… ${Math.floor(b.construct.progress / b.construct.total * 100)}%`;
+      if (interactive) meta += progBar(b.construct.progress, b.construct.total);
+    } else if (b.research) {
+      const up = UPGRADES[b.research.type];
+      meta = `Researching ${up ? up.label : b.research.type} ${Math.floor(b.research.progress / b.research.total * 100)}%`;
+      if (interactive) meta += progBar(b.research.progress, b.research.total);
+    } else {
+      const ups = state.upgrades[owner];
+      const wpn = ups.includes("infWeapons3") ? 3 : ups.includes("infWeapons2") ? 2 : ups.includes("infWeapons1") ? 1 : 0;
+      const arm = ups.includes("infArmor3")   ? 3 : ups.includes("infArmor2")   ? 2 : ups.includes("infArmor1")   ? 1 : 0;
+      meta = interactive
+        ? `Weapons +${wpn} / Armor +${arm} · tap to upgrade`
+        : `HP ${Math.ceil(b.hp)}/${b.maxHp}`;
+    }
+    row.innerHTML = `${svgIcon("engBay")}<div class="body">
+        <div class="name">Engineering Bay</div>
+        <div class="meta">${meta}</div>
+        ${b.construct ? "" : hpBar(b.hp, b.maxHp)}
+      </div>${tappable ? '<span class="chev">›</span>' : ""}`;
+    if (tappable) row.onclick = () => openSheet({ kind: "engBay", node, ref: b.id });
+    container.appendChild(row);
+  }
+
   // Bunker — tappable to load/unload.
   for (const b of buildings.filter(b => b.type === "bunker")) {
     any = true;
@@ -2461,6 +2549,37 @@ function renderSheet() {
       <button class="act-close" id="a-close">Close</button>`;
     bind("a-u238", () => { startResearch(HUMAN, "u238"); refreshSheet(); });
 
+  } else if (sel.kind === "engBay") {
+    const b = state.buildings.find(b => b.id === sel.ref);
+    if (!b) { closeSheet(); return; }
+    const gasNow = Math.floor(state.gas[HUMAN]);
+    const ups = state.upgrades[HUMAN];
+    const resNote = b.research
+      ? `<div class="sheet-sub" style="margin-top:8px">Researching ${UPGRADES[b.research.type]?.label}… ${Math.floor(b.research.progress / b.research.total * 100)}%${progBar(b.research.progress, b.research.total)}</div>`
+      : "";
+    const resBtn = key => {
+      const up = UPGRADES[key];
+      const done = ups.includes(key);
+      const prereqOK = !up.requires || ups.includes(up.requires);
+      const canRes = !done && prereqOK && !b.research && mineNow >= up.minerals && gasNow >= up.gas;
+      const note = done ? "✓ done" : !prereqOK ? "requires previous level"
+        : b.research ? "busy" : mineNow < up.minerals ? `need ${up.minerals}💎` : gasNow < up.gas ? `need ${up.gas}⛽` : "";
+      return `<button class="act secondary" ${canRes ? "" : "disabled"} id="a-${key}">
+        ${up.label} <span class="cost">— ${up.minerals}💎 ${up.gas}⛽ · ${up.time}s${note ? " · " + note : ""}</span>
+      </button>`;
+    };
+    sheet.innerHTML = `
+      <h2>Engineering Bay</h2>
+      <div class="sheet-sub">${nodeName(sel.node)} · HP ${Math.ceil(b.hp)}/${b.maxHp}</div>
+      ${hpBar(b.hp, b.maxHp)}${resNote}
+      <div class="sheet-sub" style="margin-top:8px">⚔️ Infantry Weapons</div>
+      ${resBtn("infWeapons1")}${resBtn("infWeapons2")}${resBtn("infWeapons3")}
+      <div class="sheet-sub" style="margin-top:8px">🛡 Infantry Armor</div>
+      ${resBtn("infArmor1")}${resBtn("infArmor2")}${resBtn("infArmor3")}
+      <button class="act-close" id="a-close">Close</button>`;
+    ["infWeapons1","infWeapons2","infWeapons3","infArmor1","infArmor2","infArmor3"]
+      .forEach(key => bind("a-"+key, () => { startResearch(HUMAN, key); refreshSheet(); }));
+
   } else if (sel.kind === "bunker") {
     const b = state.buildings.find(b => b.id === sel.ref);
     if (!b) { closeSheet(); return; }
@@ -2509,6 +2628,8 @@ function renderSheet() {
     const acadOK      = all.length >= 1 && mineNow >= C.academy.cost && raxDone &&
                         !state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "academy");
     const bunkerOK    = all.length >= 1 && mineNow >= C.bunker.cost && raxDone;
+    const engBayOK    = all.length >= 1 && mineNow >= C.engBay.cost && raxDone &&
+                        !state.buildings.some(b => b.owner === HUMAN && b.node === node && b.type === "engBay");
     const minSatPct   = mineralSatPct(miningN, state.field[node]);
     const gasSatPct   = Math.round(gasN / GAS_OPT * 100);
     const hasMinerals = state.field[node] > 0;
@@ -2550,6 +2671,8 @@ function renderSheet() {
       fn: () => { startBuilding(HUMAN, node, "academy"); refreshSheet(); } });
     if (bunkerOK) buildActs.push({ id: "a-bf5", html: `🏗 Build Bunker <span class="cost">— ${C.bunker.cost} 💎 · ${C.bunker.build}s · shelters ${C.bunker.capacity} infantry</span>`,
       fn: () => { startBuilding(HUMAN, node, "bunker"); refreshSheet(); } });
+    if (engBayOK) buildActs.push({ id: "a-bf6", html: `🏗 Build Engineering Bay <span class="cost">— ${C.engBay.cost} 💎 · ${C.engBay.build}s · weapon &amp; armor upgrades</span>`,
+      fn: () => { startBuilding(HUMAN, node, "engBay"); refreshSheet(); } });
 
     if (tab === "move") {
       sel.mode = sel.mode || "move"; // SCVs default to move mode
@@ -2590,6 +2713,9 @@ function renderSheet() {
         </button>
         <button class="act secondary" id="a-bunker" ${bunkerOK ? "" : "disabled"}>
           Build Bunker <span class="cost">— ${C.bunker.cost} 💎 · ${C.bunker.build}s · shelters ${C.bunker.capacity} infantry</span>
+        </button>
+        <button class="act secondary" id="a-engbay" ${engBayOK ? "" : "disabled"}>
+          Build Engineering Bay <span class="cost">— ${C.engBay.cost} 💎 · ${C.engBay.build}s · weapon &amp; armor upgrades</span>
         </button>
         <button class="act-close" id="a-back">‹ Back</button>`;
     } else if (tab === "mine") {
@@ -2648,6 +2774,7 @@ function renderSheet() {
       bind("a-ref",     () => { startBuilding(HUMAN, node, "refinery"); refreshSheet(); });
       bind("a-academy", () => { startBuilding(HUMAN, node, "academy");  refreshSheet(); });
       bind("a-bunker",  () => { startBuilding(HUMAN, node, "bunker");   refreshSheet(); });
+      bind("a-engbay",  () => { startBuilding(HUMAN, node, "engBay");   refreshSheet(); });
     } else if (tab === "mine") {
       bind("a-mine-all", () => { setTask(HUMAN, node, idleN, "idle", "mining", "scv"); refreshSheet(); });
       bind("a-idle-all", () => { setTask(HUMAN, node, miningN, "mining", "idle", "scv"); refreshSheet(); });
@@ -3223,6 +3350,114 @@ function runTests() {
       run(UPGRADES.u238.time + 1);
       ok(state.upgrades[HUMAN].includes("u238"), "upgrade recorded");
       ok(unitRange(m) > rangeBefore, "marine range increased after u238");
+    },
+    "engBay: weapon upgrade increases marine and firebat damage"() {
+      resetState(1);
+      state.units = []; state.buildings = state.buildings.filter(b => b.type === "cc");
+      const eng = { id: idSeq++, owner: HUMAN, node: HOME, type: "engBay",
+        hp: C.engBay.hp, maxHp: C.engBay.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: undefined, research: null, rally: null };
+      state.buildings.push(eng);
+      state.minerals[HUMAN] = 999; state.gas[HUMAN] = 999;
+      const m = newMarine(HUMAN, HOME); m.task = "idle";
+      const dmgBefore = unitWeapons(m);
+      eq(dmgBefore, 0, "no weapon bonus before research");
+      startResearch(HUMAN, "infWeapons1");
+      run(UPGRADES.infWeapons1.time + 1);
+      ok(state.upgrades[HUMAN].includes("infWeapons1"), "infWeapons1 recorded");
+      eq(unitWeapons(m), 1, "marine gains +1 weapon bonus");
+      // also applies to firebats
+      const fb = newFirebat(HUMAN, HOME); fb.task = "idle";
+      eq(unitWeapons(fb), 1, "firebat gets weapon bonus too");
+    },
+    "engBay: weapon upgrades apply to units already in the field"() {
+      resetState(1);
+      state.units = []; state.buildings = state.buildings.filter(b => b.type === "cc");
+      // Spawn marines BEFORE the upgrade
+      const m1 = newMarine(HUMAN, HOME); m1.task = "idle";
+      const m2 = newMarine(HUMAN, HOME); m2.task = "idle";
+      eq(unitWeapons(m1), 0, "no bonus before research");
+      // Now research
+      const eng = { id: idSeq++, owner: HUMAN, node: HOME, type: "engBay",
+        hp: C.engBay.hp, maxHp: C.engBay.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: undefined, research: null, rally: null };
+      state.buildings.push(eng);
+      state.minerals[HUMAN] = 999; state.gas[HUMAN] = 999;
+      startResearch(HUMAN, "infWeapons1");
+      run(UPGRADES.infWeapons1.time + 1);
+      ok(unitWeapons(m1) === 1, "already-spawned marine gains weapon bonus");
+      ok(unitWeapons(m2) === 1, "second already-spawned marine gains weapon bonus");
+    },
+    "engBay: armor upgrade reduces damage taken (min 1)"() {
+      resetState(1);
+      state.units = []; state.buildings = state.buildings.filter(b => b.type === "cc");
+      const eng = { id: idSeq++, owner: HUMAN, node: HOME, type: "engBay",
+        hp: C.engBay.hp, maxHp: C.engBay.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: undefined, research: null, rally: null };
+      state.buildings.push(eng);
+      state.minerals[HUMAN] = 999; state.gas[HUMAN] = 999;
+      const m = newMarine(HUMAN, HOME); m.task = "idle";
+      eq(unitArmor(m), 0, "no armor before research");
+      startResearch(HUMAN, "infArmor1");
+      run(UPGRADES.infArmor1.time + 1);
+      ok(state.upgrades[HUMAN].includes("infArmor1"), "infArmor1 recorded");
+      eq(unitArmor(m), 1, "marine has 1 armor");
+      // Damage to marine with 1 armor from a unit doing C.scv.dmg=5: max(1, 5-1)=4
+      const scv = newSCV(BOT, HOME); scv.task = "idle";
+      const hpBefore = m.hp;
+      run(ENGAGE_DELAY + 10);
+      // marine should have taken less than C.scv.dmg damage per tick
+      ok(m.hp > hpBefore - C.scv.dmg * 10, "armor reduced SCV damage");
+    },
+    "engBay: armor applies to existing marines in the field"() {
+      resetState(1);
+      state.units = []; state.buildings = state.buildings.filter(b => b.type === "cc");
+      const m = newMarine(HUMAN, HOME); m.task = "idle";
+      const eng = { id: idSeq++, owner: HUMAN, node: HOME, type: "engBay",
+        hp: C.engBay.hp, maxHp: C.engBay.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: undefined, research: null, rally: null };
+      state.buildings.push(eng);
+      state.minerals[HUMAN] = 999; state.gas[HUMAN] = 999;
+      startResearch(HUMAN, "infArmor1");
+      run(UPGRADES.infArmor1.time + 1);
+      eq(unitArmor(m), 1, "pre-existing marine gets armor from upgrade");
+    },
+    "engBay: weapon upgrades are sequential (lvl 2 requires lvl 1)"() {
+      resetState(1);
+      state.units = []; state.buildings = state.buildings.filter(b => b.type === "cc");
+      const eng = { id: idSeq++, owner: HUMAN, node: HOME, type: "engBay",
+        hp: C.engBay.hp, maxHp: C.engBay.hp, construct: null, train: null,
+        queued: 0, queuedFirebats: 0, loaded: undefined, research: null, rally: null };
+      state.buildings.push(eng);
+      state.minerals[HUMAN] = 999; state.gas[HUMAN] = 999;
+      const res2 = startResearch(HUMAN, "infWeapons2"); // skip level 1
+      ok(!res2, "cannot research level 2 without level 1");
+      startResearch(HUMAN, "infWeapons1");
+      run(UPGRADES.infWeapons1.time + 1);
+      const res2b = startResearch(HUMAN, "infWeapons2");
+      ok(res2b, "can research level 2 after level 1 complete");
+    },
+    "engBay: requires a finished barracks"() {
+      resetState(1);
+      state.buildings = state.buildings.filter(b => b.type === "cc");
+      state.minerals[HUMAN] = 999;
+      ok(!startBuilding(HUMAN, HOME, "engBay"), "blocked without barracks");
+      const rax = { id: idSeq++, owner: HUMAN, node: HOME, type: "barracks",
+        hp: C.barracks.hp, maxHp: C.barracks.hp, construct: null, train: null, queued: 0 };
+      state.buildings.push(rax);
+      ok(startBuilding(HUMAN, HOME, "engBay"), "allowed once barracks is done");
+    },
+    "bot builds engBay and researches weapon/armor upgrades"() {
+      resetState(7);
+      cheat(BOT, 999999); // unlimited resources
+      state.gas[BOT] = 9999;
+      run(300);
+      const hasEngBay = state.buildings.some(b => b.owner === BOT && b.type === "engBay");
+      ok(hasEngBay, "bot builds Engineering Bay");
+      run(400); // give time for research to start and complete
+      const ups = state.upgrades[BOT];
+      ok(ups.includes("infWeapons1") || ups.includes("infArmor1"),
+        "bot starts infantry upgrades from Engineering Bay");
     },
     "bunker: loaded marines gain +1 range"() {
       resetState(1);
