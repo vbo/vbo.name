@@ -50,6 +50,12 @@
     padding: 6px 12px; font-size: 13px; font-weight: 600;
     color: var(--warn); text-align: center;
   }
+  #idle-scv-warn {
+    display: none; flex: 0 0 100%; margin-top: 4px;
+    background: #1a2e14; border: 1px solid #6abf5e; border-radius: 8px;
+    padding: 6px 12px; font-size: 13px; font-weight: 600;
+    color: #6abf5e; text-align: center; cursor: pointer;
+  }
 
   h1 { font-size: 15px; margin: 0; letter-spacing: .04em; }
 
@@ -280,8 +286,9 @@
     <div class="stat supply" id="s-supwrap"><b id="s-sup">4 / 10</b><span>Supply</span></div>
     <div class="stat"><b id="s-time">0:00</b><span>Time</span></div>
     <div style="flex:1"></div>
-    <button id="menu-btn" class="pause">☰ Menu</button>
+    <button id="menu-btn" class="pause">☰</button>
     <div id="supply-warn">⚠️ Additional supply depots required</div>
+    <div id="idle-scv-warn"></div>
   </div>
 
   <div id="notes"></div>
@@ -1804,6 +1811,16 @@ function render() {
   $("s-sup").textContent = `${used} / ${cap}`;
   $("s-supwrap").className = "stat supply" + (used >= cap ? " blocked" : "");
   $("supply-warn").style.display = (used >= cap && cap < SUPPLY_MAX) ? "block" : "none";
+  const idleScvs = state.units.filter(u => u.owner === HUMAN && u.type === "scv" && u.task === "idle" && u.node >= 0);
+  const idleWarn = $("idle-scv-warn");
+  if (idleScvs.length) {
+    const idleNode = idleScvs[0].node;
+    idleWarn.textContent = `⚙️ ${idleScvs.length} idle worker${idleScvs.length > 1 ? "s" : ""} · tap to assign`;
+    idleWarn.style.display = "block";
+    idleWarn.onclick = () => { ui.selectedNode = idleNode; openSheet({ kind: "scv", node: idleNode, n: 1 }); render(); };
+  } else {
+    idleWarn.style.display = "none";
+  }
   $("s-time").textContent = fmtTime(state.time);
   if (typeof document.body !== "undefined" && document.body)
     document.body.classList.toggle("paused", !!state.paused);
@@ -2299,8 +2316,13 @@ function appendForces(container, owner, node, interactive) {
     container.appendChild(row);
   }
 
-  // Bunker — tappable to load/unload.
-  for (const b of buildings.filter(b => b.type === "bunker")) {
+  // Bunker — tappable to load/unload. Group: non-full first, then fully loaded.
+  const allBunkers = buildings.filter(b => b.type === "bunker");
+  const sortedBunkers = [
+    ...allBunkers.filter(b => b.construct || (b.loaded || []).length < C.bunker.capacity),
+    ...allBunkers.filter(b => !b.construct && (b.loaded || []).length >= C.bunker.capacity),
+  ];
+  for (const b of sortedBunkers) {
     any = true;
     const tappable = interactive && !b.construct;
     const row = document.createElement(tappable ? "button" : "div");
@@ -2603,14 +2625,17 @@ function renderSheet() {
         ${up.label} <span class="cost">— ${up.minerals}💎 ${up.gas}⛽ · ${up.time}s${note ? " · " + note : ""}</span>
       </button>`;
     };
+    const wpnLvl = ups.includes("infWeapons3") ? 3 : ups.includes("infWeapons2") ? 2 : ups.includes("infWeapons1") ? 1 : 0;
+    const armLvl = ups.includes("infArmor3")   ? 3 : ups.includes("infArmor2")   ? 2 : ups.includes("infArmor1")   ? 1 : 0;
+    const maxNote = `<div class="sheet-sub" style="padding:4px 0;opacity:.6">Max level reached</div>`;
     sheet.innerHTML = `
       <h2>Engineering Bay</h2>
       <div class="sheet-sub">${nodeName(sel.node)} · HP ${Math.ceil(b.hp)}/${b.maxHp}</div>
       ${hpBar(b.hp, b.maxHp)}${resNote}
-      <div class="sheet-sub" style="margin-top:8px">⚔️ Infantry Weapons</div>
-      ${resBtn("infWeapons1")}${resBtn("infWeapons2")}${resBtn("infWeapons3")}
-      <div class="sheet-sub" style="margin-top:8px">🛡 Infantry Armor</div>
-      ${resBtn("infArmor1")}${resBtn("infArmor2")}${resBtn("infArmor3")}
+      <div class="sheet-sub" style="margin-top:8px">⚔️ Infantry Weapons (${wpnLvl}/3)</div>
+      ${wpnLvl < 3 ? resBtn("infWeapons" + (wpnLvl + 1)) : maxNote}
+      <div class="sheet-sub" style="margin-top:8px">🛡 Infantry Armor (${armLvl}/3)</div>
+      ${armLvl < 3 ? resBtn("infArmor" + (armLvl + 1)) : maxNote}
       <button class="act-close" id="a-close">Close</button>`;
     ["infWeapons1","infWeapons2","infWeapons3","infArmor1","infArmor2","infArmor3"]
       .forEach(key => bind("a-"+key, () => { startResearch(HUMAN, key); refreshSheet(); }));
