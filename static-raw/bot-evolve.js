@@ -126,12 +126,29 @@ function mutate(cfg, sigma = 0.12) {
   return out;
 }
 
-// ── Seed both champions from the current defaults ─────────────────────────────
-let champRush  = { ...DEFAULT_CFG };
+// ── Seed champions ────────────────────────────────────────────────────────────
+// Macro starts from the current defaults (balanced/defensive).
+// Rusher is seeded with explicitly aggressive values so it has gradient from
+// the start: lean economy, fast barracks, low wave interval, no tech investment.
+const RUSHER_SEED = {
+  ...DEFAULT_CFG,
+  scvCapBase: 8,    scvCapSkilled: 12,
+  expandMinScv: 8,
+  waveIntervalInit: 65, waveIntervalMin: 30, waveIntervalMax: 90,
+  waveMin: 6,       waveMultiplier: 1.8,
+  blindAttackMin: 11,
+  raxCapBase: 4,    raxTimeBase: 80,  raxTimeSkilled: 40,
+  uRax: 1.8,        uMarine: 1.6,     uFirebat: 1.6,
+  uScv: 0.5,
+  uAcademy: 0.2,    uU238: 0.2,
+  uEngBay: 0.2,     uInfWeapons: 0.15, uInfArmor: 0.1,
+  uBunker: 0.1,     uExpand: 0.3,
+};
+let champRush  = { ...RUSHER_SEED };
 let champMacro = { ...DEFAULT_CFG };
 
 // Hall of Fame: ring buffer of past champions; opponents are evaluated against all.
-const hofRush  = [{ ...DEFAULT_CFG }];
+const hofRush  = [{ ...RUSHER_SEED }];
 const hofMacro = [{ ...DEFAULT_CFG }];
 
 console.log(`Co-evolving BOT_PROFILES: ${GENERATIONS} gens × ${POPULATION} mutations × ${GAMES_PER_MATCH*2} games/match × HoF ${HOF_SIZE}`);
