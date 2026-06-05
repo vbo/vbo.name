@@ -408,40 +408,73 @@ const C = {
 };
 // Bot behaviour parameters — every numeric threshold lives here so the
 // evolutionary optimizer can tune them without touching logic.
-const BOT_CONFIG_DEFAULT = {
-  scvCapBase: 15,
-  scvCapSkilled: 16,
+const BOT_CONFIG_RUSHER = {
+  scvCapBase: 10,
+  scvCapSkilled: 12,
   scvExpCap: 14,
-  expandMinScv: 14,
+  expandMinScv: 9,
   keepMining: 6,
-  reserveBase: 18,
-  reserveSkilled: 13,
-  waveIntervalInit: 89,
-  waveIntervalMin: 36,
-  waveIntervalMax: 111,
-  waveMin: 9,
-  waveMultiplier: 1.17,
+  reserveBase: 16,
+  reserveSkilled: 4,
+  waveIntervalInit: 60,
+  waveIntervalMin: 38,
+  waveIntervalMax: 80,
+  waveMin: 7,
+  waveMultiplier: 1.66,
   waveOffset: 2,
-  blindAttackMin: 20,
+  blindAttackMin: 12,
+  raxCapBase: 4,
+  raxCapSkilled: 4,
+  raxTimeBase: 88,
+  raxTimeSkilled: 50,
+  uScv: 0.68,
+  uMarine: 2,
+  uFirebat: 1.43,
+  uRax: 1.87,
+  uAcademy: 0.36,
+  uBunker: 0.15,
+  uEngBay: 0.63,
+  uInfWeapons: 0.14,
+  uInfArmor: 0.32,
+  uExpand: 0.30,
+  uDepot: 1,
+  uU238: 0.34,
+};
+const BOT_CONFIG_MACRO = {
+  scvCapBase: 18,
+  scvCapSkilled: 23,
+  scvExpCap: 11,
+  expandMinScv: 16,
+  keepMining: 8,
+  reserveBase: 20,
+  reserveSkilled: 5,
+  waveIntervalInit: 117,
+  waveIntervalMin: 37,
+  waveIntervalMax: 144,
+  waveMin: 7,
+  waveMultiplier: 1.45,
+  waveOffset: 3,
+  blindAttackMin: 18,
   raxCapBase: 3,
   raxCapSkilled: 4,
-  raxTimeBase: 185,
-  raxTimeSkilled: 83,
+  raxTimeBase: 151,
+  raxTimeSkilled: 98,
   uScv: 1,
   uMarine: 1,
-  uFirebat: 1.39,
-  uRax: 1.25,
-  uAcademy: 0.20,
-  uBunker: 0.28,
-  uEngBay: 1.09,
-  uInfWeapons: 0.73,
-  uInfArmor: 0.62,
+  uFirebat: 2,
+  uRax: 1.74,
+  uAcademy: 0.35,
+  uBunker: 0.89,
+  uEngBay: 2,
+  uInfWeapons: 0.28,
+  uInfArmor: 0.40,
   uExpand: 0.80,
-  uDepot: 1.00,
-  uU238: 0.45,
+  uDepot: 1,
+  uU238: 0.95,
 };
-let BOT_CONFIG   = { ...BOT_CONFIG_DEFAULT };
-let HUMAN_CONFIG = { ...BOT_CONFIG_DEFAULT };
+const BOT_PROFILES = { rusher: BOT_CONFIG_RUSHER, macro: BOT_CONFIG_MACRO };
+let BOT_CONFIG   = { ...BOT_CONFIG_MACRO };
+let HUMAN_CONFIG = { ...BOT_CONFIG_MACRO };
 // Set to true in the evolutionary script so tick() also drives the human side.
 let ENABLE_HUMAN_BOT = false;
 
@@ -599,6 +632,8 @@ let state, ui, timer, idSeq;
 // directly (optionally seeded) and then drive tick() in a loop.
 function resetState(seed) {
   seedRng(seed === undefined ? (typeof Date !== "undefined" ? Date.now() : 1) : seed);
+  if (typeof document !== 'undefined')
+    BOT_CONFIG = { ...BOT_PROFILES[rng() < 0.5 ? 'rusher' : 'macro'] };
   idSeq = 1;
   const map = genMap();
   HOME = map.starts[0];
