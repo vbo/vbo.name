@@ -699,9 +699,11 @@ function resetState(seed) {
     seenUnits: new Array(n).fill(null), // per-node last-seen enemy units (fades after a few s)
     upgrades: { human: [], bot: [] }, // researched upgrade keys per owner
     bot:     { lastEval: 0, lastWave: 30, waveInterval: BOT_CONFIG.waveIntervalInit,
-               enemyBase: null, enemyArmy: 0, scoutTime: null },
+               enemyBase: null, enemyArmy: 0, scoutTime: null,
+               attackTarget: null, waveFailed: false },
     humanAI: { lastEval: 0, lastWave: 30, waveInterval: HUMAN_CONFIG.waveIntervalInit,
-               enemyBase: null, enemyArmy: 0, scoutTime: null },
+               enemyBase: null, enemyArmy: 0, scoutTime: null,
+               attackTarget: null, waveFailed: false },
   };
   // Each side: 1 Command Center + 4 idle SCVs at its home node.
   spawnBase(HUMAN, HOME);
@@ -1437,6 +1439,34 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     return defScore(weakest) < defScore(oppHome) ? weakest : base;
   }
 
+  // ── RELATIVE STRENGTH ────────────────────────────────────────────────────
+  // Update enemy army from *all* currently visible enemy combatants (not just base
+  // visits) so the estimate tracks the live game rather than stale snapshots.
+  const visEnemy = state.units.filter(u => u.owner === opp &&
+    (u.type === "marine" || u.type === "firebat")).length;
+  ai.enemyArmy = Math.max(Math.floor(ai.enemyArmy * 0.997), visEnemy);
+  const myArmy  = state.units.filter(u => u.owner === owner &&
+    (u.type === "marine" || u.type === "firebat")).length;
+  const relStr  = myArmy / Math.max(1, ai.enemyArmy); // > 1 = we are ahead
+
+  // Detect when a launched wave has concluded (all attackers gone from target area).
+  if (ai.attackTarget !== null) {
+    const stillThere = state.units.some(u => u.owner === owner &&
+      (u.node === ai.attackTarget ||
+       (u.transit && u.transit.path.includes(ai.attackTarget))));
+    if (!stillThere) {
+      // Wave over: if enemy CC still stands we failed — reset timer to avoid
+      // immediately re-attacking into the same defence that just wiped us.
+      const enemyCCStands = state.buildings.some(b =>
+        b.owner === opp && b.type === "cc" && !b.construct);
+      if (enemyCCStands) {
+        ai.waveFailed = true;
+        ai.lastWave = state.time; // cooldown: wait full interval before next wave
+      }
+      ai.attackTarget = null;
+    }
+  }
+
   // ── INTEL ────────────────────────────────────────────────────────────────
   if (ai.enemyBase === null) {
     for (let n = 0; n < mapN; n++) {
@@ -1546,11 +1576,17 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
       const surplus   = allStrike - reserve;
       const dest      = strikeTarget() ?? target;
       const needed    = Math.max(cfg.waveMin, Math.ceil(ai.enemyArmy * 1.4) + cfg.waveOffset);
-      const launch    = (waveDue && !intelFresh && surplus >= cfg.blindAttackMin) ||
-                        (waveDue && intelFresh && surplus >= needed);
+      // Standard: timer fired + have enough army (blind or intel-confirmed).
+      // Opportunistic: clearly dominant force — attack without waiting for timer.
+      // After a failed wave, waveFailed flag extends the effective cooldown.
+      const dominantAttack = !ai.waveFailed && relStr >= 2.0 && surplus >= cfg.waveMin;
+      const launch    = dominantAttack ||
+                        (waveDue && !intelFresh && surplus >= cfg.blindAttackMin) ||
+                        (waveDue && intelFresh  && surplus >= needed);
 
       if (launch) {
         launched = true;
+        ai.waveFailed = false;
         // Commit the forward garrison to the wave — empty the bunker first.
         const bk = fwdBunker();
         if (bk && bk.loaded.length) unloadBunker(owner, bk.id);
@@ -1562,6 +1598,7 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
           sendUnits(owner, home, homeStrike, "marine", dest, "attack");
         sendFirebats(owner, fwd,  dest, "attack");
         sendFirebats(owner, home, dest, "attack");
+        ai.attackTarget = dest;
         ai.lastWave = state.time;
       } else if (!intelFresh && !scoutOut && allStrike > reserve) {
         sendUnits(owner, home, 1, "marine", target); // scout
@@ -1669,6 +1706,16 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
   const supplyP   = Math.max(0, (supplyUsed(owner) - supplyCap(owner) + 6) / 6);
   const armyRatio = Math.max(0.1, 1 - scvCount / Math.max(1, scvCount + raxCount * 3));
 
+  // State-adaptive multipliers.
+  // floatMult: minerals piling up → spend faster (waste is bad).
+  // armyMult:  behind on army → prioritise units over tech/expand.
+  // techMult:  ahead on army → invest in upgrades; behind → defer them.
+  const floatMult = min() > 400 ? 1.7 : min() > 250 ? 1.2 : 1.0;
+  const behind    = relStr < 0.75 && myArmy >= 3; // outgunned and past early game
+  const ahead     = relStr >= 1.5;
+  const armyMult  = behind ? 1.4 : 1.0;
+  const techMult  = ahead ? 1.3 : behind ? 0.5 : 1.0;
+
   const builds = [];
   const add = (score, exec, kind = "build") => { if (score > 0) builds.push({ score, exec, kind }); };
 
@@ -1678,24 +1725,24 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
         () => startBuilding(owner, home, "depot"));
 
   if (raxDone && !academyExists && !underAttack)
-    add(cfg.uAcademy * 5,
+    add(cfg.uAcademy * 5 * techMult,
         () => startBuilding(owner, home, "academy"));
 
   if (academyReady && !state.upgrades[owner].includes("u238"))
-    add(cfg.uU238 * 4, () => startResearch(owner, "u238"), "tech");
+    add(cfg.uU238 * 4 * techMult, () => startResearch(owner, "u238"), "tech");
 
   // Engineering Bay + weapon/armor research
   const engBayExists = state.buildings.some(b => b.owner === owner && b.type === "engBay");
   if (raxDone && !engBayExists && !underAttack)
-    add(cfg.uEngBay * 5, () => startBuilding(owner, home, "engBay"));
+    add(cfg.uEngBay * 5 * techMult, () => startBuilding(owner, home, "engBay"));
   const engBayReady = state.buildings.find(b =>
     b.owner === owner && b.type === "engBay" && !b.construct && !b.research);
   if (engBayReady) {
     const ups = state.upgrades[owner];
     const wpnLvl = ups.includes("infWeapons3") ? 3 : ups.includes("infWeapons2") ? 2 : ups.includes("infWeapons1") ? 1 : 0;
     const armLvl = ups.includes("infArmor3")   ? 3 : ups.includes("infArmor2")   ? 2 : ups.includes("infArmor1")   ? 1 : 0;
-    if (wpnLvl < 3) add(cfg.uInfWeapons * 4, () => startResearch(owner, "infWeapons" + (wpnLvl + 1)), "tech");
-    if (armLvl < 3) add(cfg.uInfArmor   * 3, () => startResearch(owner, "infArmor"   + (armLvl + 1)), "tech");
+    if (wpnLvl < 3) add(cfg.uInfWeapons * 4 * techMult, () => startResearch(owner, "infWeapons" + (wpnLvl + 1)), "tech");
+    if (armLvl < 3) add(cfg.uInfArmor   * 3 * techMult, () => startResearch(owner, "infArmor"   + (armLvl + 1)), "tech");
   }
 
   if (!state.buildings.some(b => b.owner === owner && b.type === "barracks" && b.construct))
@@ -1712,9 +1759,9 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
   if (!savingForCC && raxDone) {
     for (let i = 0; i < raxCount; i++) {
       if (hasAcademy && gas() >= C.firebat.gasCost * 3)
-        add(cfg.uFirebat * 7 * armyRatio, () => queueFirebat(owner, home), "train");
+        add(cfg.uFirebat * 7 * armyRatio * armyMult * floatMult, () => queueFirebat(owner, home), "train");
       else
-        add(cfg.uMarine * 7 * armyRatio, () => queueMarine(owner, home), "train");
+        add(cfg.uMarine  * 7 * armyRatio * armyMult * floatMult, () => queueMarine(owner, home),  "train");
     }
   }
 
