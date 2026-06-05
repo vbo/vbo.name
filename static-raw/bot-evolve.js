@@ -91,7 +91,7 @@ const BOUNDS = {
   scvCapBase:      [6,  20], scvCapSkilled:   [10, 30],
   scvExpCap:       [4,  14], expandMinScv:    [6,  16],
   keepMining:      [2,   8],
-  reserveBase:     [4,  20], reserveSkilled:  [2,  14],
+  reserveBase:     [4,  12], reserveSkilled:  [2,  10],
   waveIntervalInit:[60, 120],waveIntervalMin: [30,  70],
   waveIntervalMax: [80, 150],waveMin:         [6,  20],
   waveMultiplier:  [1.1, 2.0], waveOffset:    [2,   8],
