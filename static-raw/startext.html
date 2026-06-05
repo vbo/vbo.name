@@ -2080,6 +2080,9 @@ function barracksMeta(allRax, interactive) {
 function appendForces(container, owner, node, interactive) {
   let any = false;
   const buildings = buildingsOf(owner, node);
+  // "Useless" passive/finished buildings (supply depots, refineries, fully-researched
+  // academy/engBay) are deferred here and appended at the very bottom of the list.
+  const tail = document.createDocumentFragment();
 
   // Command Center — always individual.
   for (const b of buildings.filter(b => b.type === "cc")) {
@@ -2133,7 +2136,8 @@ function appendForces(container, owner, node, interactive) {
         <div class="meta">${parts.join(" · ") || "—"}</div>
         ${depotsDone.length ? hpBar(dHp, dMax) : depotBar}
       </div>`;
-    container.appendChild(row);
+    // Depots under construction stay in place; completed ones drop to the bottom.
+    (depotsUnderC.length ? container : tail).appendChild(row);
   }
 
   // Barracks — grouped; tap queues in the next-free barracks.
@@ -2187,7 +2191,8 @@ function appendForces(container, owner, node, interactive) {
         <div class="meta">${meta}</div>
         ${b.construct ? "" : hpBar(b.hp, b.maxHp)}
       </div>`;
-    container.appendChild(row);
+    // Refineries under construction stay in place; completed ones drop to the bottom.
+    (b.construct ? container : tail).appendChild(row);
   }
 
   // SCVs — grouped; show mining/gas utilisation to help the player saturate.
@@ -2279,7 +2284,9 @@ function appendForces(container, owner, node, interactive) {
         ${b.construct ? "" : hpBar(b.hp, b.maxHp)}
       </div>${tappable ? '<span class="chev">›</span>' : ""}`;
     if (tappable) row.onclick = () => openSheet({ kind: "academy", node, ref: b.id });
-    container.appendChild(row);
+    // Once U-238 is done (nothing left to research), drop to the bottom.
+    const acDone = !b.construct && !b.research && state.upgrades[owner].includes("u238");
+    (acDone ? tail : container).appendChild(row);
   }
 
   // Engineering Bay — tappable to research weapon/armor upgrades.
@@ -2310,7 +2317,11 @@ function appendForces(container, owner, node, interactive) {
         ${b.construct ? "" : hpBar(b.hp, b.maxHp)}
       </div>${tappable ? '<span class="chev">›</span>' : ""}`;
     if (tappable) row.onclick = () => openSheet({ kind: "engBay", node, ref: b.id });
-    container.appendChild(row);
+    // Once all weapon/armor levels are maxed, drop to the bottom.
+    const ebUps = state.upgrades[owner];
+    const ebDone = !b.construct && !b.research &&
+      ebUps.includes("infWeapons3") && ebUps.includes("infArmor3");
+    (ebDone ? tail : container).appendChild(row);
   }
 
   // Bunker — tappable to load/unload. Group: non-full first, then fully loaded.
@@ -2342,6 +2353,9 @@ function appendForces(container, owner, node, interactive) {
     if (tappable) row.onclick = () => openSheet({ kind: "bunker", node, ref: b.id });
     container.appendChild(row);
   }
+
+  // Passive/finished buildings deferred above land here, at the bottom of the list.
+  container.appendChild(tail);
 
   return any;
 }
