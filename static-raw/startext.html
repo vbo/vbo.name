@@ -302,6 +302,7 @@
 <div id="end">
   <div class="big" id="end-big">Victory</div>
   <p id="end-msg"></p>
+  <button id="end-copy" style="display:none">Copy replay log</button>
   <button id="end-again">Play again</button>
 </div>
 
@@ -604,7 +605,8 @@ let state, ui, timer, idSeq;
 // Pure: build a fresh game state with no DOM/timer side effects. Tests call this
 // directly (optionally seeded) and then drive tick() in a loop.
 function resetState(seed) {
-  seedRng(seed === undefined ? (typeof Date !== "undefined" ? Date.now() : 1) : seed);
+  const _seed = seed === undefined ? (typeof Date !== "undefined" ? Date.now() : 1) : seed;
+  seedRng(_seed);
   if (typeof document !== 'undefined')
     BOT_CONFIG = { ...BOT_CONFIG_DEFAULT };
   idSeq = 1;
@@ -665,6 +667,8 @@ function resetState(seed) {
     seen: new Array(n).fill(null),      // per-node last-seen enemy buildings (null = never scouted)
     seenUnits: new Array(n).fill(null), // per-node last-seen enemy units (fades after a few s)
     upgrades: { human: [], bot: [] }, // researched upgrade keys per owner
+    _seed,
+    gameLog: [],                   // replay entries; populated only in browser sessions
     bot:     { lastEval: 0, lastWave: 30, waveInterval: BOT_CONFIG.waveIntervalInit,
                enemyBase: null, enemyArmy: 0, scoutTime: null,
                attackTarget: null, waveFailed: false },
@@ -773,12 +777,33 @@ function tick() {
   if (ENABLE_HUMAN_BOT && state.humanAI &&
       state.time - state.humanAI.lastEval >= 3) { humanBotEval(); state.humanAI.lastEval = state.time; }
 
+  if (state.time % 50 === 0 && state.time > 0) logSnapshot();
   checkEnd();
   render();
 }
 
 function notify(text, kind, ttl = 5, node = null) {
   state.notes.push({ id: idSeq++, text, kind, until: state.time + ttl, node });
+}
+
+function logEvent(entry) {
+  if (typeof document === "undefined") return;
+  state.gameLog.push({ t: state.time, ...entry });
+}
+
+function armyCount(owner) {
+  return state.units.filter(u => u.owner === owner &&
+    (u.type === "marine" || u.type === "firebat")).length;
+}
+
+function logSnapshot() {
+  if (typeof document === "undefined") return;
+  state.gameLog.push({
+    t: state.time,
+    snap: true,
+    hm: state.minerals.human, bm: state.minerals.bot,
+    ha: armyCount(HUMAN), ba: armyCount(BOT),
+  });
 }
 
 // Fire a prominent alert the moment enemies appear at any node you hold — your base
@@ -1145,6 +1170,28 @@ function endGame(result, reason) {
     : reason === "surrender"
       ? "You surrendered the match."
       : "All your buildings were destroyed.";
+  const copyBtn = document.getElementById("end-copy");
+  copyBtn.style.display = result === "win" ? "" : "none";
+  copyBtn.textContent = "Copy replay log";
+}
+
+function formatReplayLog() {
+  const seed = state._seed !== undefined ? state._seed : "?";
+  const lines = [`seed=${seed} ticks=${state.time} WIN`];
+  lines.push("t    act          detail                   h-army h-min  b-army b-min");
+  for (const e of state.gameLog) {
+    if (e.snap) {
+      lines.push(`${String(e.t).padStart(4)} snap                                  ${String(e.ha).padStart(5)} ${String(e.hm).padStart(6)} ${String(e.ba).padStart(6)} ${String(e.bm).padStart(5)}`);
+      continue;
+    }
+    let detail = "";
+    if (e.act === "build")    detail = `${e.type}@${e.node}`;
+    if (e.act === "train")    detail = e.type;
+    if (e.act === "research") detail = e.type;
+    if (e.act === "attack")   detail = `${e.n}×${e.utype}→${e.dest} (h:${e.ha} b:${e.ba})`;
+    lines.push(`${String(e.t).padStart(4)} ${e.act.padEnd(12)} ${detail}`);
+  }
+  return lines.join("\n");
 }
 
 // Concede the match. Ends immediately as a loss (with a confirm so a stray tap
@@ -1218,7 +1265,10 @@ function startBuilding(owner, node, type) {
   state.buildings.push(b);
   scv.task = "building";
   scv.buildingId = b.id;
-  if (owner === HUMAN) notify(`🏗 ${BUILDING_LABEL[type] || type} ordered`, "ok", 3);
+  if (owner === HUMAN) {
+    notify(`🏗 ${BUILDING_LABEL[type] || type} ordered`, "ok", 3);
+    logEvent({ act: "build", type, node });
+  }
   return true;
 }
 
@@ -1243,6 +1293,7 @@ function queueMarine(owner, node, raxId) {
     rax.train = { progress: 0, total: C.marine.build, unitType: "marine" };
   else
     rax.queued++;
+  if (owner === HUMAN) logEvent({ act: "train", type: "marine" });
 }
 
 function queueFirebat(owner, node, raxId) {
@@ -1267,6 +1318,7 @@ function queueFirebat(owner, node, raxId) {
     rax.train = { progress: 0, total: C.firebat.build, unitType: "firebat" };
   else
     rax.queuedFirebats = (rax.queuedFirebats || 0) + 1;
+  if (owner === HUMAN) logEvent({ act: "train", type: "firebat" });
 }
 
 function startResearch(owner, upgradeType) {
@@ -1282,6 +1334,7 @@ function startResearch(owner, upgradeType) {
   state.minerals[owner] -= up.minerals;
   state.gas[owner] -= up.gas;
   bld.research = { type: upgradeType, progress: 0, total: up.time };
+  if (owner === HUMAN) logEvent({ act: "research", type: upgradeType });
   return true;
 }
 
@@ -1335,6 +1388,8 @@ function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
     const label = unitType === "marine" ? "Marine" : unitType === "firebat" ? "Firebat" : "SCV";
     const modeIcon = mode === "attack" ? " ⚔️" : "";
     notify(`${sent.length} ${label}${sent.length > 1 ? "s" : ""}${modeIcon} → ${nodeName(dest)}`, "ok", 3);
+    if (mode === "attack") logEvent({ act: "attack", n: sent.length, utype: unitType, dest,
+      ha: armyCount(HUMAN), ba: armyCount(BOT) });
   }
 }
 
@@ -4304,6 +4359,13 @@ if (HEADLESS) {
 } else {
   $("sheet-backdrop").onclick = closeSheet;
   $("end-again").onclick = init;
+  $("end-copy").onclick = () => {
+    navigator.clipboard.writeText(formatReplayLog()).then(() => {
+      const btn = $("end-copy");
+      btn.textContent = "Copied!";
+      setTimeout(() => { btn.textContent = "Copy replay log"; }, 1500);
+    });
+  };
   $("menu-btn").onclick = openMenu;
   $("menu-resume").onclick = closeMenu;
   $("menu-surrender").onclick = surrender;
