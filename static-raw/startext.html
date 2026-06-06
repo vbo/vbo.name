@@ -1359,6 +1359,16 @@ function cancelTransit(to) {
   render();
 }
 
+// Stop units dwelling at `node` that are en route to `finalDest`, leaving them idle there.
+function stopTransitHere(node, finalDest) {
+  node = parseInt(node); finalDest = parseInt(finalDest);
+  state.units
+    .filter(u => u.owner === HUMAN && u.node === node && u.transit &&
+                 u.transit.to === finalDest && u.transit.dwellStart !== null)
+    .forEach(u => { u.transit = null; });
+  refreshSheet();
+}
+
 function setTask(owner, node, n, from, to, unitType) {
   const pool = unitsOf(owner, node, from, unitType).slice(0, n);
   for (const u of pool) u.task = to;
@@ -2566,47 +2576,31 @@ function renderSheet() {
 
   } else if (sel.kind === "marine") {
     const node = sel.node;
-    const pool = idleMarines(HUMAN, node);
-    const max = Math.max(1, pool.length);
-    sel.n = Math.min(Math.max(1, sel.n || pool.length), max);
-    sel.mode = sel.mode || "attack"; // marines default to attack mode
-    const n = sel.n;
-    const mAtk = sel.mode === "attack";
-    sheet.innerHTML = `
-      <h2>Marines at ${nodeName(node)}</h2>
-      <div class="sheet-sub">${pool.length} ready · pick a destination</div>
-      <div class="stepper">
-        <button id="n-minus">−</button>
-        <div class="count" id="n-count">${n}</div>
-        <button id="n-plus">+</button>
-        <div class="label">selected</div>
-      </div>
-      <input type="range" id="n-range" min="1" max="${max}" value="${n}">
-      <div class="mode-toggle">
-        <button id="mode-move" class="${!mAtk ? "sel" : ""}">📦 Move</button>
-        <button id="mode-attack" class="${mAtk ? "sel" : ""}">⚔️ Move &amp; Attack</button>
-      </div>
-      ${destButtonsHtml(node, n, pool.length)}
-      <button class="act-close" id="a-close">Close</button>`;
-    const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
-    bind("n-minus", () => setN(sel.n - 1));
-    bind("n-plus", () => setN(sel.n + 1));
-    $("n-range").oninput = e => setN(parseInt(e.target.value, 10));
-    bind("mode-move",   () => { sel.mode = "move";   renderSheet(); });
-    bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
-    bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "marine", dest, sel.mode); closeSheet(); render(); });
-
-  } else if (sel.kind === "firebat") {
-    const node = sel.node;
-    const pool = state.units.filter(u => u.owner === HUMAN && u.node === node && u.type === "firebat" && u.task === "idle");
+    const allIdle = idleMarines(HUMAN, node);
+    const pool    = allIdle.filter(u => !u.transit);      // truly stopped here
+    const passing = allIdle.filter(u =>  u.transit);      // dwelling en route elsewhere
     const max = Math.max(1, pool.length);
     sel.n = Math.min(Math.max(1, sel.n || pool.length), max);
     sel.mode = sel.mode || "attack";
     const n = sel.n;
     const mAtk = sel.mode === "attack";
+    // Group passing-through units by final destination.
+    const byDest = {};
+    for (const u of passing) (byDest[u.transit.to] = byDest[u.transit.to] || []).push(u);
+    const passingHtml = Object.entries(byDest).map(([to, grp]) =>
+      `<div class="sheet-sub" style="margin-top:6px;display:flex;align-items:center;justify-content:space-between">
+         <span>${grp.length} Marine${grp.length > 1 ? "s" : ""} → ${nodeName(parseInt(to))} <em style="color:var(--dim)">(in transit)</em></span>
+         <button onclick="stopTransitHere(${node},${to})">Stop here</button>
+       </div>`
+    ).join("");
+    const readySub = pool.length
+      ? `${pool.length} ready · pick a destination`
+      : passing.length ? "No marines stopped here — all passing through" : "No marines";
     sheet.innerHTML = `
-      <h2>Firebats at ${nodeName(node)}</h2>
-      <div class="sheet-sub">${pool.length} ready · splash damage vs crowds</div>
+      <h2>Marines at ${nodeName(node)}</h2>
+      <div class="sheet-sub">${readySub}</div>
+      ${passingHtml}
+      ${pool.length ? `
       <div class="stepper">
         <button id="n-minus">−</button>
         <div class="count" id="n-count">${n}</div>
@@ -2618,15 +2612,66 @@ function renderSheet() {
         <button id="mode-move" class="${!mAtk ? "sel" : ""}">📦 Move</button>
         <button id="mode-attack" class="${mAtk ? "sel" : ""}">⚔️ Move &amp; Attack</button>
       </div>
-      ${destButtonsHtml(node, n, pool.length)}
+      ${destButtonsHtml(node, n, pool.length)}` : ""}
       <button class="act-close" id="a-close">Close</button>`;
-    const setN2 = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
-    bind("n-minus", () => setN2(sel.n - 1));
-    bind("n-plus",  () => setN2(sel.n + 1));
-    $("n-range").oninput = e => setN2(parseInt(e.target.value, 10));
-    bind("mode-move",   () => { sel.mode = "move";   renderSheet(); });
-    bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
-    bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "firebat", dest, sel.mode); closeSheet(); render(); });
+    if (pool.length) {
+      const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
+      bind("n-minus", () => setN(sel.n - 1));
+      bind("n-plus", () => setN(sel.n + 1));
+      $("n-range").oninput = e => setN(parseInt(e.target.value, 10));
+      bind("mode-move",   () => { sel.mode = "move";   renderSheet(); });
+      bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
+      bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "marine", dest, sel.mode); closeSheet(); render(); });
+    }
+
+  } else if (sel.kind === "firebat") {
+    const node = sel.node;
+    const allIdle2 = idleFirebats(HUMAN, node);
+    const pool    = allIdle2.filter(u => !u.transit);
+    const passing = allIdle2.filter(u =>  u.transit);
+    const max = Math.max(1, pool.length);
+    sel.n = Math.min(Math.max(1, sel.n || pool.length), max);
+    sel.mode = sel.mode || "attack";
+    const n = sel.n;
+    const mAtk = sel.mode === "attack";
+    const byDest2 = {};
+    for (const u of passing) (byDest2[u.transit.to] = byDest2[u.transit.to] || []).push(u);
+    const passingHtml2 = Object.entries(byDest2).map(([to, grp]) =>
+      `<div class="sheet-sub" style="margin-top:6px;display:flex;align-items:center;justify-content:space-between">
+         <span>${grp.length} Firebat${grp.length > 1 ? "s" : ""} → ${nodeName(parseInt(to))} <em style="color:var(--dim)">(in transit)</em></span>
+         <button onclick="stopTransitHere(${node},${to})">Stop here</button>
+       </div>`
+    ).join("");
+    const readySub2 = pool.length
+      ? `${pool.length} ready · splash damage vs crowds`
+      : passing.length ? "No firebats stopped here — all passing through" : "No firebats";
+    sheet.innerHTML = `
+      <h2>Firebats at ${nodeName(node)}</h2>
+      <div class="sheet-sub">${readySub2}</div>
+      ${passingHtml2}
+      ${pool.length ? `
+      <div class="stepper">
+        <button id="n-minus">−</button>
+        <div class="count" id="n-count">${n}</div>
+        <button id="n-plus">+</button>
+        <div class="label">selected</div>
+      </div>
+      <input type="range" id="n-range" min="1" max="${max}" value="${n}">
+      <div class="mode-toggle">
+        <button id="mode-move" class="${!mAtk ? "sel" : ""}">📦 Move</button>
+        <button id="mode-attack" class="${mAtk ? "sel" : ""}">⚔️ Move &amp; Attack</button>
+      </div>
+      ${destButtonsHtml(node, n, pool.length)}` : ""}
+      <button class="act-close" id="a-close">Close</button>`;
+    if (pool.length) {
+      const setN2 = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
+      bind("n-minus", () => setN2(sel.n - 1));
+      bind("n-plus",  () => setN2(sel.n + 1));
+      $("n-range").oninput = e => setN2(parseInt(e.target.value, 10));
+      bind("mode-move",   () => { sel.mode = "move";   renderSheet(); });
+      bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
+      bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "firebat", dest, sel.mode); closeSheet(); render(); });
+    }
 
   } else if (sel.kind === "academy") {
     const b = state.buildings.find(b => b.id === sel.ref);
