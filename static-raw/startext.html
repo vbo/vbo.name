@@ -788,6 +788,7 @@ function notify(text, kind, ttl = 5, node = null) {
 
 function logEvent(entry) {
   if (typeof document === "undefined") return;
+  if (!state.gameLog) state.gameLog = [];
   state.gameLog.push({ t: state.time, ...entry });
 }
 
@@ -3155,6 +3156,8 @@ function deserializeState(raw) {
   NODE_NAMES = state.map.names;
   if (!state.humanAI)
     state.humanAI = { lastEval: 0, lastWave: 30, waveInterval: 90, enemyBase: null, enemyArmy: 0, scoutTime: null };
+  if (!state.gameLog) state.gameLog = [];
+  if (state._seed === undefined) state._seed = null; // old save — seed lost
   return true;
 }
 
