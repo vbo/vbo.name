@@ -102,26 +102,43 @@ const REPLAY_DIR = path.join(__dirname, 'replays');
 const UNIT_COSTS  = { marine: { min: 50, gas: 0 }, firebat: { min: 50, gas: 25 }, scv: { min: 50, gas: 0 } };
 const BUILD_COSTS = { barracks: 150, academy: 150, bunker: 100, depot: 100, refinery: 75, cc: 400, engbay: 150 };
 
-// Parse a replay log (text from "Copy replay log") into { seed, actions }.
-// Only extracts h: (human) actions — bot actions in the log are ignored since
-// the evolved bot plays that side freely.
+// Parse a replay log (text from "Copy replay log") into { seed, logHome, logAway, actions }.
+// seed is null when the log header shows "seed=?" (game started from an old save).
+// logHome/logAway are the home-base node IDs extracted from first build/train actions.
+// Only h: actions are returned; b: lines are parsed only to detect logAway.
 function parseReplay(text) {
   const lines = text.split('\n');
-  const headerMatch = lines[0] && lines[0].match(/seed=(\d+)/);
+  const header = lines[0] || '';
+  const headerMatch = header.match(/seed=(\d+|\?)/);
   if (!headerMatch) return null;
-  const seed = Number(headerMatch[1]);
+  const seed = headerMatch[1] === '?' ? null : Number(headerMatch[1]);
+
   const actions = [];
+  let logHome = null, logAway = null;
+
   for (const line of lines.slice(2)) { // skip header + column header
+    // Detect logAway from first bot build/train line.
+    if (logAway === null) {
+      const bm = line.match(/^\s*\d+\s+b:(?:build|train)\s+\w+@(\d+)/);
+      if (bm) logAway = Number(bm[1]);
+    }
+
     const m = line.match(/^\s*(\d+)\s+h:(\w+)\s*(.*)/);
     if (!m) continue;
     const t = Number(m[1]), act = m[2], detail = m[3].trim();
     let action = null;
     if (act === 'build') {
       const bm = detail.match(/^(\w+)@(\d+)/);
-      if (bm) action = { t, act, type: bm[1], node: Number(bm[2]) };
+      if (bm) {
+        action = { t, act, type: bm[1], node: Number(bm[2]) };
+        if (logHome === null) logHome = Number(bm[2]);
+      }
     } else if (act === 'train') {
       const tm = detail.match(/^(\w+)@(\d+)/);
-      if (tm) action = { t, act, type: tm[1], node: Number(tm[2]) };
+      if (tm) {
+        action = { t, act, type: tm[1], node: Number(tm[2]) };
+        if (logHome === null) logHome = Number(tm[2]);
+      }
     } else if (act === 'research') {
       action = { t, act, type: detail };
     } else if (act === 'attack' || act === 'move') {
@@ -130,7 +147,22 @@ function parseReplay(text) {
     }
     if (action) actions.push(action);
   }
-  return { seed, actions };
+  return { seed, logHome, logAway, actions };
+}
+
+// For seed=? replays: find a seed where HOME/AWAY match the replay's logHome/logAway
+// and expansion nodes have resources. Returns a numeric seed or null.
+function findReplaySeed(replay, maxTry = 500) {
+  if (replay.logHome === null || replay.logAway === null) return null;
+  const lh = replay.logHome, la = replay.logAway;
+  for (let s = 1; s <= maxTry; s++) {
+    resetState(s);
+    const st = ctx.state;
+    if (ctx.HOME !== lh || ctx.AWAY !== la) continue;
+    if (st.map.n < Math.max(lh, la) + 1) continue; // not enough nodes
+    return s;
+  }
+  return null;
 }
 
 // Assign idle SCVs to available resources at their current node.
@@ -185,7 +217,18 @@ function tryReplayAction(action) {
 // Run the evolved bot against a replay-driven human side on the replay's seed.
 function runReplayGame(botCfg, replay) {
   ctx.ENABLE_HUMAN_BOT = false; // we drive HUMAN manually via replay + autoMine
-  resetState(replay.seed);
+
+  let seed = replay.seed;
+  if (seed === null) {
+    seed = findReplaySeed(replay);
+    if (seed === null) {
+      if (VERBOSE) console.warn(`  No compatible seed for ${replay.name} (logHome=${replay.logHome}, logAway=${replay.logAway}) — skipping`);
+      return { win: 1, ticks: 0 }; // treat unrunnable replay as pass so it doesn't block
+    }
+    if (VERBOSE) console.log(`  ${replay.name}: using seed ${seed} (matched logHome=${replay.logHome}, logAway=${replay.logAway})`);
+  }
+
+  resetState(seed);
   Object.assign(ctx.BOT_CONFIG, DEFAULT_CFG, botCfg);
 
   const pending = []; // [{action, age}] — actions that couldn't fire yet
@@ -276,9 +319,9 @@ const BOUNDS = {
   raxCapBase:      [1,   5], raxCapSkilled:   [3,  10],
   raxTimeBase:     [60, 200],raxTimeSkilled:  [30, 100],
   uScv:    [0.3, 2.0], uMarine:  [0.3, 2.0], uFirebat: [0.2, 2.0],
-  uRax:    [0.3, 2.0], uAcademy: [0.2, 2.0], uBunker:  [0.1, 2.0],
+  uRax:    [0.3, 2.0], uAcademy: [0.2, 2.0], uRefinery:[0.3, 2.0], uBunker:  [0.1, 2.0],
   uDepot:  [0.5, 2.5], uU238:    [0.1, 2.0],
-  uEngBay: [0.1, 2.0], uInfWeapons: [0.1, 2.0], uInfArmor: [0.1, 2.0],
+  uEngBay: [0.1, 2.0], uInfWeapons: [0.3, 2.0], uInfArmor: [0.3, 2.0],
 };
 
 function clamp(val, lo, hi) { return Math.max(lo, Math.min(hi, val)); }

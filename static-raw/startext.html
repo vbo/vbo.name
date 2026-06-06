@@ -439,10 +439,11 @@ const BOT_CONFIG_DEFAULT = {
   uFirebat: 2,
   uRax: 1.08,
   uAcademy: 1.41,
+  uRefinery: 1.0,
   uBunker: 1.31,
   uEngBay: 2,
-  uInfWeapons: 0.20,
-  uInfArmor: 0.20,
+  uInfWeapons: 1.0,
+  uInfArmor: 1.0,
   uExpand: 0.80,
   uDepot: 1,
   uU238: 1.22,
@@ -1744,7 +1745,7 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
         } else {
           const homeScvAvail = state.units.filter(u =>
             u.owner === owner && u.node === home && u.type === "scv" &&
-            (u.task === "idle" || u.task === "mining")).length;
+            (u.task === "idle" || u.task === "mining" || u.task === "gas")).length;
           if (homeScvAvail > cfg.expandMinScv) {
             sendUnits(owner, home, 1, "scv", expNode);
             const escort = Math.min(2, idleMarines(owner, home).length);
@@ -1818,7 +1819,15 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     add(cfg.uRax * 6 * Math.max(0, 1 - raxCount / raxTarget),
         () => startBuilding(owner, home, "barracks"));
 
-  if (raxDone && fwdVisited && !underAttack &&
+  // Refinery: build when gas is available and we have tech buildings that need it.
+  const hasRefineryHome = state.buildings.some(b =>
+    b.owner === owner && b.node === home && b.type === "refinery");
+  if (!hasRefineryHome && state.gasField[home] > 0 && raxDone) {
+    const gasUrgency = (academyExists || engBayExists) ? 1.5 : 0.7;
+    add(cfg.uRefinery * 5 * gasUrgency, () => startBuilding(owner, home, "refinery"));
+  }
+
+  if (raxDone && fwdVisited && !underAttack && myArmy >= 8 &&
       !state.buildings.some(b => b.owner === owner && b.node === fwd && b.type === "bunker"))
     add(cfg.uBunker * 4, () => startBuilding(owner, fwd, "bunker"));
 
@@ -1855,6 +1864,15 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     if (state.field[ccB.node] <= 0) continue;
     if (underAttack && ccB.node === home) continue;
     unitsOf(owner, ccB.node, "idle", "scv").forEach(u => u.task = "mining");
+  }
+  // Pull up to 3 SCVs per refinery from mining to gas collection.
+  for (const ref of state.buildings.filter(b =>
+      b.owner === owner && b.type === "refinery" && !b.construct)) {
+    const gasCount = state.units.filter(u =>
+      u.owner === owner && u.node === ref.node && u.task === "gas").length;
+    const needed = Math.max(0, 3 - gasCount);
+    if (needed > 0)
+      unitsOf(owner, ref.node, "mining", "scv").slice(0, needed).forEach(u => u.task = "gas");
   }
 }
 
@@ -3170,6 +3188,9 @@ function restore() {
   let raw;
   try { raw = localStorage.getItem(SAVE_KEY); } catch (e) { return false; }
   if (!deserializeState(raw)) return false;
+  // A finished null-seed game is from an old save (seed was never stored).
+  // Skip restoring it so init() starts a fresh game with a proper seed.
+  if (state.over && state._seed === null) return false;
   closeSheet();
   document.getElementById("end").className = "";
   if (!SPEEDS[state.speed]) state.speed = DEFAULT_SPEED; // tolerate old/garbled saves

@@ -1,0 +1,233 @@
+seed=791 ticks=919 WIN
+   t act          detail
+   14 h:train      scv@4
+   26 h:train      scv@4
+   42 h:train      scv@4
+   50 snap         h:0/45.59999999999998 b:0/19.400000000000006
+   53 h:train      scv@4
+   64 h:train      scv@4
+   84 b:build      depot@5
+   84 h:build      depot@4
+   92 h:train      scv@4
+  100 snap         h:0/65.79999999999995 b:0/111.99999999999991
+  105 h:train      scv@4
+  107 h:train      scv@4
+  108 b:build      barracks@5
+  117 h:train      scv@4
+  125 h:train      scv@4
+  141 h:build      barracks@4
+  148 h:train      scv@4
+  150 snap         h:0/29.799999999999983 b:0/139.59999999999997
+  153 b:build      depot@5
+  161 h:build      depot@4
+  174 b:build      bunker@0
+  184 h:train      scv@4
+  187 h:train      scv@4
+  200 snap         h:0/275.6999999999999 b:0/146.29999999999993
+  201 b:build      engBay@5
+  203 h:train      marine@4
+  209 h:train      marine@4
+  216 h:build      academy@4
+  228 b:build      academy@5
+  229 h:build      barracks@4
+  232 h:train      marine@4
+  248 h:build      depot@4
+  250 snap         h:1/257.3849999999997 b:0/119.72399999999988
+  250 h:train      marine@4
+  251 h:train      marine@4
+  255 b:build      barracks@5
+  273 h:train      scv@4
+  276 b:build      depot@5
+  287 h:build      refinery@4
+  297 h:move       1×scv 4→2 (h:3 b:0)
+  299 h:train      marine@4
+  300 snap         h:4/475.8500000000002 b:0/174.73899999999995
+  303 b:build      barracks@5
+  305 h:build      depot@4
+  311 h:train      scv@4
+  311 h:train      scv@4
+  312 h:train      scv@4
+  312 h:train      scv@4
+  323 h:build      cc@2
+  331 h:attack     2×marine 2→1 (h:6 b:0)
+  337 h:attack     1×marine 1→3 (h:6 b:0)
+  341 h:train      marine@4
+  342 h:train      marine@4
+  342 h:train      marine@4
+  350 snap         h:6/127.40000000000029 b:0/383.11499999999955
+  354 b:build      cc@0
+  357 b:train      marine@5
+  361 h:move       17×scv 4→2 (h:5 b:0)
+  363 b:train      marine@5
+  366 b:train      marine@5
+  366 h:attack     1×marine 1→3 (h:7 b:0)
+  369 b:train      marine@5
+  373 h:train      marine@4
+  375 b:train      marine@5
+  381 b:train      marine@5
+  381 h:move       9×scv 2→4 (h:7 b:1)
+  384 b:train      marine@5
+  387 h:attack     1×marine 3→0 (h:7 b:2)
+  390 b:train      marine@5
+  393 h:train      marine@4
+  396 b:train      marine@5
+  398 h:train      scv@4
+  399 h:train      scv@4
+  399 h:train      scv@4
+  400 snap         h:9/105.7680000000002 b:3/61.55899999999943
+  402 h:move       1×scv 2→1 (h:9 b:3)
+  405 b:build      depot@5
+  405 h:train      marine@4
+  405 h:train      marine@4
+  405 h:train      marine@4
+  416 h:research   u238
+  420 b:train      marine@5
+  420 b:train      marine@5
+  425 h:attack     6×marine 1→0 (h:10 b:6)
+  426 b:train      marine@5
+  427 h:attack     1×marine 1→0 (h:10 b:6)
+  430 h:move       1×scv 1→0 (h:11 b:6)
+  432 b:train      marine@5
+  435 h:train      marine@4
+  435 h:train      marine@4
+  441 b:train      marine@5
+  441 b:train      marine@5
+  444 b:train      marine@5
+  446 h:build      barracks@0
+  450 b:train      marine@5
+  450 snap         h:11/210.03000000000003 b:9/12.766999999999385
+  453 h:train      marine@4
+  456 b:train      marine@5
+  461 h:train      marine@4
+  468 b:train      marine@5
+  476 h:move       1×scv 2→0 (h:12 b:11)
+  480 b:train      marine@5
+  481 h:move       1×scv 2→0 (h:13 b:11)
+  492 b:train      marine@5
+  493 h:train      marine@4
+  493 h:train      marine@4
+  493 h:train      marine@4
+  493 h:train      marine@4
+  493 h:train      marine@4
+  493 h:train      marine@4
+  495 h:train      marine@0
+  495 h:train      marine@0
+  495 h:train      marine@0
+  495 h:train      marine@0
+  497 h:build      bunker@0
+  500 snap         h:13/115.0329999999997 b:13/36.06699999999941
+  502 h:attack     2×marine 1→0 (h:14 b:13)
+  504 b:train      marine@5
+  513 h:attack     2×marine 2→0 (h:14 b:16)
+  516 b:train      marine@5
+  519 h:build      bunker@0
+  523 h:build      bunker@0
+  527 h:train      marine@0
+  528 b:train      marine@5
+  530 h:build      engBay@0
+  536 h:build      depot@2
+  540 b:train      marine@5
+  548 h:train      marine@4
+  550 snap         h:20/143.23299999999955 b:19/46.06699999999944
+  564 b:build      depot@5
+  572 h:build      cc@0
+  581 h:build      depot@0
+  585 h:train      marine@4
+  591 b:train      marine@5
+  591 b:train      marine@5
+  593 h:research   infWeapons1
+  600 b:train      marine@5
+  600 snap         h:25/87.29499999999938 b:22/6.066999999999538
+  605 h:train      marine@0
+  607 h:train      marine@4
+  607 h:train      marine@4
+  610 h:train      marine@4
+  612 b:train      marine@5
+  617 h:move       1×scv 4→0 (h:27 b:25)
+  620 h:move       1×scv 4→0 (h:27 b:25)
+  624 b:train      marine@5
+  626 h:build      engBay@0
+  636 b:train      marine@5
+  636 h:train      scv@0
+  636 h:train      scv@0
+  636 h:train      scv@0
+  640 h:train      marine@0
+  647 h:train      scv@0
+  648 b:train      marine@5
+  650 snap         h:30/79.64199999999934 b:28/16.06699999999956
+  650 h:train      marine@0
+  657 h:train      marine@0
+  660 b:train      marine@5
+  665 h:train      marine@0
+  665 h:train      marine@0
+  667 h:train      marine@4
+  667 h:train      marine@4
+  675 h:train      scv@0
+  684 b:build      depot@5
+  689 h:research   infArmor1
+  695 h:research   infWeapons2
+  700 snap         h:35/203.16599999999906 b:31/76.06699999999962
+  700 h:build      depot@0
+  706 h:train      marine@4
+  706 h:train      marine@4
+  711 b:train      marine@5
+  711 b:train      marine@5
+  713 h:attack     1×marine 0→5 (h:36 b:31)
+  717 h:train      firebat@4
+  718 h:train      firebat@4
+  720 b:train      marine@5
+  724 h:build      barracks@0
+  727 h:build      barracks@0
+  732 b:train      marine@5
+  735 h:train      firebat@0
+  735 h:train      firebat@0
+  735 h:train      firebat@0
+  738 b:train      marine@5
+  742 h:build      barracks@0
+  750 b:train      marine@5
+  750 snap         h:38/125.28799999999859 b:34/9.796999999999684
+  751 h:train      firebat@4
+  752 h:train      firebat@4
+  754 h:train      firebat@0
+  761 h:build      depot@0
+  762 b:train      marine@5
+  774 b:train      marine@5
+  774 h:build      depot@0
+  782 h:train      firebat@0
+  793 h:train      firebat@0
+  794 h:train      firebat@0
+  794 h:train      firebat@0
+  798 b:build      depot@5
+  798 h:train      marine@4
+  798 h:train      marine@4
+  800 snap         h:44/247.82899999999785 b:39/19.796999999999734
+  817 h:train      firebat@0
+  817 h:train      firebat@0
+  817 h:train      firebat@0
+  817 h:train      firebat@0
+  818 h:train      firebat@0
+  825 b:train      marine@5
+  825 b:train      marine@5
+  831 h:train      firebat@4
+  831 h:train      firebat@4
+  832 h:train      firebat@4
+  833 h:train      firebat@4
+  834 b:train      marine@5
+  843 b:train      marine@5
+  850 snap         h:54/531.2469999999973 b:41/29.796999999999816
+  855 b:train      marine@5
+  859 h:train      marine@0
+  859 h:train      marine@0
+  867 b:train      marine@5
+  879 b:train      marine@5
+  882 h:attack     39×marine 0→5 (h:62 b:44)
+  887 h:attack     17×firebat 0→5 (h:64 b:44)
+  891 b:train      marine@5
+  891 h:attack     4×marine 0→5 (h:64 b:45)
+  894 h:train      marine@0
+  895 h:train      marine@0
+  895 h:train      marine@0
+  895 h:train      marine@0
+  900 snap         h:64/919.6409999999987 b:45/51.66199999999984
+  903 b:train      marine@5
+  915 h:research   infArmor2
