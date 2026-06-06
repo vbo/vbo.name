@@ -2223,23 +2223,25 @@ function appendForces(container, owner, node, interactive) {
   const scvs = unitsOf(owner, node, null, "scv");
   if (scvs.length) {
     any = true;
-    const miningN = scvs.filter(u => u.task === "mining").length;
-    const gasN    = scvs.filter(u => u.task === "gas").length;
-    const idleN   = scvs.filter(u => u.task === "idle").length;
-    const buildN  = scvs.filter(u => u.task === "building").length;
+    const miningN  = scvs.filter(u => u.task === "mining").length;
+    const gasN     = scvs.filter(u => u.task === "gas").length;
+    const idleN    = scvs.filter(u => u.task === "idle" && !u.transit).length;
+    const buildN   = scvs.filter(u => u.task === "building").length;
+    const transitN = scvs.filter(u => u.transit).length;
     const parts = [];
     if (miningN) {
-      // Show sat% only in interactive (own base) view where it's actionable.
       if (interactive) {
-        const satPct = mineralSatPct(miningN, state.field[node]);
-        parts.push(`${miningN} mining (${satPct}% sat)`);
+        const mineOpt = activePatchCount(state.field[node]) * 2;
+        const oversat = miningN > mineOpt;
+        parts.push(`${miningN}/${mineOpt} mining${oversat ? " ⚠" : ""}`);
       } else {
         parts.push(`${miningN} mining`);
       }
     }
-    if (gasN)   parts.push(`${gasN} gas`);
-    if (idleN)  parts.push(`${idleN} idle`);
-    if (buildN) parts.push(`${buildN} building`);
+    if (gasN)     parts.push(`${gasN} gas`);
+    if (idleN)    parts.push(`${idleN} idle`);
+    if (buildN)   parts.push(`${buildN} building`);
+    if (transitN) parts.push(`${transitN} → passing`);
     const sHp = scvs.reduce((s, u) => s + u.hp, 0), sMax = scvs.reduce((s, u) => s + u.maxHp, 0);
     const row = document.createElement(interactive ? "button" : "div");
     row.className = "row" + (interactive ? "" : " static");
@@ -2253,35 +2255,73 @@ function appendForces(container, owner, node, interactive) {
   }
 
   // Marines — exclude bunker occupants (task="bunker"); moving ones have node=-1 so already absent.
+  // Dwelling transit marines (idle+transit!=null) shown as a separate "passing through" row.
   const marines = unitsOf(owner, node, null, "marine").filter(u => u.task !== "bunker");
   if (marines.length) {
     any = true;
-    const mHp = marines.reduce((s, u) => s + u.hp, 0), mMax = marines.reduce((s, u) => s + u.maxHp, 0);
-    const row = document.createElement(interactive ? "button" : "div");
-    row.className = "row" + (interactive ? "" : " static");
-    row.innerHTML = `${svgIcon("marine")}<div class="body">
-        <div class="name">Marines — ${marines.length}</div>
-        <div class="meta">ready</div>
-        ${hpBar(mHp, mMax)}
-      </div>${interactive ? '<span class="chev">›</span>' : ""}`;
-    if (interactive) row.onclick = () => openSheet({ kind: "marine", node, n: 1 });
-    container.appendChild(row);
+    const stopped  = marines.filter(u => !u.transit);
+    const passing  = marines.filter(u =>  u.transit);
+    if (stopped.length) {
+      const mHp = stopped.reduce((s, u) => s + u.hp, 0), mMax = stopped.reduce((s, u) => s + u.maxHp, 0);
+      const row = document.createElement(interactive ? "button" : "div");
+      row.className = "row" + (interactive ? "" : " static");
+      row.innerHTML = `${svgIcon("marine")}<div class="body">
+          <div class="name">Marines — ${stopped.length}</div>
+          <div class="meta">idle</div>
+          ${hpBar(mHp, mMax)}
+        </div>${interactive ? '<span class="chev">›</span>' : ""}`;
+      if (interactive) row.onclick = () => openSheet({ kind: "marine", node, n: 1 });
+      container.appendChild(row);
+    }
+    // Group passing-through marines by final destination.
+    const mByDest = {};
+    for (const u of passing) (mByDest[u.transit.to] = mByDest[u.transit.to] || []).push(u);
+    for (const [to, grp] of Object.entries(mByDest)) {
+      const tHp = grp.reduce((s, u) => s + u.hp, 0), tMax = grp.reduce((s, u) => s + u.maxHp, 0);
+      const row = document.createElement(interactive ? "button" : "div");
+      row.className = "row" + (interactive ? "" : " static");
+      row.innerHTML = `${svgIcon("marine")}<div class="body">
+          <div class="name">Marines — ${grp.length} <span style="color:var(--dim)">→ ${nodeName(parseInt(to))}</span></div>
+          <div class="meta">in transit</div>
+          ${hpBar(tHp, tMax)}
+        </div>${interactive ? '<span style="padding-right:10px;color:var(--dim)">→</span>' : ""}`;
+      if (interactive) row.onclick = () => openSheet({ kind: "marine", node, n: 1 });
+      container.appendChild(row);
+    }
   }
 
   // Firebats — exclude bunker occupants; moving ones have node=-1 so already absent.
   const firebats = unitsOf(owner, node, null, "firebat").filter(u => u.task !== "bunker");
   if (firebats.length) {
     any = true;
-    const fHp = firebats.reduce((s, u) => s + u.hp, 0), fMax = firebats.reduce((s, u) => s + u.maxHp, 0);
-    const row = document.createElement(interactive ? "button" : "div");
-    row.className = "row" + (interactive ? "" : " static");
-    row.innerHTML = `${svgIcon("firebat")}<div class="body">
-        <div class="name">Firebats — ${firebats.length}</div>
-        <div class="meta">ready · splash dmg</div>
-        ${hpBar(fHp, fMax)}
-      </div>${interactive ? '<span class="chev">›</span>' : ""}`;
-    if (interactive) row.onclick = () => openSheet({ kind: "firebat", node, n: 1 });
-    container.appendChild(row);
+    const fStopped = firebats.filter(u => !u.transit);
+    const fPassing = firebats.filter(u =>  u.transit);
+    if (fStopped.length) {
+      const fHp = fStopped.reduce((s, u) => s + u.hp, 0), fMax = fStopped.reduce((s, u) => s + u.maxHp, 0);
+      const row = document.createElement(interactive ? "button" : "div");
+      row.className = "row" + (interactive ? "" : " static");
+      row.innerHTML = `${svgIcon("firebat")}<div class="body">
+          <div class="name">Firebats — ${fStopped.length}</div>
+          <div class="meta">idle · splash dmg</div>
+          ${hpBar(fHp, fMax)}
+        </div>${interactive ? '<span class="chev">›</span>' : ""}`;
+      if (interactive) row.onclick = () => openSheet({ kind: "firebat", node, n: 1 });
+      container.appendChild(row);
+    }
+    const fByDest = {};
+    for (const u of fPassing) (fByDest[u.transit.to] = fByDest[u.transit.to] || []).push(u);
+    for (const [to, grp] of Object.entries(fByDest)) {
+      const tHp = grp.reduce((s, u) => s + u.hp, 0), tMax = grp.reduce((s, u) => s + u.maxHp, 0);
+      const row = document.createElement(interactive ? "button" : "div");
+      row.className = "row" + (interactive ? "" : " static");
+      row.innerHTML = `${svgIcon("firebat")}<div class="body">
+          <div class="name">Firebats — ${grp.length} <span style="color:var(--dim)">→ ${nodeName(parseInt(to))}</span></div>
+          <div class="meta">in transit</div>
+          ${hpBar(tHp, tMax)}
+        </div>${interactive ? '<span style="padding-right:10px;color:var(--dim)">→</span>' : ""}`;
+      if (interactive) row.onclick = () => openSheet({ kind: "firebat", node, n: 1 });
+      container.appendChild(row);
+    }
   }
 
   // Academy — tappable to research upgrades.
