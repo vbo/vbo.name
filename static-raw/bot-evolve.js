@@ -76,7 +76,8 @@ function runGame(botCfg, humanCfg, seed) {
 }
 
 // Reward: winning faster is worth more; losing is 0.
-const reward = (win, ticks) => win ? 1 - ticks / 1500 : 0;
+// Guarantee nonzero for any win (including timeout) so the evolution has signal.
+const reward = (win, ticks) => win ? Math.max(0.1, 1 - ticks / 1500) : 0;
 
 // ── Evaluation ───────────────────────────────────────────────────────────────
 // testCfg plays both sides (as bot and as "human") against every HoF entry.
