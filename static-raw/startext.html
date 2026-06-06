@@ -1177,20 +1177,27 @@ function endGame(result, reason) {
 }
 
 function formatReplayLog() {
-  const seed = state._seed !== undefined ? state._seed : "?";
-  const lines = [`seed=${seed} ticks=${state.time} WIN`];
-  lines.push("t    act          detail                   h-army h-min  b-army b-min");
+  const seed = state._seed != null ? state._seed : "?";
+  const result = state.over === "win" ? "WIN" : "LOSS";
+  const lines = [
+    `seed=${seed} ticks=${state.time} ${result}`,
+    `   t act          detail`,
+  ];
   for (const e of (state.gameLog || [])) {
+    let act, detail = "";
     if (e.snap) {
-      lines.push(`${String(e.t).padStart(4)} snap                                  ${String(e.ha).padStart(5)} ${String(e.hm).padStart(6)} ${String(e.ba).padStart(6)} ${String(e.bm).padStart(5)}`);
-      continue;
+      act = "snap";
+      detail = `h:${e.ha}/${e.hm} b:${e.ba}/${e.bm}`;
+    } else {
+      const who = e.owner === "human" ? "h" : "b";
+      act = `${who}:${e.act}`;
+      if (e.act === "build")                    detail = `${e.type}@${e.node}`;
+      if (e.act === "train")                    detail = e.type;
+      if (e.act === "research")                 detail = e.type;
+      if (e.act === "attack" || e.act === "move")
+        detail = `${e.n}×${e.utype}→${e.dest} (h:${e.ha} b:${e.ba})`;
     }
-    let detail = "";
-    if (e.act === "build")    detail = `${e.type}@${e.node}`;
-    if (e.act === "train")    detail = e.type;
-    if (e.act === "research") detail = e.type;
-    if (e.act === "attack")   detail = `${e.n}×${e.utype}→${e.dest} (h:${e.ha} b:${e.ba})`;
-    lines.push(`${String(e.t).padStart(4)} ${e.act.padEnd(12)} ${detail}`);
+    lines.push(`${String(e.t).padStart(4)} ${act.padEnd(12)} ${detail}`);
   }
   return lines.join("\n");
 }
@@ -1209,20 +1216,6 @@ function copyReplayLog() {
   try {
     const btn = document.getElementById("end-copy");
     const text = formatReplayLog();
-    // Show/create a textarea so the user can see the content and copy manually.
-    let ta = document.getElementById("end-log");
-    if (!ta) {
-      ta = document.createElement("textarea");
-      ta.id = "end-log";
-      ta.readOnly = true;
-      ta.style.cssText = "display:block;width:100%;height:160px;font-size:11px;" +
-        "font-family:monospace;resize:vertical;margin-top:8px;box-sizing:border-box";
-      btn.insertAdjacentElement("afterend", ta);
-    }
-    ta.value = text;
-    ta.style.display = "block";
-    ta.focus();
-    ta.select();
     const onCopied = () => {
       btn.textContent = "Copied!";
       setTimeout(() => { btn.textContent = "Copy replay log"; }, 1500);
@@ -1263,6 +1256,7 @@ function queueSCV(owner, node, maxQueue = C.cc.queueMax) {
     cc.train = { progress: 0, total: C.cc.trainTime, unitType: "scv" };
   else
     cc.queued++;
+  if (owner === HUMAN) logEvent({ act: "train", owner, type: "scv" });
 }
 
 function freeIdle(owner, node) {
@@ -1308,10 +1302,8 @@ function startBuilding(owner, node, type) {
   state.buildings.push(b);
   scv.task = "building";
   scv.buildingId = b.id;
-  if (owner === HUMAN) {
-    notify(`🏗 ${BUILDING_LABEL[type] || type} ordered`, "ok", 3);
-    logEvent({ act: "build", type, node });
-  }
+  if (owner === HUMAN) notify(`🏗 ${BUILDING_LABEL[type] || type} ordered`, "ok", 3);
+  logEvent({ act: "build", owner, type, node });
   return true;
 }
 
@@ -1336,7 +1328,7 @@ function queueMarine(owner, node, raxId) {
     rax.train = { progress: 0, total: C.marine.build, unitType: "marine" };
   else
     rax.queued++;
-  if (owner === HUMAN) logEvent({ act: "train", type: "marine" });
+  logEvent({ act: "train", owner, type: "marine" });
 }
 
 function queueFirebat(owner, node, raxId) {
@@ -1361,7 +1353,7 @@ function queueFirebat(owner, node, raxId) {
     rax.train = { progress: 0, total: C.firebat.build, unitType: "firebat" };
   else
     rax.queuedFirebats = (rax.queuedFirebats || 0) + 1;
-  if (owner === HUMAN) logEvent({ act: "train", type: "firebat" });
+  logEvent({ act: "train", owner, type: "firebat" });
 }
 
 function startResearch(owner, upgradeType) {
@@ -1377,7 +1369,7 @@ function startResearch(owner, upgradeType) {
   state.minerals[owner] -= up.minerals;
   state.gas[owner] -= up.gas;
   bld.research = { type: upgradeType, progress: 0, total: up.time };
-  if (owner === HUMAN) logEvent({ act: "research", type: upgradeType });
+  logEvent({ act: "research", owner, type: upgradeType });
   return true;
 }
 
@@ -1431,8 +1423,10 @@ function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
     const label = unitType === "marine" ? "Marine" : unitType === "firebat" ? "Firebat" : "SCV";
     const modeIcon = mode === "attack" ? " ⚔️" : "";
     notify(`${sent.length} ${label}${sent.length > 1 ? "s" : ""}${modeIcon} → ${nodeName(dest)}`, "ok", 3);
-    if (mode === "attack") logEvent({ act: "attack", n: sent.length, utype: unitType, dest,
-      ha: armyCount(HUMAN), ba: armyCount(BOT) });
+  }
+  if (sent.length && (mode === "attack" || owner === HUMAN)) {
+    logEvent({ act: mode === "attack" ? "attack" : "move", owner, n: sent.length,
+      utype: unitType, dest, ha: armyCount(HUMAN), ba: armyCount(BOT) });
   }
 }
 
