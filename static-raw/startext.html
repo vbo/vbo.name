@@ -497,6 +497,11 @@ const MACRO_WEIGHTS_DEFAULT = {
   surplus_research: 1.2, surplus_techB: 1.0,
   gasFloat_research: 0.8, needGas_gas: 2.0,
   firstRax_prod: 5.0, threat_defense: 2.5,
+  // New features (gen 2) — conservative warm-start; algorithm learns final values.
+  scvFrac_worker: -0.3,  // worker-heavy roster → mild SCV suppression
+  scvFrac_combat:  0.5,  // worker-heavy roster → mild combat boost
+  ccFrac_prod:     0.3,  // more expansions → more production OK
+  gameFrac_tech:   0.3,  // later game → tech more valuable
 };
 // Active weights; null → fall back to defaults. The trainer sets this.
 let MACRO_WEIGHTS = null;
@@ -519,6 +524,9 @@ const MILITARY_WEIGHTS_DEFAULT = {
   timer: 1.0,          // wave timer overdue → pressure to move out
   targetWeak: 1.2,     // target node lightly defended → attack
   waveFailed: -2.0,    // a wave just failed → wait
+  // New features (gen 2) — conservative warm-start; algorithm learns final values.
+  supplyPres: 0.5,     // supply saturated → can't reinforce, commit now
+  firebatFrac: 0.2,    // firebat-heavy composition → more aggressive
 };
 let MILITARY_WEIGHTS = null;
 
@@ -1557,16 +1565,21 @@ function macroPolicyBuild(add, P, W) {
 
   // Situational scalars shared across all candidate actions (normalised ~0..1).
   const supplyPress = clamp(1 - P.supplyHeadroom / 8, 0, 1);
-  const floatM   = clamp((P.M - 150) / 300, 0, 1);
-  const gasFloat = clamp(P.G / 200, 0, 1);
-  const deficit  = clamp((P.enemyArmy - P.myArmy) / 10, 0, 1); // behind on army
-  const surplus  = clamp((P.myArmy - P.enemyArmy) / 10, 0, 1); // ahead on army
-  const costFrac = m => clamp(m / Math.max(P.M, 50), 0, 2);
+  const floatM    = clamp((P.M - 150) / 300, 0, 1);
+  const gasFloat  = clamp(P.G / 200, 0, 1);
+  const deficit   = clamp((P.enemyArmy - P.myArmy) / 10, 0, 1); // behind on army
+  const surplus   = clamp((P.myArmy - P.enemyArmy) / 10, 0, 1); // ahead on army
+  const costFrac  = m => clamp(m / Math.max(P.M, 50), 0, 2);
+  // Gen-2 features
+  const scvFrac   = clamp(P.scvCount / Math.max(1, P.scvCount + P.myArmy), 0, 1);
+  const ccFrac    = clamp((P.ccCount ?? 1) / 3, 0, 1);
+  const gameFrac  = clamp((P.tick ?? 0) / 1200, 0, 1);
 
   // ── Buildings ──
   if (P.supplyCap < SUPPLY_MAX && !P.depotConstructing)
     add(dot({ bias: 1, isSupply: 1, costFrac: costFrac(C.depot.cost),
-              supplyPress_supply: supplyPress, haveCount: clamp(P.depotCount / 4, 0, 1) }),
+              supplyPress_supply: supplyPress, haveCount: clamp(P.depotCount / 4, 0, 1),
+              ccFrac_prod: ccFrac }),
         () => startBuilding(P.owner, P.home, "depot"), "build");
 
   if (P.gasField0 > 0 && !P.hasRefineryHome && P.raxDone)
@@ -1577,7 +1590,7 @@ function macroPolicyBuild(add, P, W) {
   if (!P.raxConstructing && P.raxCount < P.raxTarget)
     add(dot({ bias: 1, isProd: 1, costFrac: costFrac(C.barracks.cost),
               firstRax_prod: P.raxCount === 0 ? 1 : 0, unlocksNew: P.raxCount === 0 ? 1 : 0,
-              haveCount: clamp(P.raxCount / 4, 0, 1) }),
+              haveCount: clamp(P.raxCount / 4, 0, 1), ccFrac_prod: ccFrac }),
         () => startBuilding(P.owner, P.home, "barracks"), "build");
 
   if (P.raxDone && !P.academyExists && !P.underAttack)
@@ -1594,7 +1607,8 @@ function macroPolicyBuild(add, P, W) {
   // play (the rule bot is hard-capped at one) while haveCount diminishes spam.
   if (P.raxDone && P.fwdVisited && P.fwdBunkerCount < 3)
     add(dot({ bias: 1, isDefense: 1, costFrac: costFrac(C.bunker.cost),
-              threat_defense: P.underAttack ? 1 : 0, haveCount: clamp(P.fwdBunkerCount / 2, 0, 1) }),
+              threat_defense: P.underAttack ? 1 : 0, haveCount: clamp(P.fwdBunkerCount / 2, 0, 1),
+              gameFrac_tech: gameFrac }),
         () => startBuilding(P.owner, P.fwd, "bunker"), "build");
 
   // ── Research ──
@@ -1602,7 +1616,7 @@ function macroPolicyBuild(add, P, W) {
     const u = UPGRADES[key];
     add(dot({ bias: 1, isResearch: 1, costFrac: costFrac(u.minerals),
               surplus_research: surplus, gasFloat_research: gasFloat,
-              gasBlocked: P.G < u.gas ? 1 : 0 }),
+              gasBlocked: P.G < u.gas ? 1 : 0, gameFrac_tech: gameFrac }),
         () => startResearch(P.owner, key), "tech");
   };
   if (P.academyReady && !P.upg.includes("u238")) scoreResearch("u238");
@@ -1615,7 +1629,8 @@ function macroPolicyBuild(add, P, W) {
   // break stays meaningful; SCV always allowed, army units gated like the rule.)
   if (P.M >= C.scv.cost && P.scvCount < P.scvCap)
     add(dot({ bias: 1, isUnit: 1, costFrac: costFrac(C.scv.cost),
-              float_unit: floatM, haveCount: clamp(P.scvCount / P.scvCap, 0, 1) }),
+              float_unit: floatM, haveCount: clamp(P.scvCount / P.scvCap, 0, 1),
+              scvFrac_worker: scvFrac }),
         () => queueSCV(P.owner, P.home, 1), "train");
 
   if (!P.savingForCC && P.raxDone) {
@@ -1623,11 +1638,11 @@ function macroPolicyBuild(add, P, W) {
       const canFirebat = P.hasAcademy && P.G >= C.firebat.gasCost && P.M >= C.firebat.cost;
       if (canFirebat)
         add(dot({ bias: 1, isUnit: 1, isCombat: 1, firebat: 1, costFrac: costFrac(C.firebat.cost),
-                  float_unit: floatM, deficit_unit: deficit }),
+                  float_unit: floatM, deficit_unit: deficit, scvFrac_combat: scvFrac }),
             () => queueFirebat(P.owner, P.home), "train");
       else if (P.M >= C.marine.cost)
         add(dot({ bias: 1, isUnit: 1, isCombat: 1, costFrac: costFrac(C.marine.cost),
-                  float_unit: floatM, deficit_unit: deficit }),
+                  float_unit: floatM, deficit_unit: deficit, scvFrac_combat: scvFrac }),
             () => queueMarine(P.owner, P.home), "train");
     }
   }
@@ -1820,6 +1835,7 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
             (u.type === "marine" || u.type === "firebat")).length +
           state.buildings.filter(b => b.owner === opp && b.node === dest &&
             b.type === "bunker" && !b.construct).length * 4;
+        const firebatsTotal = state.units.filter(u => u.owner === owner && u.type === "firebat").length;
         const f = {
           launchBias: 1,
           relStr:     cl(relStr / 3, 0, 1),
@@ -1829,6 +1845,8 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
           timer:      cl((state.time - ai.lastWave) / Math.max(ai.waveInterval, 1), 0, 2),
           targetWeak: cl(1 - defAtDest / Math.max(allStrike, 1), 0, 1),
           waveFailed: ai.waveFailed ? 1 : 0,
+          supplyPres: cl(1 - (supplyCap(owner) - supplyUsed(owner)) / 8, 0, 1),
+          firebatFrac: cl(firebatsTotal / Math.max(1, allStrike), 0, 1),
         };
         let s = 0; for (const k in f) s += (milW[k] || 0) * f[k];
         launch = s > 0 && surplus >= 1; // never launch with no surplus
@@ -1994,6 +2012,8 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
       scvCount, scvCap, raxCount, raxTarget, raxDone,
       academyExists, hasAcademy, academyReady, engBayExists, engBayReady,
       savingForCC,
+      tick: state.time,
+      ccCount: state.buildings.filter(b => b.owner === owner && b.type === "cc" && !b.construct).length,
       depotCount:        state.buildings.filter(b => b.owner === owner && b.type === "depot").length,
       depotConstructing: state.buildings.some(b => b.owner === owner && b.type === "depot" && b.construct),
       raxConstructing:   state.buildings.some(b => b.owner === owner && b.type === "barracks" && b.construct),

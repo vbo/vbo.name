@@ -462,17 +462,20 @@ if (POLICY_MODE) {
 
   // Validation-based selection: the objective is beating the rule bot, so we keep
   // the brain with the best MEASURED win rate vs the rule bot (not just the best
-  // self-play fitness, which can overfit the Hall of Fame). 12-seed bench.
-  const VAL_SEEDS = 12;
+  // self-play fitness, which can overfit the Hall of Fame). 24-seed bench for a
+  // stable signal (was 12 — too noisy for selection).
+  const VAL_SEEDS = 24;
   const valScore = b => benchVsRule(b, VAL_SEEDS).pol; // wins out of VAL_SEEDS*2
   let elite = cloneBrain(champ), eliteScore = valScore(elite);
   console.log(`Warm-start vs rule bot: ${eliteScore}/${VAL_SEEDS * 2} wins\n`);
 
   for (let gen = 1; gen <= GENERATIONS; gen++) {
+    // Sigma annealing: explore broadly early, fine-tune late.
+    const sigma = Math.max(0.06, 0.22 * Math.pow(0.94, gen - 1));
     const baseFit = evaluatePolicy(champ, hof, games);
     let best = null, bestFit = -1;
     for (let p = 0; p < POPULATION; p++) {
-      const cand = mutatePolicy(champ);
+      const cand = mutatePolicy(champ, sigma);
       const fit  = evaluatePolicy(cand, hof, games);
       if (fit > bestFit) { bestFit = fit; best = cand; }
     }
@@ -485,7 +488,7 @@ if (POLICY_MODE) {
     const cScore = valScore(champ);
     if (cScore > eliteScore) { eliteScore = cScore; elite = cloneBrain(champ); }
     if (VERBOSE || gen % 5 === 0)
-      console.log(`Gen ${gen}: selfplay-fit=${bestFit.toFixed(3)}  vs-rule=${cScore}/${VAL_SEEDS * 2}  (elite ${eliteScore})`);
+      console.log(`Gen ${gen}: selfplay-fit=${bestFit.toFixed(3)}  vs-rule=${cScore}/${VAL_SEEDS * 2}  σ=${sigma.toFixed(3)}  (elite ${eliteScore})`);
   }
 
   champ = elite; // ship the validation champion

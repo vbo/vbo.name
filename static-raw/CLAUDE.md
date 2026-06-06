@@ -69,13 +69,16 @@ military, expansion and SCV-task logic are shared.
   trained jointly:
   - **Macro** (`macroPolicyBuild` / `MACRO_WEIGHTS`): enumerates every
     currently-legal build/train/research action from `MACRO_ACTIONS` / `C` /
-    `UPGRADES` and scores each over generic features. Adding a building/unit/
+    `UPGRADES` and scores each over 27 generic features. Adding a building/unit/
     upgrade enters the action space just by appearing in the data tables.
+    Feature groups: action type (isUnit/isCombat/isProd/…), cost/gas pressure,
+    army balance (deficit/surplus/scvFrac), tech progress (gameFrac, gasFloat),
+    expansion level (ccFrac), supply pressure, situational flags.
   - **Military** (`MILITARY_WEIGHTS`): the army's attack-vs-hold launch decision
-    and home-reserve size (the part the `waveMin` / `blindAttackMin` / `reserve`
-    cfg knobs tuned) come from a learned score over combat features (relative
-    strength, surplus, timer, target weakness, fresh intel, recent-wave-failed).
-    Target selection, staging, defense and mop-up stay shared rules.
+    and home-reserve size come from a learned score over 11 combat features
+    (relative strength, surplus, timer, target weakness, fresh intel,
+    recent-wave-failed, supply saturation, composition). Target selection,
+    staging, defense and mop-up stay shared rules.
 
   The goal is to stop the rule logic from growing per unit. Enabled per-side via
   `cfg.useMacroPolicy` / `cfg.useMilitaryPolicy` (+ `cfg.macroWeights` /
@@ -91,3 +94,5 @@ military, expansion and SCV-task logic are shared.
 
   This is the "prototype + compare" path: adopt the policy only if it
   *measurably* matches/beats the rule bot on self-play **and** the replays.
+  Training uses sigma annealing (0.22 → 0.06) and 24-seed validation selection
+  to reduce noise in champion selection.
