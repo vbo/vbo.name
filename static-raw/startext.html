@@ -416,37 +416,37 @@ const C = {
 // Bot behaviour parameters — every numeric threshold lives here so the
 // evolutionary optimizer can tune them without touching logic.
 const BOT_CONFIG_DEFAULT = {
-  scvCapBase: 16,
-  scvCapSkilled: 12,
+  scvCapBase: 20,
+  scvCapSkilled: 15,
   scvExpCap: 6,
-  expandMinScv: 11,
-  keepMining: 6,
-  reserveBase: 12,
-  reserveSkilled: 3,
+  expandMinScv: 15,
+  keepMining: 5,
+  reserveBase: 9,
+  reserveSkilled: 4,
   waveIntervalInit: 94,
-  waveIntervalMin: 54,
-  waveIntervalMax: 130,
-  waveMin: 12,
-  waveMultiplier: 1.38,
-  waveOffset: 3,
-  blindAttackMin: 27,
+  waveIntervalMin: 60,
+  waveIntervalMax: 119,
+  waveMin: 17,
+  waveMultiplier: 1.22,
+  waveOffset: 2,
+  blindAttackMin: 30,
   raxCapBase: 3,
   raxCapSkilled: 7,
-  raxTimeBase: 74,
-  raxTimeSkilled: 83,
+  raxTimeBase: 85,
+  raxTimeSkilled: 53,
   uScv: 1,
   uMarine: 1,
   uFirebat: 2,
-  uRax: 1.08,
-  uAcademy: 1.41,
-  uRefinery: 1.0,
-  uBunker: 1.31,
+  uRax: 1.39,
+  uAcademy: 0.84,
+  uRefinery: 1,
+  uBunker: 0.86,
   uEngBay: 2,
-  uInfWeapons: 1.0,
-  uInfArmor: 1.0,
+  uInfWeapons: 1,
+  uInfArmor: 1,
   uExpand: 0.80,
   uDepot: 1,
-  uU238: 1.22,
+  uU238: 1.09,
 };
 let BOT_CONFIG   = { ...BOT_CONFIG_DEFAULT };
 let HUMAN_CONFIG = { ...BOT_CONFIG_DEFAULT };
@@ -1642,7 +1642,9 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     } else if (targetReachable) {
       // Garrisoned infantry count as available army — they're released on launch.
       const bunkerLoaded = (fwdBunker()?.loaded.length) || 0;
-      const allStrike = homeMarines.length + fwdMarines.length + bunkerLoaded;
+      const homeFirebats = idleFirebats(owner, home);
+      const fwdFirebats  = idleFirebats(owner, fwd);
+      const allStrike = homeMarines.length + fwdMarines.length + homeFirebats.length + fwdFirebats.length + bunkerLoaded;
       const surplus   = allStrike - reserve;
       const dest      = strikeTarget() ?? target;
       const needed    = Math.max(cfg.waveMin, Math.ceil(ai.enemyArmy * 1.4) + cfg.waveOffset);
@@ -1676,10 +1678,11 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     }
 
     // ── FORWARD STAGING ─────────────────────────────────────────────────
-    // Move surplus home marines to the forward node (natural defensive line).
+    // Move surplus home marines and all home firebats to the forward node.
     if (fwdVisited) {
       const surplus = homeMarines.length - reserve;
       if (surplus > 0) sendUnits(owner, home, surplus, "marine", fwd, "move");
+      sendFirebats(owner, home, fwd, "move"); // firebats mass at the front
 
       // Keep the forward bunker garrisoned as a standing anchor (not while attacking).
       if (!launched) {
