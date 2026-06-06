@@ -430,9 +430,10 @@ function evaluatePolicy(brain, hof, games) {
 }
 
 // Head-to-head: policy bot vs the rule bot, both colours, over `seeds` maps.
-function benchVsRule(brain, seeds) {
+// seedStart lets the holdout bench use a range that was never seen during training.
+function benchVsRule(brain, seeds, seedStart = 0) {
   let pol = 0, rule = 0;
-  for (let s = 0; s < seeds; s++) {
+  for (let s = seedStart; s < seedStart + seeds; s++) {
     if (runBrainGame(brain, null, s).win) pol++; else rule++;   // policy as bot
     if (runBrainGame(null, brain, s).win) rule++; else pol++;   // policy as human
   }
@@ -494,7 +495,10 @@ if (POLICY_MODE) {
   champ = elite; // ship the validation champion
   console.log('\n── Results ───────────────────────────────────────────────');
   const final = benchVsRule(champ, 20);
-  console.log(`Trained policy vs rule bot (40 games): policy ${final.pol} — rule ${final.rule}  (${(100*final.pol/final.total).toFixed(0)}% policy)`);
+  console.log(`Trained policy vs rule bot (40 games, seeds 0-19): policy ${final.pol} — rule ${final.rule}  (${(100*final.pol/final.total).toFixed(0)}% policy)`);
+  // Honest holdout: seeds 100-139 were never seen during training or validation.
+  const holdout = benchVsRule(champ, 20, 100);
+  console.log(`Holdout bench     (40 games, seeds 100-119): policy ${holdout.pol} — rule ${holdout.rule}  (${(100*holdout.pol/holdout.total).toFixed(0)}% policy)`);
 
   const rep = policyReplay(champ);
   for (const r of rep) console.log(`  replay ${r.name}: ${r.win ? 'PASS' : 'FAIL'} (tick ${r.ticks})`);
