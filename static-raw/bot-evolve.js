@@ -3,7 +3,13 @@
 // Self-play evolutionary optimizer for startext.html BOT_CONFIG_DEFAULT.
 // Reward: win ? 1 - ticks/MAX_TICKS : 0  (win fast > win slow > lose)
 // Champion evolves against its own Hall of Fame to prevent cycling.
-// Run from static-raw/:  node bot-evolve.js [--gen N] [--pop N] [--games N] [--hof N]
+// After training, champion is validated against all replay files in replays/.
+//
+// Run from static-raw/:
+//   node bot-evolve.js [--gen N] [--pop N] [--games N] [--hof N]
+//   node bot-evolve.js --no-patch           # evolve, print config, skip HTML patch
+//   node bot-evolve.js --force-patch        # patch even if replay validation fails
+//   node bot-evolve.js --replay-only        # skip evolution, validate current config against replays
 
 const fs   = require('fs');
 const path = require('path');
@@ -17,6 +23,8 @@ const POPULATION      = argVal('--pop',   10);
 const GAMES_PER_MATCH = argVal('--games',  5);
 const HOF_SIZE        = argVal('--hof',    3);
 const PATCH_BACK      = !args.includes('--no-patch');
+const FORCE_PATCH     = args.includes('--force-patch');
+const REPLAY_ONLY     = args.includes('--replay-only');
 const VERBOSE         = args.includes('--verbose');
 
 // ── Load game ────────────────────────────────────────────────────────────────
@@ -86,6 +94,165 @@ function evaluate(testCfg, hof) {
   return total / count;
 }
 
+// ── Replay system ─────────────────────────────────────────────────────────────
+const REPLAY_DIR = path.join(__dirname, 'replays');
+
+// Costs mirroring C constants in startext.html — used to pre-check before calling
+// game functions (which have the same checks internally but return nothing on fail).
+const UNIT_COSTS  = { marine: { min: 50, gas: 0 }, firebat: { min: 50, gas: 25 }, scv: { min: 50, gas: 0 } };
+const BUILD_COSTS = { barracks: 150, academy: 150, bunker: 100, depot: 100, refinery: 75, cc: 400, engbay: 150 };
+
+// Parse a replay log (text from "Copy replay log") into { seed, actions }.
+// Only extracts h: (human) actions — bot actions in the log are ignored since
+// the evolved bot plays that side freely.
+function parseReplay(text) {
+  const lines = text.split('\n');
+  const headerMatch = lines[0] && lines[0].match(/seed=(\d+)/);
+  if (!headerMatch) return null;
+  const seed = Number(headerMatch[1]);
+  const actions = [];
+  for (const line of lines.slice(2)) { // skip header + column header
+    const m = line.match(/^\s*(\d+)\s+h:(\w+)\s*(.*)/);
+    if (!m) continue;
+    const t = Number(m[1]), act = m[2], detail = m[3].trim();
+    let action = null;
+    if (act === 'build') {
+      const bm = detail.match(/^(\w+)@(\d+)/);
+      if (bm) action = { t, act, type: bm[1], node: Number(bm[2]) };
+    } else if (act === 'train') {
+      const tm = detail.match(/^(\w+)@(\d+)/);
+      if (tm) action = { t, act, type: tm[1], node: Number(tm[2]) };
+    } else if (act === 'research') {
+      action = { t, act, type: detail };
+    } else if (act === 'attack' || act === 'move') {
+      const am = detail.match(/(\d+)×(\w+)\s+(\d+)→(\d+)/);
+      if (am) action = { t, act, n: Number(am[1]), utype: am[2], src: Number(am[3]), dest: Number(am[4]) };
+    }
+    if (action) actions.push(action);
+  }
+  return { seed, actions };
+}
+
+// Assign idle SCVs to available resources at their current node.
+// Called each tick in replay games since ENABLE_HUMAN_BOT=false means no economy AI.
+function autoMineHuman() {
+  const s = ctx.state;
+  for (const u of s.units) {
+    if (u.owner !== 'human' || u.type !== 'scv' || u.task !== 'idle' || u.node < 0) continue;
+    const n = u.node;
+    if (s.field[n] > 0) { u.task = 'mining'; continue; }
+    if (s.gasField[n] > 0 &&
+        s.buildings.some(b => b.owner === 'human' && b.node === n && b.type === 'refinery' && !b.construct))
+      u.task = 'gas';
+  }
+}
+
+// Try to execute one replay action. Returns true if it fired, false to retry next tick.
+function tryReplayAction(action) {
+  const s = ctx.state;
+  const hm = s.minerals.human, hg = s.gas.human;
+  switch (action.act) {
+    case 'build': {
+      const cost = BUILD_COSTS[action.type] || 0;
+      if (hm < cost) return false;
+      return !!ctx.startBuilding('human', action.node, action.type);
+    }
+    case 'train': {
+      const c = UNIT_COSTS[action.type];
+      if (!c || hm < c.min || hg < c.gas) return false;
+      const before = s.minerals.human;
+      if      (action.type === 'marine')  ctx.queueMarine('human', action.node);
+      else if (action.type === 'firebat') ctx.queueFirebat('human', action.node);
+      else if (action.type === 'scv')     ctx.queueSCV('human', action.node);
+      return s.minerals.human < before; // mineral spent → success
+    }
+    case 'research':
+      return !!ctx.startResearch('human', action.type);
+    case 'attack':
+    case 'move': {
+      // Only fire if units are actually there — they may not have arrived yet.
+      const pool = s.units.filter(u =>
+        u.owner === 'human' && u.node === action.src &&
+        u.type === action.utype && u.task === 'idle' && !u.transit);
+      if (!pool.length) return false;
+      ctx.sendUnits('human', action.src, action.n, action.utype, action.dest, action.act);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Run the evolved bot against a replay-driven human side on the replay's seed.
+function runReplayGame(botCfg, replay) {
+  ctx.ENABLE_HUMAN_BOT = false; // we drive HUMAN manually via replay + autoMine
+  resetState(replay.seed);
+  Object.assign(ctx.BOT_CONFIG, DEFAULT_CFG, botCfg);
+
+  const pending = []; // [{action, age}] — actions that couldn't fire yet
+  const MAX_RETRY = 120; // ticks before a stuck action is dropped
+  let actionIdx = 0;
+
+  for (let t = 0; t < 1500; t++) {
+    autoMineHuman();
+
+    // Retry previously deferred actions
+    const stillPending = [];
+    for (const p of pending) {
+      if (!tryReplayAction(p.action) && p.age < MAX_RETRY)
+        stillPending.push({ action: p.action, age: p.age + 1 });
+    }
+    pending.length = 0; pending.push(...stillPending);
+
+    // Fire actions due this tick
+    while (actionIdx < replay.actions.length && replay.actions[actionIdx].t <= t) {
+      const a = replay.actions[actionIdx++];
+      if (!tryReplayAction(a)) pending.push({ action: a, age: 0 });
+    }
+
+    tick();
+
+    const s = ctx.state;
+    const botCC   = s.buildings.some(b => b.owner === 'bot'   && b.type === 'cc' && !b.construct);
+    const humanCC = s.buildings.some(b => b.owner === 'human' && b.type === 'cc' && !b.construct);
+    if (!botCC || !humanCC) return { win: botCC ? 1 : 0, ticks: t };
+  }
+  const s = ctx.state;
+  const botArmy   = s.units.filter(u => u.owner === 'bot'   && (u.type === 'marine' || u.type === 'firebat')).length;
+  const humanArmy = s.units.filter(u => u.owner === 'human' && (u.type === 'marine' || u.type === 'firebat')).length;
+  return { win: botArmy >= humanArmy ? 1 : 0, ticks: 1500 };
+}
+
+// Load all .txt replay files from the replays/ directory.
+function loadReplays() {
+  if (!fs.existsSync(REPLAY_DIR)) return [];
+  const files = fs.readdirSync(REPLAY_DIR).filter(f => f.endsWith('.txt'));
+  const replays = [];
+  for (const f of files) {
+    const text = fs.readFileSync(path.join(REPLAY_DIR, f), 'utf8');
+    const replay = parseReplay(text);
+    if (!replay) { console.warn(`Skipping invalid replay: ${f}`); continue; }
+    replay.name = f;
+    replays.push(replay);
+  }
+  return replays;
+}
+
+// Validate champion against all replays. Returns true if all pass.
+function validateReplays(cfg, replays) {
+  if (!replays.length) return true;
+  console.log(`\nValidating against ${replays.length} replay(s)...`);
+  let passed = 0;
+  for (const replay of replays) {
+    const r = runReplayGame(cfg, replay);
+    const ok = r.win === 1;
+    if (ok) passed++;
+    console.log(`  ${ok ? 'PASS' : 'FAIL'} ${replay.name} (ended tick ${r.ticks})`);
+  }
+  ctx.ENABLE_HUMAN_BOT = true; // restore for any subsequent HoF games
+  console.log(`  ${passed}/${replays.length} replays passed`);
+  return passed === replays.length;
+}
+
 // ── Parameter bounds ─────────────────────────────────────────────────────────
 const BOUNDS = {
   scvCapBase:      [6,  20], scvCapSkilled:   [10, 30],
@@ -121,32 +288,42 @@ function mutate(cfg, sigma = 0.12) {
   return out;
 }
 
-// ── Evolution ─────────────────────────────────────────────────────────────────
+// ── Load replays upfront ──────────────────────────────────────────────────────
+const replays = loadReplays();
+
+// ── Evolution (skipped with --replay-only) ────────────────────────────────────
 let champ = { ...DEFAULT_CFG };
-const hof  = [{ ...DEFAULT_CFG }];
 
-console.log(`Evolving BOT_CONFIG_DEFAULT: ${GENERATIONS} gens × ${POPULATION} mutations × ${GAMES_PER_MATCH*2} games/match × HoF ${HOF_SIZE}`);
-console.log(`Patching back to HTML: ${PATCH_BACK}`);
+if (!REPLAY_ONLY) {
+  const hof = [{ ...DEFAULT_CFG }];
+  console.log(`Evolving BOT_CONFIG_DEFAULT: ${GENERATIONS} gens × ${POPULATION} mutations × ${GAMES_PER_MATCH*2} games/match × HoF ${HOF_SIZE}`);
+  console.log(`Replay files: ${replays.length}   Patch back: ${PATCH_BACK}   Force patch: ${FORCE_PATCH}`);
 
-for (let gen = 1; gen <= GENERATIONS; gen++) {
-  const baseFit = evaluate(champ, hof);
-  const cands = Array.from({ length: POPULATION }, () => mutate(champ));
-  let best = null, bestFit = -1;
-  for (const cand of cands) {
-    const fit = evaluate(cand, hof);
-    if (fit > bestFit) { bestFit = fit; best = cand; }
+  for (let gen = 1; gen <= GENERATIONS; gen++) {
+    const baseFit = evaluate(champ, hof);
+    const cands = Array.from({ length: POPULATION }, () => mutate(champ));
+    let best = null, bestFit = -1;
+    for (const cand of cands) {
+      const fit = evaluate(cand, hof);
+      if (fit > bestFit) { bestFit = fit; best = cand; }
+    }
+    if (bestFit > baseFit) {
+      champ = best;
+      hof.push({ ...champ });
+      if (hof.length > HOF_SIZE) hof.shift();
+    }
+    if (VERBOSE || gen % 5 === 0)
+      console.log(`Gen ${gen}: fit=${bestFit.toFixed(3)} (base ${baseFit.toFixed(3)})`);
   }
-  if (bestFit > baseFit) {
-    champ = best;
-    hof.push({ ...champ });
-    if (hof.length > HOF_SIZE) hof.shift();
-  }
-  if (VERBOSE || gen % 5 === 0)
-    console.log(`Gen ${gen}: fit=${bestFit.toFixed(3)} (base ${baseFit.toFixed(3)})`);
+
+  console.log('\nFinal config:');
+  console.log(JSON.stringify(champ, null, 2));
+} else {
+  console.log(`--replay-only: testing current BOT_CONFIG_DEFAULT against ${replays.length} replay(s)`);
 }
 
-console.log('\nFinal config:');
-console.log(JSON.stringify(champ, null, 2));
+// ── Replay validation ─────────────────────────────────────────────────────────
+const replayPass = validateReplays(champ, replays);
 
 // ── Patch config back into startext.html ──────────────────────────────────────
 function buildBlock(cfg) {
@@ -156,13 +333,20 @@ function buildBlock(cfg) {
   return `const BOT_CONFIG_DEFAULT = {\n${entries}\n};`;
 }
 
-if (PATCH_BACK) {
-  const re = /const BOT_CONFIG_DEFAULT = \{[\s\S]*?\};/;
-  const updated = html.replace(re, buildBlock(champ));
-  if (updated === html) {
-    console.error('WARNING: Could not find BOT_CONFIG_DEFAULT block to patch.');
+if (PATCH_BACK && !REPLAY_ONLY) {
+  if (!replayPass && !FORCE_PATCH) {
+    console.log('\nChampion failed replay validation — config NOT patched.');
+    console.log('Fix the bot or use --force-patch to override.');
   } else {
-    fs.writeFileSync(HTML_PATH, updated, 'utf8');
-    console.log(`\nPatched BOT_CONFIG_DEFAULT — wrote ${path.basename(HTML_PATH)}`);
+    // Re-read HTML so replay-game calls above don't affect the in-memory `html` string.
+    const currentHtml = fs.readFileSync(HTML_PATH, 'utf8');
+    const re = /const BOT_CONFIG_DEFAULT = \{[\s\S]*?\};/;
+    const updated = currentHtml.replace(re, buildBlock(champ));
+    if (updated === currentHtml) {
+      console.error('WARNING: Could not find BOT_CONFIG_DEFAULT block to patch.');
+    } else {
+      fs.writeFileSync(HTML_PATH, updated, 'utf8');
+      console.log(`\nPatched BOT_CONFIG_DEFAULT — wrote ${path.basename(HTML_PATH)}`);
+    }
   }
 }
