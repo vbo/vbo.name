@@ -55,3 +55,31 @@ Git's `--reapply-cherry-picks` detection automatically drops commits whose conte
 
   Prints `N passed, M failed` and exits non-zero on failure (~70ms). In a browser, open `startext.html?test` for the same report instead of the game.
 - **Add an assert in `runTests()` whenever you add behaviour.** Each test does `resetState(seed)` then drives `tick()`; helpers (`ok`/`eq`/`near`/`run`) are defined at the top of the function. Combat auto-targets *threats* (idle units) first, so isolate buildings/units in setup when testing a specific interaction.
+
+### Bot AI: rule bot vs. generic policy (prototype)
+
+There are two AI brains for the macro (build/train/research) decisions; the
+military, expansion and SCV-task logic are shared.
+
+- **Rule bot (live default).** Hand-written `if`-per-action utility scoring in
+  `evalSide`, weights in `BOT_CONFIG_DEFAULT`. Tuned by the genetic optimizer
+  `bot-evolve.js` (self-play + Hall of Fame), gated by the replay acceptance
+  tests in `replays/*.txt` before it patches `BOT_CONFIG_DEFAULT` back in.
+- **Generic policy (prototype, off by default).** `macroPolicyBuild` enumerates
+  every currently-legal action from the data tables `MACRO_ACTIONS` / `C` /
+  `UPGRADES` and scores each with a learned linear policy (`MACRO_WEIGHTS`) over
+  generic features. The goal is to stop the rule logic from growing per unit:
+  adding a building/unit/upgrade enters the action space just by appearing in the
+  data tables. Enabled per-side via `cfg.useMacroPolicy` + `cfg.macroWeights`
+  (so a policy bot can play a rule bot in one game), or globally via the
+  `USE_MACRO_POLICY` flag.
+- **Benchmark the policy** (trains it, then measures head-to-head vs the rule bot
+  and against the replay gate — patches nothing):
+
+  ```
+  cd static-raw
+  node bot-evolve.js --policy --gen 12 --pop 8 --games 3 --hof 2
+  ```
+
+  This is the "prototype + compare" path: adopt the policy only if it
+  *measurably* matches/beats the rule bot on self-play **and** the replays.
