@@ -501,6 +501,27 @@ const MACRO_WEIGHTS_DEFAULT = {
 // Active weights; null → fall back to defaults. The trainer sets this.
 let MACRO_WEIGHTS = null;
 
+// ── Generic military policy (PROTOTYPE) ──────────────────────────────────────
+// Same idea as the macro policy, applied to the army's attack/hold decision —
+// the part of evalSide that the cfg knobs (waveMin, blindAttackMin, reserve,
+// waveOffset…) tune. When on, the launch-the-wave decision and the home-reserve
+// size come from a learned linear policy over generic combat features instead of
+// the hand-tuned thresholds. Target selection, staging, defense and mop-up stay
+// shared. Per-side via cfg.useMilitaryPolicy / cfg.militaryWeights, or global.
+let USE_MILITARY_POLICY = false;
+const MILITARY_WEIGHTS_DEFAULT = {
+  reserve: 8,          // marines kept home (not a feature — a learned scalar)
+  launchBias: -1.2,    // base reluctance; net score > 0 means "attack now"
+  relStr: 1.6,         // ahead on army → attack
+  surplus: 1.4,        // big strike force beyond reserve → attack
+  minArmy: 0.6,        // don't throw a tiny army away
+  intel: 0.3,          // we have fresh scouting
+  timer: 1.0,          // wave timer overdue → pressure to move out
+  targetWeak: 1.2,     // target node lightly defended → attack
+  waveFailed: -2.0,    // a wave just failed → wait
+};
+let MILITARY_WEIGHTS = null;
+
 // Tech upgrades researched at the Academy.
 const UPGRADES = {
   u238:         { building: "academy", minerals: 150, gas: 150, time: 100,
@@ -1704,7 +1725,11 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     if (oppTotal <= 3) ai.waveInterval = Math.min(cfg.waveIntervalMax, iv + 8);
   }
   const skilled = ai.waveInterval <= 60;
-  const reserve = skilled ? cfg.reserveSkilled : cfg.reserveBase;
+  const militaryOn = USE_MILITARY_POLICY || cfg.useMilitaryPolicy;
+  const milW = cfg.militaryWeights || MILITARY_WEIGHTS || MILITARY_WEIGHTS_DEFAULT;
+  const reserve = militaryOn
+    ? Math.round(Math.max(0, Math.min(20, milW.reserve)))
+    : (skilled ? cfg.reserveSkilled : cfg.reserveBase);
 
   // ── THREAT DETECTION ─────────────────────────────────────────────────────
   const enemyAtHome = state.units.some(u => u.owner === opp && u.node === home);
@@ -1786,13 +1811,36 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
       const surplus   = allStrike - reserve;
       const dest      = strikeTarget() ?? target;
       const needed    = Math.max(cfg.waveMin, Math.ceil(ai.enemyArmy * 1.4) + cfg.waveOffset);
-      // Standard: timer fired + have enough army (blind or intel-confirmed).
-      // Opportunistic: clearly dominant force — attack without waiting for timer.
-      // After a failed wave, waveFailed flag extends the effective cooldown.
-      const dominantAttack = !ai.waveFailed && relStr >= 2.0 && surplus >= cfg.waveMin;
-      const launch    = dominantAttack ||
-                        (waveDue && !intelFresh && surplus >= cfg.blindAttackMin) ||
-                        (waveDue && intelFresh  && surplus >= needed);
+
+      let launch;
+      if (militaryOn) {
+        // Generic learned launch decision: score combat features, attack if > 0.
+        const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+        const defAtDest = state.units.filter(u => u.owner === opp && u.node === dest &&
+            (u.type === "marine" || u.type === "firebat")).length +
+          state.buildings.filter(b => b.owner === opp && b.node === dest &&
+            b.type === "bunker" && !b.construct).length * 4;
+        const f = {
+          launchBias: 1,
+          relStr:     cl(relStr / 3, 0, 1),
+          surplus:    cl(surplus / 20, 0, 1),
+          minArmy:    cl(allStrike / 10, 0, 1),
+          intel:      intelFresh ? 1 : 0,
+          timer:      cl((state.time - ai.lastWave) / Math.max(ai.waveInterval, 1), 0, 2),
+          targetWeak: cl(1 - defAtDest / Math.max(allStrike, 1), 0, 1),
+          waveFailed: ai.waveFailed ? 1 : 0,
+        };
+        let s = 0; for (const k in f) s += (milW[k] || 0) * f[k];
+        launch = s > 0 && surplus >= 1; // never launch with no surplus
+      } else {
+        // Standard: timer fired + have enough army (blind or intel-confirmed).
+        // Opportunistic: clearly dominant force — attack without waiting for timer.
+        // After a failed wave, waveFailed flag extends the effective cooldown.
+        const dominantAttack = !ai.waveFailed && relStr >= 2.0 && surplus >= cfg.waveMin;
+        launch = dominantAttack ||
+                 (waveDue && !intelFresh && surplus >= cfg.blindAttackMin) ||
+                 (waveDue && intelFresh  && surplus >= needed);
+      }
 
       if (launch) {
         launched = true;
@@ -4626,14 +4674,16 @@ function runTests() {
       // develops tech + army — i.e. the data-driven action layer is wired up right.
       ENABLE_HUMAN_BOT = true;
       resetState(0);
-      BOT_CONFIG.useMacroPolicy = true;   // policy drives the bot; human stays rules
+      BOT_CONFIG.useMacroPolicy = true;     // generic macro + military brains drive
+      BOT_CONFIG.useMilitaryPolicy = true;  // the bot; human stays on the rule bot
       let ended = false;
       for (let t = 0; t < 1500 && !ended; t++) {
         tick();
         ended = !state.buildings.some(b => b.owner === BOT   && b.type === "cc" && !b.construct) ||
                 !state.buildings.some(b => b.owner === HUMAN && b.type === "cc" && !b.construct);
       }
-      BOT_CONFIG.useMacroPolicy = false;  // reset so later tests use the rule bot
+      BOT_CONFIG.useMacroPolicy = false;    // reset so later tests use the rule bot
+      BOT_CONFIG.useMilitaryPolicy = false;
       ENABLE_HUMAN_BOT = false;
       ok(state.buildings.some(b => b.owner === BOT && b.type === "barracks"),
         "policy bot built a barracks");

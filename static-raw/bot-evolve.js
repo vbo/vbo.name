@@ -45,6 +45,9 @@ const patchedScript = gameScript
   .replace(/^let (USE_MACRO_POLICY\b)/m, 'var $1')
   .replace(/^let (MACRO_WEIGHTS\b)/m,    'var $1')
   .replace(/^const (MACRO_WEIGHTS_DEFAULT\b)/m, 'var $1')
+  .replace(/^let (USE_MILITARY_POLICY\b)/m, 'var $1')
+  .replace(/^let (MILITARY_WEIGHTS\b)/m,    'var $1')
+  .replace(/^const (MILITARY_WEIGHTS_DEFAULT\b)/m, 'var $1')
   .replace(/^let (HOME\b)/m,             'var $1')
   .replace(/^let (AWAY\b)/m,             'var $1');
 const ctx = { console };
@@ -354,29 +357,48 @@ const replays = loadReplays();
 // measures it head-to-head against the current rule bot and against the replay
 // gate. It does NOT patch anything — this is the "prototype + compare" step: we
 // decide whether to adopt the policy based on these measured numbers.
-const POLICY_KEYS   = Object.keys(ctx.MACRO_WEIGHTS_DEFAULT);
+const MACRO_KEYS    = Object.keys(ctx.MACRO_WEIGHTS_DEFAULT);
+const MIL_KEYS      = Object.keys(ctx.MILITARY_WEIGHTS_DEFAULT);
 const POLICY_BOUNDS = [-6, 6];
 
-function mutatePolicy(w, sigma = 0.15) {
-  const out = { ...w };
+// A "brain" is { macro, mil } weight objects. The genome we evolve is both at
+// once, since macro and military decisions interact (army size feeds attack).
+function defaultBrain() {
+  return { macro: { ...ctx.MACRO_WEIGHTS_DEFAULT }, mil: { ...ctx.MILITARY_WEIGHTS_DEFAULT } };
+}
+function cloneBrain(b) { return { macro: { ...b.macro }, mil: { ...b.mil } }; }
+
+function mutatePolicy(b, sigma = 0.15) {
+  const out = cloneBrain(b);
   const span = POLICY_BOUNDS[1] - POLICY_BOUNDS[0];
-  for (const k of POLICY_KEYS)
-    out[k] = clamp((out[k] ?? 0) + (Math.random() * 2 - 1) * sigma * span, POLICY_BOUNDS[0], POLICY_BOUNDS[1]);
+  for (const k of MACRO_KEYS)
+    out.macro[k] = clamp((out.macro[k] ?? 0) + (Math.random() * 2 - 1) * sigma * span, POLICY_BOUNDS[0], POLICY_BOUNDS[1]);
+  for (const k of MIL_KEYS) {
+    // `reserve` is a unit count, not a feature weight — mutate on its own scale.
+    if (k === 'reserve') { out.mil.reserve = clamp((out.mil.reserve ?? 8) + (Math.random()*2-1)*3, 0, 20); continue; }
+    out.mil[k] = clamp((out.mil[k] ?? 0) + (Math.random() * 2 - 1) * sigma * span, POLICY_BOUNDS[0], POLICY_BOUNDS[1]);
+  }
   return out;
 }
 
-// Run a game with explicit per-side brains. brain = { policy: weightsObj } uses
-// the generic policy; brain = {} (no policy) uses the hand-written rule bot.
+// Apply a brain to one side's cfg (or leave it as the rule bot when brain is null).
+function applyBrain(cfg, brain) {
+  cfg.useMacroPolicy    = !!brain;
+  cfg.macroWeights      = brain ? brain.macro : null;
+  cfg.useMilitaryPolicy = !!brain;
+  cfg.militaryWeights   = brain ? brain.mil : null;
+}
+
+// Run a game with explicit per-side brains. brain object → generic policy;
+// null → the hand-written rule bot.
 function runBrainGame(botBrain, humanBrain, seed) {
   ctx.ENABLE_HUMAN_BOT = true;
-  ctx.USE_MACRO_POLICY = false; // drive per-side through cfg, not the global
+  ctx.USE_MACRO_POLICY = false; ctx.USE_MILITARY_POLICY = false; // per-side via cfg
   resetState(seed);
   Object.assign(ctx.BOT_CONFIG,   DEFAULT_CFG);
   Object.assign(ctx.HUMAN_CONFIG, DEFAULT_CFG);
-  ctx.BOT_CONFIG.useMacroPolicy   = !!botBrain.policy;
-  ctx.BOT_CONFIG.macroWeights     = botBrain.policy   || null;
-  ctx.HUMAN_CONFIG.useMacroPolicy = !!humanBrain.policy;
-  ctx.HUMAN_CONFIG.macroWeights   = humanBrain.policy || null;
+  applyBrain(ctx.BOT_CONFIG,   botBrain);
+  applyBrain(ctx.HUMAN_CONFIG, humanBrain);
   for (let t = 0; t < 1500; t++) {
     tick();
     const s = ctx.state;
@@ -390,13 +412,17 @@ function runBrainGame(botBrain, humanBrain, seed) {
   return { win: ba >= ha ? 1 : 0, ticks: 1500 };
 }
 
-// Fitness of a policy weight-set: self-play vs a Hall of Fame of policy weights.
-function evaluatePolicy(w, hof, games) {
+// Fitness of a policy weight-set. Opponents = the policy Hall of Fame PLUS the
+// rule bot as a permanent anchor, so fitness has an absolute reference point and
+// stops drifting purely with co-evolution. Each matchup is played on `games`
+// distinct seeds, both colours, to cut variance.
+function evaluatePolicy(brain, hof, games) {
   let total = 0, count = 0;
-  for (const opp of hof) {
+  const opps = hof.concat([null]); // null = rule bot anchor
+  for (const opp of opps) {
     for (let g = 0; g < games; g++) {
-      const r1 = runBrainGame({ policy: w }, { policy: opp }, g); total += reward(r1.win, r1.ticks);
-      const r2 = runBrainGame({ policy: opp }, { policy: w }, g); total += reward(1 - r2.win, r2.ticks);
+      const r1 = runBrainGame(brain, opp, g); total += reward(r1.win, r1.ticks);
+      const r2 = runBrainGame(opp, brain, g); total += reward(1 - r2.win, r2.ticks);
       count += 2;
     }
   }
@@ -404,20 +430,23 @@ function evaluatePolicy(w, hof, games) {
 }
 
 // Head-to-head: policy bot vs the rule bot, both colours, over `seeds` maps.
-function benchVsRule(w, seeds) {
+function benchVsRule(brain, seeds) {
   let pol = 0, rule = 0;
   for (let s = 0; s < seeds; s++) {
-    if (runBrainGame({ policy: w }, {}, s).win) pol++; else rule++;          // policy as bot
-    if (runBrainGame({}, { policy: w }, s).win) rule++; else pol++;          // policy as human
+    if (runBrainGame(brain, null, s).win) pol++; else rule++;   // policy as bot
+    if (runBrainGame(null, brain, s).win) rule++; else pol++;   // policy as human
   }
   return { pol, rule, total: seeds * 2 };
 }
 
 // Replay gate with the policy bot driving the AI side.
-function policyReplay(w) {
-  ctx.HUMAN_CONFIG.useMacroPolicy = false; ctx.HUMAN_CONFIG.macroWeights = null;
+function policyReplay(brain) {
+  applyBrain(ctx.HUMAN_CONFIG, null); // scripted human handoff stays rule-driven
   return replays.map(r => {
-    const out = runReplayGame({ useMacroPolicy: true, macroWeights: w }, r);
+    const out = runReplayGame({
+      useMacroPolicy: true,    macroWeights:    brain.macro,
+      useMilitaryPolicy: true, militaryWeights: brain.mil,
+    }, r);
     return { name: r.name, win: out.win, ticks: out.ticks };
   });
 }
@@ -425,15 +454,19 @@ function policyReplay(w) {
 if (POLICY_MODE) {
   const games = GAMES_PER_MATCH;
   const hofN  = HOF_SIZE;
-  console.log(`Policy prototype: evolving MACRO_WEIGHTS — ${GENERATIONS} gens × ${POPULATION} mutations × ${games*2} games/match × HoF ${hofN}`);
-  console.log(`Features: ${POLICY_KEYS.length}   Replay files: ${replays.length}\n`);
+  console.log(`Policy prototype: evolving macro+military weights — ${GENERATIONS} gens × ${POPULATION} mutations × ${games*2} games/match × HoF ${hofN}`);
+  console.log(`Genome: ${MACRO_KEYS.length} macro + ${MIL_KEYS.length} military weights   Replay files: ${replays.length}\n`);
 
-  let champ = { ...ctx.MACRO_WEIGHTS_DEFAULT };
-  const hof = [{ ...champ }];
+  let champ = defaultBrain();
+  const hof = [cloneBrain(champ)];
 
-  // Baseline before any training: warm-started weights vs the rule bot.
-  const base = benchVsRule(champ, 8);
-  console.log(`Warm-start vs rule bot: policy ${base.pol}/${base.total} wins\n`);
+  // Validation-based selection: the objective is beating the rule bot, so we keep
+  // the brain with the best MEASURED win rate vs the rule bot (not just the best
+  // self-play fitness, which can overfit the Hall of Fame). 12-seed bench.
+  const VAL_SEEDS = 12;
+  const valScore = b => benchVsRule(b, VAL_SEEDS).pol; // wins out of VAL_SEEDS*2
+  let elite = cloneBrain(champ), eliteScore = valScore(elite);
+  console.log(`Warm-start vs rule bot: ${eliteScore}/${VAL_SEEDS * 2} wins\n`);
 
   for (let gen = 1; gen <= GENERATIONS; gen++) {
     const baseFit = evaluatePolicy(champ, hof, games);
@@ -445,13 +478,17 @@ if (POLICY_MODE) {
     }
     if (bestFit > baseFit) {
       champ = best;
-      hof.push({ ...champ });
+      hof.push(cloneBrain(champ));
       if (hof.length > hofN) hof.shift();
     }
+    // Track the best champion by absolute benchmark, not co-evolution fitness.
+    const cScore = valScore(champ);
+    if (cScore > eliteScore) { eliteScore = cScore; elite = cloneBrain(champ); }
     if (VERBOSE || gen % 5 === 0)
-      console.log(`Gen ${gen}: fit=${bestFit.toFixed(3)} (base ${baseFit.toFixed(3)})`);
+      console.log(`Gen ${gen}: selfplay-fit=${bestFit.toFixed(3)}  vs-rule=${cScore}/${VAL_SEEDS * 2}  (elite ${eliteScore})`);
   }
 
+  champ = elite; // ship the validation champion
   console.log('\n── Results ───────────────────────────────────────────────');
   const final = benchVsRule(champ, 20);
   console.log(`Trained policy vs rule bot (40 games): policy ${final.pol} — rule ${final.rule}  (${(100*final.pol/final.total).toFixed(0)}% policy)`);
@@ -459,7 +496,7 @@ if (POLICY_MODE) {
   const rep = policyReplay(champ);
   for (const r of rep) console.log(`  replay ${r.name}: ${r.win ? 'PASS' : 'FAIL'} (tick ${r.ticks})`);
 
-  console.log('\nTrained MACRO_WEIGHTS:');
+  console.log('\nTrained brain (macro + military weights):');
   console.log(JSON.stringify(champ, null, 2));
   console.log('\n(prototype only — nothing patched; rule bot remains the live AI)');
   process.exit(0);

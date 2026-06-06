@@ -65,14 +65,22 @@ military, expansion and SCV-task logic are shared.
   `evalSide`, weights in `BOT_CONFIG_DEFAULT`. Tuned by the genetic optimizer
   `bot-evolve.js` (self-play + Hall of Fame), gated by the replay acceptance
   tests in `replays/*.txt` before it patches `BOT_CONFIG_DEFAULT` back in.
-- **Generic policy (prototype, off by default).** `macroPolicyBuild` enumerates
-  every currently-legal action from the data tables `MACRO_ACTIONS` / `C` /
-  `UPGRADES` and scores each with a learned linear policy (`MACRO_WEIGHTS`) over
-  generic features. The goal is to stop the rule logic from growing per unit:
-  adding a building/unit/upgrade enters the action space just by appearing in the
-  data tables. Enabled per-side via `cfg.useMacroPolicy` + `cfg.macroWeights`
-  (so a policy bot can play a rule bot in one game), or globally via the
-  `USE_MACRO_POLICY` flag.
+- **Generic policy (prototype, off by default).** Two learned linear policies,
+  trained jointly:
+  - **Macro** (`macroPolicyBuild` / `MACRO_WEIGHTS`): enumerates every
+    currently-legal build/train/research action from `MACRO_ACTIONS` / `C` /
+    `UPGRADES` and scores each over generic features. Adding a building/unit/
+    upgrade enters the action space just by appearing in the data tables.
+  - **Military** (`MILITARY_WEIGHTS`): the army's attack-vs-hold launch decision
+    and home-reserve size (the part the `waveMin` / `blindAttackMin` / `reserve`
+    cfg knobs tuned) come from a learned score over combat features (relative
+    strength, surplus, timer, target weakness, fresh intel, recent-wave-failed).
+    Target selection, staging, defense and mop-up stay shared rules.
+
+  The goal is to stop the rule logic from growing per unit. Enabled per-side via
+  `cfg.useMacroPolicy` / `cfg.useMilitaryPolicy` (+ `cfg.macroWeights` /
+  `cfg.militaryWeights`) so a policy bot can play a rule bot in one game, or
+  globally via the `USE_MACRO_POLICY` / `USE_MILITARY_POLICY` flags.
 - **Benchmark the policy** (trains it, then measures head-to-head vs the rule bot
   and against the replay gate — patches nothing):
 
