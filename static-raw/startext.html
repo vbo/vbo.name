@@ -303,6 +303,7 @@
   <div class="big" id="end-big">Victory</div>
   <p id="end-msg"></p>
   <button id="end-copy" style="display:none">Copy replay log</button>
+  <textarea id="end-log" style="display:none;width:100%;height:160px;font-size:11px;font-family:monospace;resize:vertical;margin-top:8px" readonly></textarea>
   <button id="end-again">Play again</button>
 </div>
 
@@ -4457,14 +4458,20 @@ if (HEADLESS) {
   $("end-copy").onclick = () => {
     const text = formatReplayLog();
     const btn = $("end-copy");
-    const confirm = () => {
+    const ta = $("end-log");
+    // Always show the textarea so the user can see/copy manually.
+    ta.value = text;
+    ta.style.display = "";
+    ta.focus();
+    ta.select();
+    const onCopied = () => {
       btn.textContent = "Copied!";
       setTimeout(() => { btn.textContent = "Copy replay log"; }, 1500);
     };
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(text).then(confirm).catch(() => fallbackCopy(text, confirm));
+      navigator.clipboard.writeText(text).then(onCopied).catch(() => fallbackCopy(text, onCopied));
     } else {
-      fallbackCopy(text, confirm);
+      fallbackCopy(text, onCopied);
     }
   };
   $("menu-btn").onclick = openMenu;
