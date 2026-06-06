@@ -1194,6 +1194,16 @@ function formatReplayLog() {
   return lines.join("\n");
 }
 
+function fallbackCopy(text, cb) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(ta);
+  ta.focus(); ta.select();
+  try { document.execCommand("copy"); cb(); } catch (_) {}
+  document.body.removeChild(ta);
+}
+
 // Concede the match. Ends immediately as a loss (with a confirm so a stray tap
 // doesn't throw the game).
 function surrender() {
@@ -4445,11 +4455,17 @@ if (HEADLESS) {
   $("sheet-backdrop").onclick = closeSheet;
   $("end-again").onclick = init;
   $("end-copy").onclick = () => {
-    navigator.clipboard.writeText(formatReplayLog()).then(() => {
-      const btn = $("end-copy");
+    const text = formatReplayLog();
+    const btn = $("end-copy");
+    const confirm = () => {
       btn.textContent = "Copied!";
       setTimeout(() => { btn.textContent = "Copy replay log"; }, 1500);
-    });
+    };
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(confirm).catch(() => fallbackCopy(text, confirm));
+    } else {
+      fallbackCopy(text, confirm);
+    }
   };
   $("menu-btn").onclick = openMenu;
   $("menu-resume").onclick = closeMenu;
