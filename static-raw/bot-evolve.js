@@ -191,22 +191,32 @@ function runReplayGame(botCfg, replay) {
   const pending = []; // [{action, age}] — actions that couldn't fire yet
   const MAX_RETRY = 120; // ticks before a stuck action is dropped
   let actionIdx = 0;
+  let handedOff = false; // true once replay exhausted and normal AI takes over
 
   for (let t = 0; t < 1500; t++) {
-    autoMineHuman();
-
-    // Retry previously deferred actions
-    const stillPending = [];
-    for (const p of pending) {
-      if (!tryReplayAction(p.action) && p.age < MAX_RETRY)
-        stillPending.push({ action: p.action, age: p.age + 1 });
+    // Once replay queue is fully drained, hand control to the normal human AI.
+    if (!handedOff && actionIdx >= replay.actions.length && pending.length === 0) {
+      Object.assign(ctx.HUMAN_CONFIG, DEFAULT_CFG);
+      ctx.ENABLE_HUMAN_BOT = true;
+      handedOff = true;
     }
-    pending.length = 0; pending.push(...stillPending);
 
-    // Fire actions due this tick
-    while (actionIdx < replay.actions.length && replay.actions[actionIdx].t <= t) {
-      const a = replay.actions[actionIdx++];
-      if (!tryReplayAction(a)) pending.push({ action: a, age: 0 });
+    if (!handedOff) {
+      autoMineHuman();
+
+      // Retry previously deferred actions
+      const stillPending = [];
+      for (const p of pending) {
+        if (!tryReplayAction(p.action) && p.age < MAX_RETRY)
+          stillPending.push({ action: p.action, age: p.age + 1 });
+      }
+      pending.length = 0; pending.push(...stillPending);
+
+      // Fire actions due this tick
+      while (actionIdx < replay.actions.length && replay.actions[actionIdx].t <= t) {
+        const a = replay.actions[actionIdx++];
+        if (!tryReplayAction(a)) pending.push({ action: a, age: 0 });
+      }
     }
 
     tick();
