@@ -453,6 +453,54 @@ let HUMAN_CONFIG = { ...BOT_CONFIG_DEFAULT };
 // Set to true in the evolutionary script so tick() also drives the human side.
 let ENABLE_HUMAN_BOT = false;
 
+// ── Generic macro policy (PROTOTYPE) ─────────────────────────────────────────
+// Experimental alternative to the hand-written utility-build rules in evalSide.
+// When USE_MACRO_POLICY is true, the build/train/research decisions are produced
+// by scoring a generic, data-driven action list with a learned linear policy
+// (MACRO_WEIGHTS) over generic features — instead of one hand-written `if` per
+// action. The military, expansion and SCV-task logic stay shared. Off by default
+// so the live bot is unaffected; trained + benchmarked via `bot-evolve.js --policy`.
+// The whole point: adding a unit/building/upgrade enters the action space just by
+// appearing in the data tables below — no new decision branches.
+let USE_MACRO_POLICY = false;
+
+// Generic descriptor of every macro action. `kind` selects the dispatch path
+// (build/train/tech); `role` drives which features light up. Costs/prereqs are
+// read from the C and UPGRADES tables at scoring time so there's no duplication.
+const MACRO_ACTIONS = {
+  depot:    { kind: "building", role: "supply" },
+  refinery: { kind: "building", role: "gas" },
+  barracks: { kind: "building", role: "production" },
+  academy:  { kind: "building", role: "tech" },
+  engBay:   { kind: "building", role: "tech" },
+  bunker:   { kind: "building", role: "defense" },
+  scv:      { kind: "unit" },
+  marine:   { kind: "unit" },
+  firebat:  { kind: "unit" },
+  u238:       { kind: "research" },
+  infWeapons: { kind: "research", leveled: 3 },
+  infArmor:   { kind: "research", leveled: 3 },
+};
+
+// Default policy weights — WARM-STARTED to roughly mimic the rule bot so the
+// prototype begins from sane play rather than random, then refined by evolution.
+// One shared vector scores every action kind through its feature interactions.
+// Every feature key the scorer can emit must appear here so evolution mutates it.
+const MACRO_WEIGHTS_DEFAULT = {
+  bias: 0,
+  isUnit: 1.0, isCombat: 1.5, firebat: 0.5,
+  isProd: 1.0, isTechB: 1.0, isResearch: 0.8,
+  isSupply: 1.0, isGas: 0.8, isDefense: 0.3,
+  costFrac: -0.6, gasBlocked: -2.0, haveCount: -1.2, unlocksNew: 0.8,
+  supplyPress_supply: 5.0,
+  float_unit: 1.0, deficit_unit: 1.5,
+  surplus_research: 1.2, surplus_techB: 1.0,
+  gasFloat_research: 0.8, needGas_gas: 2.0,
+  firstRax_prod: 5.0, threat_defense: 2.5,
+};
+// Active weights; null → fall back to defaults. The trainer sets this.
+let MACRO_WEIGHTS = null;
+
 // Tech upgrades researched at the Academy.
 const UPGRADES = {
   u238:         { building: "academy", minerals: 150, gas: 150, time: 100,
@@ -1474,6 +1522,96 @@ function sendFirebats(owner, node, dest, mode) {
   if (n > 0) sendUnits(owner, node, n, "firebat", dest, mode);
 }
 
+// Generic, data-driven macro decision layer (PROTOTYPE alternative to the
+// hand-written utility-build rules). Enumerates every currently-legal
+// build/train/research action, scores each with the learned linear policy
+// MACRO_WEIGHTS over generic features, and feeds them to the SAME add()/sort/
+// dispatch path the rule bot uses. P is a snapshot of the situational scalars
+// evalSide already computed. Adding a unit/building/upgrade to the data tables
+// puts it in this action space automatically — no new branches here.
+function macroPolicyBuild(add, P, W) {
+  W = W || MACRO_WEIGHTS || MACRO_WEIGHTS_DEFAULT;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const dot = f => { let s = 0; for (const k in f) s += (W[k] || 0) * f[k]; return s; };
+
+  // Situational scalars shared across all candidate actions (normalised ~0..1).
+  const supplyPress = clamp(1 - P.supplyHeadroom / 8, 0, 1);
+  const floatM   = clamp((P.M - 150) / 300, 0, 1);
+  const gasFloat = clamp(P.G / 200, 0, 1);
+  const deficit  = clamp((P.enemyArmy - P.myArmy) / 10, 0, 1); // behind on army
+  const surplus  = clamp((P.myArmy - P.enemyArmy) / 10, 0, 1); // ahead on army
+  const costFrac = m => clamp(m / Math.max(P.M, 50), 0, 2);
+
+  // ── Buildings ──
+  if (P.supplyCap < SUPPLY_MAX && !P.depotConstructing)
+    add(dot({ bias: 1, isSupply: 1, costFrac: costFrac(C.depot.cost),
+              supplyPress_supply: supplyPress, haveCount: clamp(P.depotCount / 4, 0, 1) }),
+        () => startBuilding(P.owner, P.home, "depot"), "build");
+
+  if (P.gasField0 > 0 && !P.hasRefineryHome && P.raxDone)
+    add(dot({ bias: 1, isGas: 1, costFrac: costFrac(C.refinery.cost),
+              needGas_gas: P.gasConsumerTech ? 1 : 0 }),
+        () => startBuilding(P.owner, P.home, "refinery"), "build");
+
+  if (!P.raxConstructing && P.raxCount < P.raxTarget)
+    add(dot({ bias: 1, isProd: 1, costFrac: costFrac(C.barracks.cost),
+              firstRax_prod: P.raxCount === 0 ? 1 : 0, unlocksNew: P.raxCount === 0 ? 1 : 0,
+              haveCount: clamp(P.raxCount / 4, 0, 1) }),
+        () => startBuilding(P.owner, P.home, "barracks"), "build");
+
+  if (P.raxDone && !P.academyExists && !P.underAttack)
+    add(dot({ bias: 1, isTechB: 1, costFrac: costFrac(C.academy.cost),
+              surplus_techB: surplus, unlocksNew: 1 }),
+        () => startBuilding(P.owner, P.home, "academy"), "build");
+
+  if (P.raxDone && !P.engBayExists && !P.underAttack)
+    add(dot({ bias: 1, isTechB: 1, costFrac: costFrac(C.engBay.cost),
+              surplus_techB: surplus, unlocksNew: 1 }),
+        () => startBuilding(P.owner, P.home, "engBay"), "build");
+
+  // Bunker allowed up to 3 at the choke — lets the policy learn forward-fortress
+  // play (the rule bot is hard-capped at one) while haveCount diminishes spam.
+  if (P.raxDone && P.fwdVisited && P.fwdBunkerCount < 3)
+    add(dot({ bias: 1, isDefense: 1, costFrac: costFrac(C.bunker.cost),
+              threat_defense: P.underAttack ? 1 : 0, haveCount: clamp(P.fwdBunkerCount / 2, 0, 1) }),
+        () => startBuilding(P.owner, P.fwd, "bunker"), "build");
+
+  // ── Research ──
+  const scoreResearch = (key) => {
+    const u = UPGRADES[key];
+    add(dot({ bias: 1, isResearch: 1, costFrac: costFrac(u.minerals),
+              surplus_research: surplus, gasFloat_research: gasFloat,
+              gasBlocked: P.G < u.gas ? 1 : 0 }),
+        () => startResearch(P.owner, key), "tech");
+  };
+  if (P.academyReady && !P.upg.includes("u238")) scoreResearch("u238");
+  if (P.engBayReady) {
+    if (P.wpnLvl < 3) scoreResearch("infWeapons" + (P.wpnLvl + 1));
+    if (P.armLvl < 3) scoreResearch("infArmor"   + (P.armLvl + 1));
+  }
+
+  // ── Units ── (only affordable candidates are added so the train-dispatch
+  // break stays meaningful; SCV always allowed, army units gated like the rule.)
+  if (P.M >= C.scv.cost && P.scvCount < P.scvCap)
+    add(dot({ bias: 1, isUnit: 1, costFrac: costFrac(C.scv.cost),
+              float_unit: floatM, haveCount: clamp(P.scvCount / P.scvCap, 0, 1) }),
+        () => queueSCV(P.owner, P.home, 1), "train");
+
+  if (!P.savingForCC && P.raxDone) {
+    for (let i = 0; i < P.raxCount; i++) {
+      const canFirebat = P.hasAcademy && P.G >= C.firebat.gasCost && P.M >= C.firebat.cost;
+      if (canFirebat)
+        add(dot({ bias: 1, isUnit: 1, isCombat: 1, firebat: 1, costFrac: costFrac(C.firebat.cost),
+                  float_unit: floatM, deficit_unit: deficit }),
+            () => queueFirebat(P.owner, P.home), "train");
+      else if (P.M >= C.marine.cost)
+        add(dot({ bias: 1, isUnit: 1, isCombat: 1, costFrac: costFrac(C.marine.cost),
+                  float_unit: floatM, deficit_unit: deficit }),
+            () => queueMarine(P.owner, P.home), "train");
+    }
+  }
+}
+
 // Generic AI driver — works for either player.
 // owner/home/oppHome/opp identify the perspective; ai is the per-side intel object;
 // cfg is the tunable parameter set (BOT_CONFIG or HUMAN_CONFIG).
@@ -1792,6 +1930,35 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
   const builds = [];
   const add = (score, exec, kind = "build") => { if (score > 0) builds.push({ score, exec, kind }); };
 
+  // Policy is enabled globally (browser toggle) or per-side via cfg.useMacroPolicy
+  // (lets the trainer run a policy bot against a rule bot in the same game).
+  if (USE_MACRO_POLICY || cfg.useMacroPolicy) {
+    // PROTOTYPE: generic learned policy fills `builds` instead of the rules below.
+    const ups = state.upgrades[owner];
+    const engBayExists = state.buildings.some(b => b.owner === owner && b.type === "engBay");
+    const engBayReady  = state.buildings.find(b =>
+      b.owner === owner && b.type === "engBay" && !b.construct && !b.research);
+    macroPolicyBuild(add, {
+      owner, home, fwd, fwdVisited, underAttack,
+      M: min(), G: gas(),
+      supplyCap: supplyCap(owner), supplyHeadroom: supplyCap(owner) - supplyUsed(owner),
+      myArmy, enemyArmy: ai.enemyArmy,
+      scvCount, scvCap, raxCount, raxTarget, raxDone,
+      academyExists, hasAcademy, academyReady, engBayExists, engBayReady,
+      savingForCC,
+      depotCount:        state.buildings.filter(b => b.owner === owner && b.type === "depot").length,
+      depotConstructing: state.buildings.some(b => b.owner === owner && b.type === "depot" && b.construct),
+      raxConstructing:   state.buildings.some(b => b.owner === owner && b.type === "barracks" && b.construct),
+      gasField0:         state.gasField[home],
+      hasRefineryHome:   state.buildings.some(b => b.owner === owner && b.node === home && b.type === "refinery"),
+      gasConsumerTech:   academyExists || engBayExists,
+      fwdBunkerCount:    state.buildings.filter(b => b.owner === owner && b.node === fwd && b.type === "bunker").length,
+      upg: ups,
+      wpnLvl: ups.includes("infWeapons3") ? 3 : ups.includes("infWeapons2") ? 2 : ups.includes("infWeapons1") ? 1 : 0,
+      armLvl: ups.includes("infArmor3")   ? 3 : ups.includes("infArmor2")   ? 2 : ups.includes("infArmor1")   ? 1 : 0,
+    }, cfg.macroWeights);
+  } else {
+
   if (supplyCap(owner) < SUPPLY_MAX &&
       !state.buildings.some(b => b.owner === owner && b.type === "depot" && b.construct))
     add(cfg.uDepot * 10 * supplyP * supplyP,
@@ -1845,6 +2012,8 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
         add(cfg.uMarine  * 7 * armyRatio * armyMult * floatMult, () => queueMarine(owner, home),  "train");
     }
   }
+
+  } // end rule-based build block
 
   builds.sort((a, b) => b.score - a.score);
   let builtOne = false;
@@ -4450,6 +4619,27 @@ function runTests() {
       ok(eligible >= 5, `need ≥5 expansion-eligible seeds in first 20 (got ${eligible})`);
       ok(expanded >= Math.ceil(eligible * 0.7),
         `bot expanded in ${expanded}/${eligible} eligible seeds (need ≥70%)`);
+    },
+    "macro-policy bot plays a legal game and builds an economy"() {
+      // Prototype: with the generic learned policy driving the bot's build order
+      // (default warm-start weights), a game still runs to completion and the bot
+      // develops tech + army — i.e. the data-driven action layer is wired up right.
+      ENABLE_HUMAN_BOT = true;
+      resetState(0);
+      BOT_CONFIG.useMacroPolicy = true;   // policy drives the bot; human stays rules
+      let ended = false;
+      for (let t = 0; t < 1500 && !ended; t++) {
+        tick();
+        ended = !state.buildings.some(b => b.owner === BOT   && b.type === "cc" && !b.construct) ||
+                !state.buildings.some(b => b.owner === HUMAN && b.type === "cc" && !b.construct);
+      }
+      BOT_CONFIG.useMacroPolicy = false;  // reset so later tests use the rule bot
+      ENABLE_HUMAN_BOT = false;
+      ok(state.buildings.some(b => b.owner === BOT && b.type === "barracks"),
+        "policy bot built a barracks");
+      ok(state.units.filter(u => u.owner === BOT && (u.type === "marine" || u.type === "firebat")).length > 0,
+        "policy bot trained army units");
+      ok(state.minerals[BOT] >= 0 && state.gas[BOT] >= 0, "policy bot has no negative resources");
     },
   };
 
