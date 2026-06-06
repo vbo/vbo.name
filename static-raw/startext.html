@@ -1192,10 +1192,10 @@ function formatReplayLog() {
       const who = e.owner === "human" ? "h" : "b";
       act = `${who}:${e.act}`;
       if (e.act === "build")                    detail = `${e.type}@${e.node}`;
-      if (e.act === "train")                    detail = e.type;
+      if (e.act === "train")                    detail = `${e.type}@${e.node}`;
       if (e.act === "research")                 detail = e.type;
       if (e.act === "attack" || e.act === "move")
-        detail = `${e.n}×${e.utype}→${e.dest} (h:${e.ha} b:${e.ba})`;
+        detail = `${e.n}×${e.utype} ${e.src}→${e.dest} (h:${e.ha} b:${e.ba})`;
     }
     lines.push(`${String(e.t).padStart(4)} ${act.padEnd(12)} ${detail}`);
   }
@@ -1256,7 +1256,7 @@ function queueSCV(owner, node, maxQueue = C.cc.queueMax) {
     cc.train = { progress: 0, total: C.cc.trainTime, unitType: "scv" };
   else
     cc.queued++;
-  if (owner === HUMAN) logEvent({ act: "train", owner, type: "scv" });
+  if (owner === HUMAN) logEvent({ act: "train", owner, type: "scv", node });
 }
 
 function freeIdle(owner, node) {
@@ -1328,7 +1328,7 @@ function queueMarine(owner, node, raxId) {
     rax.train = { progress: 0, total: C.marine.build, unitType: "marine" };
   else
     rax.queued++;
-  logEvent({ act: "train", owner, type: "marine" });
+  logEvent({ act: "train", owner, type: "marine", node });
 }
 
 function queueFirebat(owner, node, raxId) {
@@ -1353,7 +1353,7 @@ function queueFirebat(owner, node, raxId) {
     rax.train = { progress: 0, total: C.firebat.build, unitType: "firebat" };
   else
     rax.queuedFirebats = (rax.queuedFirebats || 0) + 1;
-  logEvent({ act: "train", owner, type: "firebat" });
+  logEvent({ act: "train", owner, type: "firebat", node });
 }
 
 function startResearch(owner, upgradeType) {
@@ -1426,7 +1426,7 @@ function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
   }
   if (sent.length && (mode === "attack" || owner === HUMAN)) {
     logEvent({ act: mode === "attack" ? "attack" : "move", owner, n: sent.length,
-      utype: unitType, dest, ha: armyCount(HUMAN), ba: armyCount(BOT) });
+      utype: unitType, src: node, dest, ha: armyCount(HUMAN), ba: armyCount(BOT) });
   }
 }
 
