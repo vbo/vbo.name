@@ -1805,7 +1805,12 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
         firebatFrac: cl(firebatsTotal / Math.max(1, allStrike), 0, 1),
       };
       let milScore = 0; for (const k in f) milScore += (milW[k] || 0) * f[k];
-      const launch = milScore > 0 && surplus >= 1; // never launch with no surplus
+      // Hard override: after a failed wave, if the bot has waited ≥110% of a wave
+      // interval with surplus ≥ 10, force launch regardless of milScore. Prevents the
+      // waveFailed penalty from suppressing attacks for >1 wave interval when the army
+      // is large enough to try again.
+      const forceByTimer = ai.waveFailed && f.timer >= 1.1 && surplus >= 10;
+      const launch = (milScore > 0 || forceByTimer) && surplus >= 1;
 
       if (launch) {
         launched = true;
@@ -4201,6 +4206,27 @@ function runTests() {
       const need = Math.min(5 - 1, 10 - keep);
       eq(unitsOf(BOT, AWAY, "mining", "scv").length, 10 - need, `keeps a ${10 - need}-miner income core`);
       eq(unitsOf(BOT, AWAY, "idle", "scv").length, need, `pulls exactly the ${need}-SCV shortfall`);
+    },
+    "bot re-attacks within one wave interval after a failed wave with large army"() {
+      // Regression: waveFailed + minArmy negative weights suppressed attacks for 130-160
+      // ticks even with 38+ unit armies (>1 wave interval). With seed=7 before the fix,
+      // the bot sat on 39 units for 145t. The forceByTimer rule now caps the window at
+      // ~one wave interval (119t), so the bot re-attacks at most 120 ticks after the
+      // army is large enough.
+      resetState(7);
+      let maxWait = 0, wfStart = -1;
+      for (let i = 0; i < 900 && !state.over; i++) {
+        tick();
+        const army = state.units.filter(u => u.owner === BOT &&
+          (u.type === "marine" || u.type === "firebat")).length;
+        if (state.bot.waveFailed && army >= 22) {
+          if (wfStart < 0) wfStart = state.time;
+        } else {
+          if (wfStart >= 0) { maxWait = Math.max(maxWait, state.time - wfStart); wfStart = -1; }
+        }
+      }
+      if (wfStart >= 0) maxWait = Math.max(maxWait, state.time - wfStart);
+      ok(maxWait < 120, `bot re-attacks within one wave interval of surplus army post-wave-fail (was ${maxWait}t)`);
     },
     "pause flag freezes simulation in the loop"() {
       resetState(1);

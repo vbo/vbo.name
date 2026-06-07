@@ -72,6 +72,10 @@ decisions. Expansion, SCV tasking, and target selection use fixed shared rules.
   features (relative strength, surplus, timer, target weakness, fresh intel,
   recent-wave-failed, supply saturation, composition). Target selection,
   staging, defense and mop-up stay shared rules.
+  **Hard override** (`forceByTimer`): if `waveFailed && timer ≥ 1.1 && surplus ≥ 10`,
+  the bot force-launches regardless of `milScore`. This prevents the waveFailed
+  penalty from suppressing attacks for more than one wave interval when the army
+  is large enough to try again (regression test: seed 7, < 120t window).
 
 Per-game weight overrides via `cfg.macroWeights` / `cfg.militaryWeights`; null
 falls back to `MACRO_WEIGHTS_DEFAULT` / `MILITARY_WEIGHTS_DEFAULT`.
