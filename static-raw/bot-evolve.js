@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 'use strict';
-// Self-play evolutionary optimizer for startext.html BOT_CONFIG_DEFAULT.
-// Reward: win ? 1 - ticks/MAX_TICKS : 0  (win fast > win slow > lose)
-// Champion evolves against its own Hall of Fame to prevent cycling.
-// After training, champion is validated against all replay files in replays/.
+// Self-play evolutionary optimizer for the startext.html learned policy.
+// Trains macro (27-weight) and military (11-weight) policy jointly by self-play
+// + Hall of Fame, then benchmarks the result vs the current live weights and
+// validates against replay files in replays/.
 //
 // Run from static-raw/:
-//   node bot-evolve.js [--gen N] [--pop N] [--games N] [--hof N]
-//   node bot-evolve.js --no-patch           # evolve, print config, skip HTML patch
-//   node bot-evolve.js --force-patch        # patch even if replay validation fails
-//   node bot-evolve.js --replay-only        # skip evolution, validate current config against replays
+//   node bot-evolve.js [--gen N] [--pop N] [--games N] [--hof N] [--verbose]
+//
+// If the trained weights beat the current defaults, copy them into
+// MACRO_WEIGHTS_DEFAULT / MILITARY_WEIGHTS_DEFAULT in startext.html.
 
 const fs   = require('fs');
 const path = require('path');
@@ -22,10 +22,6 @@ const GENERATIONS     = argVal('--gen',   20);
 const POPULATION      = argVal('--pop',   10);
 const GAMES_PER_MATCH = argVal('--games',  5);
 const HOF_SIZE        = argVal('--hof',    3);
-const PATCH_BACK      = !args.includes('--no-patch');
-const FORCE_PATCH     = args.includes('--force-patch');
-const REPLAY_ONLY     = args.includes('--replay-only');
-const POLICY_MODE     = args.includes('--policy');
 const VERBOSE         = args.includes('--verbose');
 
 // ── Load game ────────────────────────────────────────────────────────────────
@@ -42,11 +38,7 @@ const patchedScript = gameScript
   .replace(/^let (BOT_CONFIG\b)/m,       'var $1')
   .replace(/^let (HUMAN_CONFIG\b)/m,     'var $1')
   .replace(/^let (ENABLE_HUMAN_BOT\b)/m, 'var $1')
-  .replace(/^let (USE_MACRO_POLICY\b)/m, 'var $1')
-  .replace(/^let (MACRO_WEIGHTS\b)/m,    'var $1')
   .replace(/^const (MACRO_WEIGHTS_DEFAULT\b)/m, 'var $1')
-  .replace(/^let (USE_MILITARY_POLICY\b)/m, 'var $1')
-  .replace(/^let (MILITARY_WEIGHTS\b)/m,    'var $1')
   .replace(/^const (MILITARY_WEIGHTS_DEFAULT\b)/m, 'var $1')
   .replace(/^let (HOME\b)/m,             'var $1')
   .replace(/^let (AWAY\b)/m,             'var $1');
@@ -61,59 +53,15 @@ if (!resetState || !tick) { console.error('Game globals not found — check scri
 
 const DEFAULT_CFG = { ...ctx.BOT_CONFIG };
 
-// Returns { win: 0|1, ticks: number }.
-function runGame(botCfg, humanCfg, seed) {
-  ctx.ENABLE_HUMAN_BOT = true;
-  resetState(seed);
-  // Set configs AFTER resetState so the default-reset inside doesn't clobber them.
-  Object.assign(ctx.BOT_CONFIG,   DEFAULT_CFG, botCfg);
-  Object.assign(ctx.HUMAN_CONFIG, DEFAULT_CFG, humanCfg);
-  const MAX_TICKS = 1500;
-  for (let t = 0; t < MAX_TICKS; t++) {
-    tick();
-    const s = ctx.state;
-    const botCC   = s.buildings.some(b => b.owner === 'bot'   && b.type === 'cc' && !b.construct);
-    const humanCC = s.buildings.some(b => b.owner === 'human' && b.type === 'cc' && !b.construct);
-    if (!botCC || !humanCC) return { win: botCC ? 1 : 0, ticks: t };
-  }
-  const s = ctx.state;
-  const botArmy   = s.units.filter(u => u.owner === 'bot'   && (u.type === 'marine' || u.type === 'firebat')).length;
-  const humanArmy = s.units.filter(u => u.owner === 'human' && (u.type === 'marine' || u.type === 'firebat')).length;
-  return { win: botArmy >= humanArmy ? 1 : 0, ticks: 1500 };
-}
-
 // Reward: winning faster is worth more; losing is 0.
-// Guarantee nonzero for any win (including timeout) so the evolution has signal.
 const reward = (win, ticks) => win ? Math.max(0.1, 1 - ticks / 1500) : 0;
-
-// ── Evaluation ───────────────────────────────────────────────────────────────
-// testCfg plays both sides (as bot and as "human") against every HoF entry.
-function evaluate(testCfg, hof) {
-  let total = 0, count = 0;
-  for (const oppCfg of hof) {
-    for (let g = 0; g < GAMES_PER_MATCH; g++) {
-      const r1 = runGame(testCfg, oppCfg, g);
-      total += reward(r1.win, r1.ticks);
-      const r2 = runGame(oppCfg, testCfg, g);
-      total += reward(1 - r2.win, r2.ticks);
-      count += 2;
-    }
-  }
-  return total / count;
-}
 
 // ── Replay system ─────────────────────────────────────────────────────────────
 const REPLAY_DIR = path.join(__dirname, 'replays');
 
-// Costs mirroring C constants in startext.html — used to pre-check before calling
-// game functions (which have the same checks internally but return nothing on fail).
 const UNIT_COSTS  = { marine: { min: 50, gas: 0 }, firebat: { min: 50, gas: 25 }, scv: { min: 50, gas: 0 } };
 const BUILD_COSTS = { barracks: 150, academy: 150, bunker: 100, depot: 100, refinery: 75, cc: 400, engbay: 150 };
 
-// Parse a replay log (text from "Copy replay log") into { seed, logHome, logAway, actions }.
-// seed is null when the log header shows "seed=?" (game started from an old save).
-// logHome/logAway are the home-base node IDs extracted from first build/train actions.
-// Only h: actions are returned; b: lines are parsed only to detect logAway.
 function parseReplay(text) {
   const lines = text.split('\n');
   const header = lines[0] || '';
@@ -124,8 +72,7 @@ function parseReplay(text) {
   const actions = [];
   let logHome = null, logAway = null;
 
-  for (const line of lines.slice(2)) { // skip header + column header
-    // Detect logAway from first bot build/train line.
+  for (const line of lines.slice(2)) {
     if (logAway === null) {
       const bm = line.match(/^\s*\d+\s+b:(?:build|train)\s+\w+@(\d+)/);
       if (bm) logAway = Number(bm[1]);
@@ -158,8 +105,6 @@ function parseReplay(text) {
   return { seed, logHome, logAway, actions };
 }
 
-// For seed=? replays: find a seed where HOME/AWAY match the replay's logHome/logAway
-// and expansion nodes have resources. Returns a numeric seed or null.
 function findReplaySeed(replay, maxTry = 500) {
   if (replay.logHome === null || replay.logAway === null) return null;
   const lh = replay.logHome, la = replay.logAway;
@@ -167,14 +112,12 @@ function findReplaySeed(replay, maxTry = 500) {
     resetState(s);
     const st = ctx.state;
     if (ctx.HOME !== lh || ctx.AWAY !== la) continue;
-    if (st.map.n < Math.max(lh, la) + 1) continue; // not enough nodes
+    if (st.map.n < Math.max(lh, la) + 1) continue;
     return s;
   }
   return null;
 }
 
-// Assign idle SCVs to available resources at their current node.
-// Called each tick in replay games since ENABLE_HUMAN_BOT=false means no economy AI.
 function autoMineHuman() {
   const s = ctx.state;
   for (const u of s.units) {
@@ -187,7 +130,6 @@ function autoMineHuman() {
   }
 }
 
-// Try to execute one replay action. Returns true if it fired, false to retry next tick.
 function tryReplayAction(action) {
   const s = ctx.state;
   const hm = s.minerals.human, hg = s.gas.human;
@@ -204,13 +146,12 @@ function tryReplayAction(action) {
       if      (action.type === 'marine')  ctx.queueMarine('human', action.node);
       else if (action.type === 'firebat') ctx.queueFirebat('human', action.node);
       else if (action.type === 'scv')     ctx.queueSCV('human', action.node);
-      return s.minerals.human < before; // mineral spent → success
+      return s.minerals.human < before;
     }
     case 'research':
       return !!ctx.startResearch('human', action.type);
     case 'attack':
     case 'move': {
-      // Only fire if units are actually there — they may not have arrived yet.
       const pool = s.units.filter(u =>
         u.owner === 'human' && u.node === action.src &&
         u.type === action.utype && u.task === 'idle' && !u.transit);
@@ -222,30 +163,28 @@ function tryReplayAction(action) {
   return false;
 }
 
-// Run the evolved bot against a replay-driven human side on the replay's seed.
 function runReplayGame(botCfg, replay) {
-  ctx.ENABLE_HUMAN_BOT = false; // we drive HUMAN manually via replay + autoMine
+  ctx.ENABLE_HUMAN_BOT = false;
 
   let seed = replay.seed;
   if (seed === null) {
     seed = findReplaySeed(replay);
     if (seed === null) {
-      if (VERBOSE) console.warn(`  No compatible seed for ${replay.name} (logHome=${replay.logHome}, logAway=${replay.logAway}) — skipping`);
-      return { win: 1, ticks: 0 }; // treat unrunnable replay as pass so it doesn't block
+      if (VERBOSE) console.warn(`  No compatible seed for ${replay.name} — skipping`);
+      return { win: 1, ticks: 0 };
     }
-    if (VERBOSE) console.log(`  ${replay.name}: using seed ${seed} (matched logHome=${replay.logHome}, logAway=${replay.logAway})`);
+    if (VERBOSE) console.log(`  ${replay.name}: using seed ${seed}`);
   }
 
   resetState(seed);
   Object.assign(ctx.BOT_CONFIG, DEFAULT_CFG, botCfg);
 
-  const pending = []; // [{action, age}] — actions that couldn't fire yet
-  const MAX_RETRY = 120; // ticks before a stuck action is dropped
+  const pending = [];
+  const MAX_RETRY = 120;
   let actionIdx = 0;
-  let handedOff = false; // true once replay exhausted and normal AI takes over
+  let handedOff = false;
 
   for (let t = 0; t < 1500; t++) {
-    // Once replay queue is fully drained, hand control to the normal human AI.
     if (!handedOff && actionIdx >= replay.actions.length && pending.length === 0) {
       Object.assign(ctx.HUMAN_CONFIG, DEFAULT_CFG);
       ctx.ENABLE_HUMAN_BOT = true;
@@ -254,16 +193,12 @@ function runReplayGame(botCfg, replay) {
 
     if (!handedOff) {
       autoMineHuman();
-
-      // Retry previously deferred actions
       const stillPending = [];
       for (const p of pending) {
         if (!tryReplayAction(p.action) && p.age < MAX_RETRY)
           stillPending.push({ action: p.action, age: p.age + 1 });
       }
       pending.length = 0; pending.push(...stillPending);
-
-      // Fire actions due this tick
       while (actionIdx < replay.actions.length && replay.actions[actionIdx].t <= t) {
         const a = replay.actions[actionIdx++];
         if (!tryReplayAction(a)) pending.push({ action: a, age: 0 });
@@ -278,12 +213,11 @@ function runReplayGame(botCfg, replay) {
     if (!botCC || !humanCC) return { win: botCC ? 1 : 0, ticks: t };
   }
   const s = ctx.state;
-  const botArmy   = s.units.filter(u => u.owner === 'bot'   && (u.type === 'marine' || u.type === 'firebat')).length;
-  const humanArmy = s.units.filter(u => u.owner === 'human' && (u.type === 'marine' || u.type === 'firebat')).length;
-  return { win: botArmy >= humanArmy ? 1 : 0, ticks: 1500 };
+  const ba = s.units.filter(u => u.owner === 'bot'   && (u.type === 'marine' || u.type === 'firebat')).length;
+  const ha = s.units.filter(u => u.owner === 'human' && (u.type === 'marine' || u.type === 'firebat')).length;
+  return { win: ba >= ha ? 1 : 0, ticks: 1500 };
 }
 
-// Load all .txt replay files from the replays/ directory.
 function loadReplays() {
   if (!fs.existsSync(REPLAY_DIR)) return [];
   const files = fs.readdirSync(REPLAY_DIR).filter(f => f.endsWith('.txt'));
@@ -298,71 +232,26 @@ function loadReplays() {
   return replays;
 }
 
-// Validate champion against all replays. Returns true if all pass.
-function validateReplays(cfg, replays) {
+function validateReplays(brain, replays) {
   if (!replays.length) return true;
   console.log(`\nValidating against ${replays.length} replay(s)...`);
   let passed = 0;
   for (const replay of replays) {
-    const r = runReplayGame(cfg, replay);
+    const r = runReplayGame({ macroWeights: brain.macro, militaryWeights: brain.mil }, replay);
     const ok = r.win === 1;
     if (ok) passed++;
-    console.log(`  ${ok ? 'PASS' : 'FAIL'} ${replay.name} (ended tick ${r.ticks})`);
+    console.log(`  ${ok ? 'PASS' : 'FAIL'} ${replay.name} (tick ${r.ticks})`);
   }
-  ctx.ENABLE_HUMAN_BOT = true; // restore for any subsequent HoF games
+  ctx.ENABLE_HUMAN_BOT = true;
   console.log(`  ${passed}/${replays.length} replays passed`);
   return passed === replays.length;
 }
 
-// ── Parameter bounds ─────────────────────────────────────────────────────────
-const BOUNDS = {
-  scvCapBase:      [6,  20], scvCapSkilled:   [10, 30],
-  scvExpCap:       [4,  14], expandMinScv:    [6,  16],
-  keepMining:      [2,   8],
-  reserveBase:     [4,  12], reserveSkilled:  [2,  10],
-  waveIntervalInit:[60, 120],waveIntervalMin: [30,  70],
-  waveIntervalMax: [80, 150],waveMin:         [6,  20],
-  waveMultiplier:  [1.1, 2.0], waveOffset:    [2,   8],
-  blindAttackMin:  [10,  30],
-  raxCapBase:      [1,   5], raxCapSkilled:   [3,  10],
-  raxTimeBase:     [60, 200],raxTimeSkilled:  [30, 100],
-  uScv:    [0.3, 2.0], uMarine:  [0.3, 2.0], uFirebat: [0.2, 2.0],
-  uRax:    [0.3, 2.0], uAcademy: [0.2, 2.0], uRefinery:[0.3, 2.0], uBunker:  [0.1, 2.0],
-  uDepot:  [0.5, 2.5], uU238:    [0.1, 2.0],
-  uEngBay: [0.1, 2.0], uInfWeapons: [0.3, 2.0], uInfArmor: [0.3, 2.0],
-};
-
-function clamp(val, lo, hi) { return Math.max(lo, Math.min(hi, val)); }
-
-function mutate(cfg, sigma = 0.12) {
-  const out = { ...cfg };
-  for (const [key, [lo, hi]] of Object.entries(BOUNDS)) {
-    if (!(key in out)) continue;
-    const range = hi - lo;
-    const delta = (Math.random() * 2 - 1) * sigma * range;
-    const raw   = out[key] + delta;
-    const isInt = Number.isInteger(cfg[key]);
-    out[key] = isInt ? Math.round(clamp(raw, lo, hi)) : clamp(raw, lo, hi);
-  }
-  // Expansion threshold must be reachable within base SCV cap.
-  out.expandMinScv = Math.min(out.expandMinScv, out.scvCapBase);
-  return out;
-}
-
-// ── Load replays upfront ──────────────────────────────────────────────────────
-const replays = loadReplays();
-
-// ── Macro-policy prototype: train + benchmark vs the rule bot ──────────────────
-// `--policy` evolves the generic linear policy (MACRO_WEIGHTS) by self-play, then
-// measures it head-to-head against the current rule bot and against the replay
-// gate. It does NOT patch anything — this is the "prototype + compare" step: we
-// decide whether to adopt the policy based on these measured numbers.
+// ── Policy evolution ──────────────────────────────────────────────────────────
 const MACRO_KEYS    = Object.keys(ctx.MACRO_WEIGHTS_DEFAULT);
 const MIL_KEYS      = Object.keys(ctx.MILITARY_WEIGHTS_DEFAULT);
 const POLICY_BOUNDS = [-6, 6];
 
-// A "brain" is { macro, mil } weight objects. The genome we evolve is both at
-// once, since macro and military decisions interact (army size feeds attack).
 function defaultBrain() {
   return { macro: { ...ctx.MACRO_WEIGHTS_DEFAULT }, mil: { ...ctx.MILITARY_WEIGHTS_DEFAULT } };
 }
@@ -372,28 +261,29 @@ function mutatePolicy(b, sigma = 0.15) {
   const out = cloneBrain(b);
   const span = POLICY_BOUNDS[1] - POLICY_BOUNDS[0];
   for (const k of MACRO_KEYS)
-    out.macro[k] = clamp((out.macro[k] ?? 0) + (Math.random() * 2 - 1) * sigma * span, POLICY_BOUNDS[0], POLICY_BOUNDS[1]);
+    out.macro[k] = Math.max(POLICY_BOUNDS[0], Math.min(POLICY_BOUNDS[1],
+      (out.macro[k] ?? 0) + (Math.random() * 2 - 1) * sigma * span));
   for (const k of MIL_KEYS) {
-    // `reserve` is a unit count, not a feature weight — mutate on its own scale.
-    if (k === 'reserve') { out.mil.reserve = clamp((out.mil.reserve ?? 8) + (Math.random()*2-1)*3, 0, 20); continue; }
-    out.mil[k] = clamp((out.mil[k] ?? 0) + (Math.random() * 2 - 1) * sigma * span, POLICY_BOUNDS[0], POLICY_BOUNDS[1]);
+    if (k === 'reserve') {
+      out.mil.reserve = Math.max(0, Math.min(20, (out.mil.reserve ?? 8) + (Math.random()*2-1)*3));
+      continue;
+    }
+    out.mil[k] = Math.max(POLICY_BOUNDS[0], Math.min(POLICY_BOUNDS[1],
+      (out.mil[k] ?? 0) + (Math.random() * 2 - 1) * sigma * span));
   }
   return out;
 }
 
-// Apply a brain to one side's cfg (or leave it as the rule bot when brain is null).
+// Apply a brain to one side's cfg. null brain → game falls back to
+// MACRO_WEIGHTS_DEFAULT / MILITARY_WEIGHTS_DEFAULT (the current live weights).
 function applyBrain(cfg, brain) {
-  cfg.useMacroPolicy    = !!brain;
-  cfg.macroWeights      = brain ? brain.macro : null;
-  cfg.useMilitaryPolicy = !!brain;
-  cfg.militaryWeights   = brain ? brain.mil : null;
+  cfg.macroWeights    = brain ? brain.macro : null;
+  cfg.militaryWeights = brain ? brain.mil : null;
 }
 
-// Run a game with explicit per-side brains. brain object → generic policy;
-// null → the hand-written rule bot.
+// Run a game with explicit per-side brains. null brain → default live weights.
 function runBrainGame(botBrain, humanBrain, seed) {
   ctx.ENABLE_HUMAN_BOT = true;
-  ctx.USE_MACRO_POLICY = false; ctx.USE_MILITARY_POLICY = false; // per-side via cfg
   resetState(seed);
   Object.assign(ctx.BOT_CONFIG,   DEFAULT_CFG);
   Object.assign(ctx.HUMAN_CONFIG, DEFAULT_CFG);
@@ -412,13 +302,10 @@ function runBrainGame(botBrain, humanBrain, seed) {
   return { win: ba >= ha ? 1 : 0, ticks: 1500 };
 }
 
-// Fitness of a policy weight-set. Opponents = the policy Hall of Fame PLUS the
-// rule bot as a permanent anchor, so fitness has an absolute reference point and
-// stops drifting purely with co-evolution. Each matchup is played on `games`
-// distinct seeds, both colours, to cut variance.
+// Fitness via self-play + HoF. null opponent = current live weights (anchor).
 function evaluatePolicy(brain, hof, games) {
   let total = 0, count = 0;
-  const opps = hof.concat([null]); // null = rule bot anchor
+  const opps = hof.concat([null]);
   for (const opp of opps) {
     for (let g = 0; g < games; g++) {
       const r1 = runBrainGame(brain, opp, g); total += reward(r1.win, r1.ticks);
@@ -429,142 +316,69 @@ function evaluatePolicy(brain, hof, games) {
   return total / count;
 }
 
-// Head-to-head: policy bot vs the rule bot, both colours, over `seeds` maps.
-// seedStart lets the holdout bench use a range that was never seen during training.
-function benchVsRule(brain, seeds, seedStart = 0) {
-  let pol = 0, rule = 0;
+// Head-to-head: evolved brain vs current live weights (null brain), both colours.
+// seedStart lets the holdout bench use seeds never seen during training.
+function benchVsDefault(brain, seeds, seedStart = 0) {
+  let pol = 0, def = 0;
   for (let s = seedStart; s < seedStart + seeds; s++) {
-    if (runBrainGame(brain, null, s).win) pol++; else rule++;   // policy as bot
-    if (runBrainGame(null, brain, s).win) rule++; else pol++;   // policy as human
+    if (runBrainGame(brain, null, s).win) pol++; else def++;
+    if (runBrainGame(null, brain, s).win) def++; else pol++;
   }
-  return { pol, rule, total: seeds * 2 };
+  return { pol, def, total: seeds * 2 };
 }
 
-// Replay gate with the policy bot driving the AI side.
+// Replay gate: run the evolved brain against scripted human replays.
 function policyReplay(brain) {
-  applyBrain(ctx.HUMAN_CONFIG, null); // scripted human handoff stays rule-driven
   return replays.map(r => {
-    const out = runReplayGame({
-      useMacroPolicy: true,    macroWeights:    brain.macro,
-      useMilitaryPolicy: true, militaryWeights: brain.mil,
-    }, r);
+    const out = runReplayGame({ macroWeights: brain.macro, militaryWeights: brain.mil }, r);
     return { name: r.name, win: out.win, ticks: out.ticks };
   });
 }
 
-if (POLICY_MODE) {
-  const games = GAMES_PER_MATCH;
-  const hofN  = HOF_SIZE;
-  console.log(`Policy prototype: evolving macro+military weights — ${GENERATIONS} gens × ${POPULATION} mutations × ${games*2} games/match × HoF ${hofN}`);
-  console.log(`Genome: ${MACRO_KEYS.length} macro + ${MIL_KEYS.length} military weights   Replay files: ${replays.length}\n`);
+// ── Main ──────────────────────────────────────────────────────────────────────
+const replays = loadReplays();
 
-  let champ = defaultBrain();
-  const hof = [cloneBrain(champ)];
+console.log(`Policy evolution: ${GENERATIONS} gens × ${POPULATION} mutations × ${GAMES_PER_MATCH*2} games/match × HoF ${HOF_SIZE}`);
+console.log(`Genome: ${MACRO_KEYS.length} macro + ${MIL_KEYS.length} military weights   Replay files: ${replays.length}\n`);
 
-  // Validation-based selection: the objective is beating the rule bot, so we keep
-  // the brain with the best MEASURED win rate vs the rule bot (not just the best
-  // self-play fitness, which can overfit the Hall of Fame). 24-seed bench for a
-  // stable signal (was 12 — too noisy for selection).
-  const VAL_SEEDS = 24;
-  const valScore = b => benchVsRule(b, VAL_SEEDS).pol; // wins out of VAL_SEEDS*2
-  let elite = cloneBrain(champ), eliteScore = valScore(elite);
-  console.log(`Warm-start vs rule bot: ${eliteScore}/${VAL_SEEDS * 2} wins\n`);
+let champ = defaultBrain();
+const hof = [cloneBrain(champ)];
 
-  for (let gen = 1; gen <= GENERATIONS; gen++) {
-    // Sigma annealing: explore broadly early, fine-tune late.
-    const sigma = Math.max(0.06, 0.22 * Math.pow(0.94, gen - 1));
-    const baseFit = evaluatePolicy(champ, hof, games);
-    let best = null, bestFit = -1;
-    for (let p = 0; p < POPULATION; p++) {
-      const cand = mutatePolicy(champ, sigma);
-      const fit  = evaluatePolicy(cand, hof, games);
-      if (fit > bestFit) { bestFit = fit; best = cand; }
-    }
-    if (bestFit > baseFit) {
-      champ = best;
-      hof.push(cloneBrain(champ));
-      if (hof.length > hofN) hof.shift();
-    }
-    // Track the best champion by absolute benchmark, not co-evolution fitness.
-    const cScore = valScore(champ);
-    if (cScore > eliteScore) { eliteScore = cScore; elite = cloneBrain(champ); }
-    if (VERBOSE || gen % 5 === 0)
-      console.log(`Gen ${gen}: selfplay-fit=${bestFit.toFixed(3)}  vs-rule=${cScore}/${VAL_SEEDS * 2}  σ=${sigma.toFixed(3)}  (elite ${eliteScore})`);
+const VAL_SEEDS = 24;
+const valScore = b => benchVsDefault(b, VAL_SEEDS).pol;
+let elite = cloneBrain(champ), eliteScore = valScore(elite);
+console.log(`Warm-start vs current live weights: ${eliteScore}/${VAL_SEEDS * 2} wins\n`);
+
+for (let gen = 1; gen <= GENERATIONS; gen++) {
+  const sigma = Math.max(0.06, 0.22 * Math.pow(0.94, gen - 1));
+  const baseFit = evaluatePolicy(champ, hof, GAMES_PER_MATCH);
+  let best = null, bestFit = -1;
+  for (let p = 0; p < POPULATION; p++) {
+    const cand = mutatePolicy(champ, sigma);
+    const fit  = evaluatePolicy(cand, hof, GAMES_PER_MATCH);
+    if (fit > bestFit) { bestFit = fit; best = cand; }
   }
-
-  champ = elite; // ship the validation champion
-  console.log('\n── Results ───────────────────────────────────────────────');
-  const final = benchVsRule(champ, 20);
-  console.log(`Trained policy vs rule bot (40 games, seeds 0-19): policy ${final.pol} — rule ${final.rule}  (${(100*final.pol/final.total).toFixed(0)}% policy)`);
-  // Honest holdout: seeds 100-139 were never seen during training or validation.
-  const holdout = benchVsRule(champ, 20, 100);
-  console.log(`Holdout bench     (40 games, seeds 100-119): policy ${holdout.pol} — rule ${holdout.rule}  (${(100*holdout.pol/holdout.total).toFixed(0)}% policy)`);
-
-  const rep = policyReplay(champ);
-  for (const r of rep) console.log(`  replay ${r.name}: ${r.win ? 'PASS' : 'FAIL'} (tick ${r.ticks})`);
-
-  console.log('\nTrained brain (macro + military weights):');
-  console.log(JSON.stringify(champ, null, 2));
-  console.log('\n(prototype only — nothing patched; rule bot remains the live AI)');
-  process.exit(0);
-}
-
-// ── Evolution (skipped with --replay-only) ────────────────────────────────────
-let champ = { ...DEFAULT_CFG };
-
-if (!REPLAY_ONLY) {
-  const hof = [{ ...DEFAULT_CFG }];
-  console.log(`Evolving BOT_CONFIG_DEFAULT: ${GENERATIONS} gens × ${POPULATION} mutations × ${GAMES_PER_MATCH*2} games/match × HoF ${HOF_SIZE}`);
-  console.log(`Replay files: ${replays.length}   Patch back: ${PATCH_BACK}   Force patch: ${FORCE_PATCH}`);
-
-  for (let gen = 1; gen <= GENERATIONS; gen++) {
-    const baseFit = evaluate(champ, hof);
-    const cands = Array.from({ length: POPULATION }, () => mutate(champ));
-    let best = null, bestFit = -1;
-    for (const cand of cands) {
-      const fit = evaluate(cand, hof);
-      if (fit > bestFit) { bestFit = fit; best = cand; }
-    }
-    if (bestFit > baseFit) {
-      champ = best;
-      hof.push({ ...champ });
-      if (hof.length > HOF_SIZE) hof.shift();
-    }
-    if (VERBOSE || gen % 5 === 0)
-      console.log(`Gen ${gen}: fit=${bestFit.toFixed(3)} (base ${baseFit.toFixed(3)})`);
+  if (bestFit > baseFit) {
+    champ = best;
+    hof.push(cloneBrain(champ));
+    if (hof.length > HOF_SIZE) hof.shift();
   }
-
-  console.log('\nFinal config:');
-  console.log(JSON.stringify(champ, null, 2));
-} else {
-  console.log(`--replay-only: testing current BOT_CONFIG_DEFAULT against ${replays.length} replay(s)`);
+  const cScore = valScore(champ);
+  if (cScore > eliteScore) { eliteScore = cScore; elite = cloneBrain(champ); }
+  if (VERBOSE || gen % 5 === 0)
+    console.log(`Gen ${gen}: selfplay-fit=${bestFit.toFixed(3)}  vs-default=${cScore}/${VAL_SEEDS * 2}  σ=${sigma.toFixed(3)}  (elite ${eliteScore})`);
 }
 
-// ── Replay validation ─────────────────────────────────────────────────────────
-const replayPass = validateReplays(champ, replays);
+champ = elite;
+console.log('\n── Results ───────────────────────────────────────────────');
+const final = benchVsDefault(champ, 20);
+console.log(`Trained vs current live (40 games, seeds 0-19): trained ${final.pol} — live ${final.def}  (${(100*final.pol/final.total).toFixed(0)}% trained)`);
+const holdout = benchVsDefault(champ, 20, 100);
+console.log(`Holdout bench      (40 games, seeds 100-119):   trained ${holdout.pol} — live ${holdout.def}  (${(100*holdout.pol/holdout.total).toFixed(0)}% trained)`);
 
-// ── Patch config back into startext.html ──────────────────────────────────────
-function buildBlock(cfg) {
-  const entries = Object.entries(cfg)
-    .map(([k, v]) => `  ${k}: ${Number.isInteger(v) ? v : v.toFixed(2)},`)
-    .join('\n');
-  return `const BOT_CONFIG_DEFAULT = {\n${entries}\n};`;
-}
+const rep = policyReplay(champ);
+for (const r of rep) console.log(`  replay ${r.name}: ${r.win ? 'PASS' : 'FAIL'} (tick ${r.ticks})`);
 
-if (PATCH_BACK && !REPLAY_ONLY) {
-  if (!replayPass && !FORCE_PATCH) {
-    console.log('\nChampion failed replay validation — config NOT patched.');
-    console.log('Fix the bot or use --force-patch to override.');
-  } else {
-    // Re-read HTML so replay-game calls above don't affect the in-memory `html` string.
-    const currentHtml = fs.readFileSync(HTML_PATH, 'utf8');
-    const re = /const BOT_CONFIG_DEFAULT = \{[\s\S]*?\};/;
-    const updated = currentHtml.replace(re, buildBlock(champ));
-    if (updated === currentHtml) {
-      console.error('WARNING: Could not find BOT_CONFIG_DEFAULT block to patch.');
-    } else {
-      fs.writeFileSync(HTML_PATH, updated, 'utf8');
-      console.log(`\nPatched BOT_CONFIG_DEFAULT — wrote ${path.basename(HTML_PATH)}`);
-    }
-  }
-}
+console.log('\nTrained brain (macro + military weights):');
+console.log(JSON.stringify(champ, null, 2));
+console.log('\nTo adopt: copy the weights above into MACRO_WEIGHTS_DEFAULT / MILITARY_WEIGHTS_DEFAULT in startext.html.');
