@@ -1233,21 +1233,22 @@ function fallbackCopy(text, cb) {
 }
 
 function copyReplayLog() {
-  try {
-    const btn = document.getElementById("end-copy");
-    const text = formatReplayLog();
-    const onCopied = () => {
-      btn.textContent = "Copied!";
-      setTimeout(() => { btn.textContent = "Copy replay log"; }, 1500);
-    };
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(text).then(onCopied).catch(() => fallbackCopy(text, onCopied));
-    } else {
-      fallbackCopy(text, onCopied);
-    }
-  } catch (e) {
-    alert("Replay log error: " + e.message);
-  }
+  const btn = document.getElementById("end-copy");
+  const text = formatReplayLog();
+  const onCopied = () => {
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = "Copy replay log"; }, 1500);
+  };
+  // navigator.clipboard.writeText can stall indefinitely in iframe contexts
+  // (promise never settles). Race it against a 400ms timeout and fall back
+  // to execCommand — the same fix as the Surrender confirm() issue.
+  if (!navigator.clipboard) { fallbackCopy(text, onCopied); return; }
+  let settled = false;
+  const doFallback = () => { if (!settled) { settled = true; fallbackCopy(text, onCopied); } };
+  setTimeout(doFallback, 400);
+  navigator.clipboard.writeText(text)
+    .then(() => { settled = true; onCopied(); })
+    .catch(doFallback);
 }
 
 // Concede the match. Ends immediately as a loss (with a confirm so a stray tap
