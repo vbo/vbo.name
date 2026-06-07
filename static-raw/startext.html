@@ -457,12 +457,14 @@ const MACRO_WEIGHTS_DEFAULT = {
 
 // Trained military weights. reserve=0: all units committed to attack waves.
 // Primary signals: timer (attack when wave interval elapsed), waveFailed (backoff),
-// supplyPres (negative: supply saturated → wait for depots then attack bigger).
+// supplyPres (positive: supply-capped → use the army, don't wait for more).
 const MILITARY_WEIGHTS_DEFAULT = {
   reserve:     0,       launchBias: -0.9123,
-  relStr:      2.4485,  surplus:    -1.8416,  minArmy:     0.2928,
-  intel:       0.7952,  timer:       3.1868,  targetWeak:  0.7428,
-  waveFailed: -2.8235,  supplyPres: -5.2590,  firebatFrac: 0.9434,
+  relStr:      2.4485,  surplus:     1.0,     // large surplus → attack (was -1.8416)
+  minArmy:     0.2928,  intel:       0.7952,
+  timer:       3.1868,  targetWeak:  0.7428,
+  waveFailed: -1.5,     supplyPres:  2.5,     // supply-capped → use the army (was -5.259)
+  firebatFrac: 0.9434,
 };
 
 // Tech upgrades researched at the Academy.
@@ -1805,7 +1807,9 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
         firebatFrac: cl(firebatsTotal / Math.max(1, allStrike), 0, 1),
       };
       let milScore = 0; for (const k in f) milScore += (milW[k] || 0) * f[k];
-      const launch = milScore > 0 && surplus >= 1; // never launch with no surplus
+      // Safety valve: if a large army sits idle for 5+ wave intervals, force the attack.
+      const stalledArmy = allStrike > 30 && (state.time - ai.lastWave) > 5 * ai.waveInterval;
+      const launch = (milScore > 0 || stalledArmy) && surplus >= 1;
 
       if (launch) {
         launched = true;
@@ -1824,7 +1828,9 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
         ai.attackTarget = dest;
         ai.lastWave = state.time;
       } else if (!intelFresh && !scoutOut && allStrike > reserve) {
-        sendUnits(owner, home, 1, "marine", target); // scout
+        // Scout: prefer a home marine, fall back to the forward node.
+        if (homeMarines.length > 0) sendUnits(owner, home, 1, "marine", target);
+        else if (fwdMarines.length > 0) sendUnits(owner, fwd, 1, "marine", target);
       }
     }
 

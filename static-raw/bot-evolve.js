@@ -53,8 +53,10 @@ if (!resetState || !tick) { console.error('Game globals not found — check scri
 
 const DEFAULT_CFG = { ...ctx.BOT_CONFIG };
 
-// Reward: winning faster is worth more; losing is 0.
-const reward = (win, ticks) => win ? Math.max(0.1, 1 - ticks / 1500) : 0;
+// Reward: winning faster earns more; a draw (army-count tiebreak at time limit) or
+// loss both give negative reward. This strongly selects for aggressive play — hoarding
+// a large army without attacking is penalised the same as losing.
+const reward = (win, ticks) => win ? Math.max(0, 1 - ticks / 1200) : -0.15;
 
 // ── Replay system ─────────────────────────────────────────────────────────────
 const REPLAY_DIR = path.join(__dirname, 'replays');
@@ -184,7 +186,7 @@ function runReplayGame(botCfg, replay) {
   let actionIdx = 0;
   let handedOff = false;
 
-  for (let t = 0; t < 1500; t++) {
+  for (let t = 0; t < 1200; t++) {
     if (!handedOff && actionIdx >= replay.actions.length && pending.length === 0) {
       Object.assign(ctx.HUMAN_CONFIG, DEFAULT_CFG);
       ctx.ENABLE_HUMAN_BOT = true;
@@ -215,7 +217,7 @@ function runReplayGame(botCfg, replay) {
   const s = ctx.state;
   const ba = s.units.filter(u => u.owner === 'bot'   && (u.type === 'marine' || u.type === 'firebat')).length;
   const ha = s.units.filter(u => u.owner === 'human' && (u.type === 'marine' || u.type === 'firebat')).length;
-  return { win: ba >= ha ? 1 : 0, ticks: 1500 };
+  return { win: ba >= ha ? 1 : 0, ticks: 1200 };
 }
 
 function loadReplays() {
@@ -289,7 +291,7 @@ function runBrainGame(botBrain, humanBrain, seed) {
   Object.assign(ctx.HUMAN_CONFIG, DEFAULT_CFG);
   applyBrain(ctx.BOT_CONFIG,   botBrain);
   applyBrain(ctx.HUMAN_CONFIG, humanBrain);
-  for (let t = 0; t < 1500; t++) {
+  for (let t = 0; t < 1200; t++) {
     tick();
     const s = ctx.state;
     const bCC = s.buildings.some(b => b.owner === 'bot'   && b.type === 'cc' && !b.construct);
@@ -299,7 +301,7 @@ function runBrainGame(botBrain, humanBrain, seed) {
   const s = ctx.state;
   const ba = s.units.filter(u => u.owner === 'bot'   && (u.type === 'marine' || u.type === 'firebat')).length;
   const ha = s.units.filter(u => u.owner === 'human' && (u.type === 'marine' || u.type === 'firebat')).length;
-  return { win: ba >= ha ? 1 : 0, ticks: 1500 };
+  return { win: ba >= ha ? 1 : 0, ticks: 1200 };
 }
 
 // Fitness via self-play + HoF. null opponent = current live weights (anchor).
