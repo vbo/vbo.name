@@ -1423,6 +1423,27 @@ function unloadBunker(owner, bunkerId) {
   bunker.loaded = [];
 }
 
+function loadBunkerType(owner, node, type, count) {
+  const bunkers = state.buildings.filter(b =>
+    b.owner === owner && b.node === node && b.type === "bunker" && !b.construct);
+  let remaining = count;
+  for (const bunker of bunkers) {
+    if (remaining <= 0) break;
+    const free = Math.min(C.bunker.capacity - bunker.loaded.length, remaining);
+    if (free <= 0) continue;
+    const avail = state.units
+      .filter(u => u.owner === owner && u.node === node && u.task === "idle" &&
+        u.type === type && !u.transit)
+      .slice(0, free);
+    for (const u of avail) {
+      u.task = "bunker";
+      u.buildingId = bunker.id;
+      bunker.loaded.push(u.id);
+      remaining--;
+    }
+  }
+}
+
 function sendUnits(owner, node, n, unitType = "scv", dest, mode = "move") {
   let pool;
   if (unitType === "marine")  pool = idleMarines(owner, node);
@@ -2847,6 +2868,11 @@ function renderSheet() {
     sel.mode = sel.mode || "attack";
     const n = sel.n;
     const mAtk = sel.mode === "attack";
+    const marBunkers = state.buildings.filter(b =>
+      b.owner === HUMAN && b.node === node && b.type === "bunker" && !b.construct &&
+      b.loaded.length < C.bunker.capacity);
+    const marBunkerSlots = marBunkers.reduce((s, b) => s + C.bunker.capacity - b.loaded.length, 0);
+    const canMarBunker = marBunkers.length > 0 && pool.length > 0;
     // Group passing-through units by final destination.
     const byDest = {};
     for (const u of passing) (byDest[u.transit.to] = byDest[u.transit.to] || []).push(u);
@@ -2875,7 +2901,8 @@ function renderSheet() {
         <button id="mode-move" class="${!mAtk ? "sel" : ""}">📦 Move</button>
         <button id="mode-attack" class="${mAtk ? "sel" : ""}">⚔️ Move &amp; Attack</button>
       </div>
-      ${destButtonsHtml(node, n, pool.length)}` : ""}
+      ${destButtonsHtml(node, n, pool.length)}
+      ${canMarBunker ? `<button class="act secondary" id="a-bunker-load">🛡 Load into bunker <span class="cost">— ${Math.min(n, marBunkerSlots)} enter · ${marBunkerSlots} slot${marBunkerSlots !== 1 ? "s" : ""} free</span></button>` : ""}` : ""}
       <button class="act-close" id="a-close">Close</button>`;
     if (pool.length) {
       const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
@@ -2885,6 +2912,7 @@ function renderSheet() {
       bind("mode-move",   () => { sel.mode = "move";   renderSheet(); });
       bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
       bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "marine", dest, sel.mode); closeSheet(); render(); });
+      if (canMarBunker) bind("a-bunker-load", () => { loadBunkerType(HUMAN, node, "marine", n); closeSheet(); render(); });
     }
 
   } else if (sel.kind === "firebat") {
@@ -2897,6 +2925,11 @@ function renderSheet() {
     sel.mode = sel.mode || "attack";
     const n = sel.n;
     const mAtk = sel.mode === "attack";
+    const fbBunkers = state.buildings.filter(b =>
+      b.owner === HUMAN && b.node === node && b.type === "bunker" && !b.construct &&
+      b.loaded.length < C.bunker.capacity);
+    const fbBunkerSlots = fbBunkers.reduce((s, b) => s + C.bunker.capacity - b.loaded.length, 0);
+    const canFbBunker = fbBunkers.length > 0 && pool.length > 0;
     const byDest2 = {};
     for (const u of passing) (byDest2[u.transit.to] = byDest2[u.transit.to] || []).push(u);
     const passingHtml2 = Object.entries(byDest2).map(([to, grp]) =>
@@ -2924,7 +2957,8 @@ function renderSheet() {
         <button id="mode-move" class="${!mAtk ? "sel" : ""}">📦 Move</button>
         <button id="mode-attack" class="${mAtk ? "sel" : ""}">⚔️ Move &amp; Attack</button>
       </div>
-      ${destButtonsHtml(node, n, pool.length)}` : ""}
+      ${destButtonsHtml(node, n, pool.length)}
+      ${canFbBunker ? `<button class="act secondary" id="a-bunker-load">🛡 Load into bunker <span class="cost">— ${Math.min(n, fbBunkerSlots)} enter · ${fbBunkerSlots} slot${fbBunkerSlots !== 1 ? "s" : ""} free</span></button>` : ""}` : ""}
       <button class="act-close" id="a-close">Close</button>`;
     if (pool.length) {
       const setN2 = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
@@ -2934,6 +2968,7 @@ function renderSheet() {
       bind("mode-move",   () => { sel.mode = "move";   renderSheet(); });
       bind("mode-attack", () => { sel.mode = "attack"; renderSheet(); });
       bindDestButtons(node, dest => { sendUnits(HUMAN, node, sel.n, "firebat", dest, sel.mode); closeSheet(); render(); });
+      if (canFbBunker) bind("a-bunker-load", () => { loadBunkerType(HUMAN, node, "firebat", n); closeSheet(); render(); });
     }
 
   } else if (sel.kind === "academy") {
@@ -3002,24 +3037,16 @@ function renderSheet() {
     const node = sel.node;
     const loaded = b.loaded || [];
     const loadedUnits = loaded.map(id => state.units.find(u => u.id === id)).filter(Boolean);
-    const avail = state.units.filter(u =>
-      u.owner === HUMAN && u.node === node && u.task === "idle" &&
-      (u.type === "marine" || u.type === "firebat" || u.type === "scv")).length;
-    const full = loaded.length >= C.bunker.capacity;
     sheet.innerHTML = `
       <h2>Bunker</h2>
       <div class="sheet-sub">${nodeName(node)} · ${loaded.length}/${C.bunker.capacity} loaded · HP ${Math.ceil(b.hp)}/${b.maxHp}</div>
       ${hpBar(b.hp, b.maxHp)}
       ${loadedUnits.length ? `<div class="sheet-sub" style="margin-top:8px">Inside: ${loadedUnits.map(u => `${u.type} HP ${Math.ceil(u.hp)}/${u.maxHp}`).join(", ")}</div>` : ""}
-      <button class="act" ${full || !avail ? "disabled" : ""} id="a-load">
-        Load infantry <span class="cost">— fills from ${avail} idle here</span>
-      </button>
       <button class="act secondary" ${!loaded.length ? "disabled" : ""} id="a-unload">
         Unload all <span class="cost">— ${loaded.length} ejected</span>
       </button>
       <button class="act-close" id="a-close">Close</button>`;
-    bind("a-load",   () => { loadBunker(HUMAN, node, b.id);  refreshSheet(); });
-    bind("a-unload", () => { unloadBunker(HUMAN, b.id);      refreshSheet(); });
+    bind("a-unload", () => { unloadBunker(HUMAN, b.id); refreshSheet(); });
 
   } else {
     // SCV group sheet — split into Move / Build / Mine submenus to avoid clutter.
@@ -3088,6 +3115,12 @@ function renderSheet() {
       fn: () => { startBuilding(HUMAN, node, "bunker"); refreshSheet(); } });
     if (engBayOK) buildActs.push({ id: "a-bf6", html: `🏗 Build Engineering Bay <span class="cost">— ${C.engBay.cost} 💎 · ${C.engBay.build}s · weapon &amp; armor upgrades</span>`,
       fn: () => { startBuilding(HUMAN, node, "engBay"); refreshSheet(); } });
+
+    const scvBunkers = state.buildings.filter(b =>
+      b.owner === HUMAN && b.node === node && b.type === "bunker" && !b.construct &&
+      b.loaded.length < C.bunker.capacity);
+    const scvBunkerSlots = scvBunkers.reduce((s, b) => s + C.bunker.capacity - b.loaded.length, 0);
+    const scvBunkerOK = scvBunkers.length > 0 && idleN > 0;
 
     if (tab === "move") {
       sel.mode = sel.mode || "move"; // SCVs default to move mode
@@ -3162,6 +3195,7 @@ function renderSheet() {
         ${mineActs.length > 1
           ? `<button class="act secondary" id="m-mine">⛏ Mine & Gas <span class="cost">— assign workers to resources</span></button>`
           : flat(mineActs)}
+        ${scvBunkerOK ? `<button class="act secondary" id="a-scv-bunker">🛡 Load into bunker <span class="cost">— up to ${Math.min(idleN, scvBunkerSlots)} idle SCV${Math.min(idleN, scvBunkerSlots) !== 1 ? "s" : ""} · ${scvBunkerSlots} slot${scvBunkerSlots !== 1 ? "s" : ""} free</span></button>` : ""}
         <button class="act-close" id="a-close">Close</button>`;
     }
     sheet.innerHTML = `<h2>${title}</h2>${summary}${body}`;
@@ -3172,7 +3206,10 @@ function renderSheet() {
     bind("m-mine",  () => setTab("mine"));
     bind("a-back",  () => setTab(null));
     // Root-level flat shortcuts when a submenu would have only one option.
-    if (tab === "root") [...mineActs, ...buildActs].forEach(a => bind(a.id, a.fn));
+    if (tab === "root") {
+      [...mineActs, ...buildActs].forEach(a => bind(a.id, a.fn));
+      if (scvBunkerOK) bind("a-scv-bunker", () => { loadBunkerType(HUMAN, node, "scv", idleN); refreshSheet(); });
+    }
 
     if (tab === "move") {
       const setN = v => { sel.n = Math.min(Math.max(1, v), max); renderSheet(); };
