@@ -56,43 +56,34 @@ Git's `--reapply-cherry-picks` detection automatically drops commits whose conte
   Prints `N passed, M failed` and exits non-zero on failure (~70ms). In a browser, open `startext.html?test` for the same report instead of the game.
 - **Add an assert in `runTests()` whenever you add behaviour.** Each test does `resetState(seed)` then drives `tick()`; helpers (`ok`/`eq`/`near`/`run`) are defined at the top of the function. Combat auto-targets *threats* (idle units) first, so isolate buildings/units in setup when testing a specific interaction.
 
-### Bot AI: rule bot vs. generic policy (prototype)
+### Bot AI: learned linear policy (live)
 
-There are two AI brains for the macro (build/train/research) decisions; the
-military, expansion and SCV-task logic are shared.
+The bot uses two jointly-trained linear policies for all macro and military
+decisions. Expansion, SCV tasking, and target selection use fixed shared rules.
 
-- **Rule bot (live default).** Hand-written `if`-per-action utility scoring in
-  `evalSide`, weights in `BOT_CONFIG_DEFAULT`. Tuned by the genetic optimizer
-  `bot-evolve.js` (self-play + Hall of Fame), gated by the replay acceptance
-  tests in `replays/*.txt` before it patches `BOT_CONFIG_DEFAULT` back in.
-- **Generic policy (prototype, off by default).** Two learned linear policies,
-  trained jointly:
-  - **Macro** (`macroPolicyBuild` / `MACRO_WEIGHTS`): enumerates every
-    currently-legal build/train/research action from `MACRO_ACTIONS` / `C` /
-    `UPGRADES` and scores each over 27 generic features. Adding a building/unit/
-    upgrade enters the action space just by appearing in the data tables.
-    Feature groups: action type (isUnit/isCombat/isProd/…), cost/gas pressure,
-    army balance (deficit/surplus/scvFrac), tech progress (gameFrac, gasFloat),
-    expansion level (ccFrac), supply pressure, situational flags.
-  - **Military** (`MILITARY_WEIGHTS`): the army's attack-vs-hold launch decision
-    and home-reserve size come from a learned score over 11 combat features
-    (relative strength, surplus, timer, target weakness, fresh intel,
-    recent-wave-failed, supply saturation, composition). Target selection,
-    staging, defense and mop-up stay shared rules.
+- **Macro** (`macroPolicyBuild` / `MACRO_WEIGHTS_DEFAULT`): scores every legal
+  build/train/research action over 27 generic features. Adding a building/unit/
+  upgrade enters the action space just by appearing in the data tables.
+  Feature groups: action type (isUnit/isCombat/isProd/…), cost/gas pressure,
+  army balance (deficit/surplus/scvFrac), tech progress (gameFrac, gasFloat),
+  expansion level (ccFrac), supply pressure, situational flags.
+- **Military** (`MILITARY_WEIGHTS_DEFAULT`): the army's attack-vs-hold launch
+  decision and home-reserve size come from a learned score over 11 combat
+  features (relative strength, surplus, timer, target weakness, fresh intel,
+  recent-wave-failed, supply saturation, composition). Target selection,
+  staging, defense and mop-up stay shared rules.
 
-  The goal is to stop the rule logic from growing per unit. Enabled per-side via
-  `cfg.useMacroPolicy` / `cfg.useMilitaryPolicy` (+ `cfg.macroWeights` /
-  `cfg.militaryWeights`) so a policy bot can play a rule bot in one game, or
-  globally via the `USE_MACRO_POLICY` / `USE_MILITARY_POLICY` flags.
-- **Benchmark the policy** (trains it, then measures head-to-head vs the rule bot
-  and against the replay gate — patches nothing):
+Per-game weight overrides via `cfg.macroWeights` / `cfg.militaryWeights`; null
+falls back to `MACRO_WEIGHTS_DEFAULT` / `MILITARY_WEIGHTS_DEFAULT`.
 
-  ```
-  cd static-raw
-  node bot-evolve.js --policy --gen 12 --pop 8 --games 3 --hof 2
-  ```
+**To retrain** (self-play + Hall of Fame, outputs new weights but patches nothing):
 
-  This is the "prototype + compare" path: adopt the policy only if it
-  *measurably* matches/beats the rule bot on self-play **and** the replays.
-  Training uses sigma annealing (0.22 → 0.06) and 24-seed validation selection
-  to reduce noise in champion selection.
+```
+cd static-raw
+node bot-evolve.js --gen 30 --pop 12 --games 8 --hof 3
+```
+
+Training uses sigma annealing (0.22 → 0.06) and 24-seed validation selection.
+If the trained weights beat the current live weights on the holdout bench,
+copy them into `MACRO_WEIGHTS_DEFAULT` / `MILITARY_WEIGHTS_DEFAULT` in
+`startext.html` and run the tests to confirm.
