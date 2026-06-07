@@ -1262,7 +1262,6 @@ function copyReplayLog() {
 // doesn't throw the game).
 function surrender() {
   if (state.over) return;
-  if (typeof confirm === "function" && !confirm("Surrender this game?")) return;
   endGame("loss", "surrender");
 }
 
