@@ -443,25 +443,25 @@ let ENABLE_HUMAN_BOT = false;
 // Trained weights (30 gen × 12 pop self-play evolution; 91% holdout vs prior rule bot).
 // Retrain with: node bot-evolve.js --gen 30 --pop 12 --games 8 --hof 3
 const MACRO_WEIGHTS_DEFAULT = {
-  bias:              3.1007, isUnit:     3.9512, isCombat:  -2.0465, firebat:   -1.9957,
-  isProd:            5.7915, isTechB:    1.3597, isResearch:  5.7529,
-  isSupply:         -4.7910, isGas:      3.7969, isDefense:   0.1635,
-  costFrac:          3.3356, gasBlocked: 0.6504, haveCount:   0.3562, unlocksNew: 1.3248,
-  supplyPress_supply: 5.1054,
-  float_unit: -0.9498, deficit_unit: -0.6787,
-  surplus_research: 1.9475, surplus_techB: 4.8122,
-  gasFloat_research: 2.3338, needGas_gas: 3.1142,
-  firstRax_prod: 5.4624, threat_defense: 2.2910,
-  scvFrac_worker: 0.6284, scvFrac_combat: 3.3682, ccFrac_prod: 1.9525, gameFrac_tech: 5.6483,
+  bias:             -0.8739, isUnit:     2.1533, isCombat:   1.5376, firebat:    4.1395,
+  isProd:            4.2802, isTechB:    2.7555, isResearch:  5.2269,
+  isSupply:         -2.2706, isGas:      3.4015, isDefense:  -3.5967,
+  costFrac:          1.3422, gasBlocked: 5.2532, haveCount:   0.2226, unlocksNew: 1.8919,
+  supplyPress_supply: 5.5512,
+  float_unit: 3.4030, deficit_unit: 2.4234,
+  surplus_research: -0.3669, surplus_techB: 0.2515,
+  gasFloat_research: 4.8993, needGas_gas: 6,
+  firstRax_prod: 4.6685, threat_defense: -0.2630,
+  scvFrac_worker: -1.5181, scvFrac_combat: 4.3578, ccFrac_prod: 2.1832, gameFrac_tech: 2.7610,
 };
 
-// Trained military weights. reserve=0: all units committed to attack waves.
-// Primary signals: timer (attack when wave interval elapsed), waveFailed (backoff).
+// Trained military weights. reserve=17 gates launch until 18+ unit army exists;
+// timer is the dominant attack signal once the wave interval has elapsed.
 const MILITARY_WEIGHTS_DEFAULT = {
-  reserve:     0,       launchBias: -0.9123,
-  relStr:      2.4485,  surplus:    -1.8416,  minArmy:     0.2928,
-  intel:       0.7952,  timer:       3.1868,  targetWeak:  0.7428,
-  waveFailed: -2.8235,  supplyPres: -5.2590,  firebatFrac: 0.9434,
+  reserve:    16.7441,  launchBias: -0.9827,
+  relStr:      2.4630,  surplus:     1.4955,  minArmy:    -3.6175,
+  intel:      -0.5591,  timer:       5.0921,  targetWeak: -3.3707,
+  waveFailed: -2.9070,  supplyPres: -3.5287,  firebatFrac: 4.9600,
 };
 
 // Tech upgrades researched at the Academy.
