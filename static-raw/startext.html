@@ -434,29 +434,14 @@ let HUMAN_CONFIG = { ...BOT_CONFIG_DEFAULT };
 // Set to true in the evolutionary script so tick() also drives the human side.
 let ENABLE_HUMAN_BOT = false;
 
-// ── Generic macro policy (PROTOTYPE) ─────────────────────────────────────────
-// Generic build/train/research decision engine. Enumerates every currently-legal
-// action and scores it with a learned linear policy (MACRO_WEIGHTS_DEFAULT) over
-// 27 generic features. The military attack/hold decision uses MILITARY_WEIGHTS_DEFAULT
-// (11 features). Adding a unit/building/upgrade enters the action space just by
-// appearing in the data tables below — no new decision branches required.
-const MACRO_ACTIONS = {
-  depot:    { kind: "building", role: "supply" },
-  refinery: { kind: "building", role: "gas" },
-  barracks: { kind: "building", role: "production" },
-  academy:  { kind: "building", role: "tech" },
-  engBay:   { kind: "building", role: "tech" },
-  bunker:   { kind: "building", role: "defense" },
-  scv:      { kind: "unit" },
-  marine:   { kind: "unit" },
-  firebat:  { kind: "unit" },
-  u238:       { kind: "research" },
-  infWeapons: { kind: "research", leveled: 3 },
-  infArmor:   { kind: "research", leveled: 3 },
-};
+// ── Generic macro policy ─────────────────────────────────────────────────────
+// The bot's build/train/research brain. `macroPolicyBuild` scores every
+// currently-legal action with a learned linear policy (MACRO_WEIGHTS_DEFAULT)
+// over 27 generic features; the military attack/hold decision uses
+// MILITARY_WEIGHTS_DEFAULT (11 features). See macroPolicyBuild for the action list.
 
 // Trained weights (30 gen × 12 pop self-play evolution; 91% holdout vs prior rule bot).
-// Retrain with: node bot-evolve.js --policy --gen 30 --pop 12 --games 8 --hof 3
+// Retrain with: node bot-evolve.js --gen 30 --pop 12 --games 8 --hof 3
 const MACRO_WEIGHTS_DEFAULT = {
   bias:              3.1007, isUnit:     3.9512, isCombat:  -2.0465, firebat:   -1.9957,
   isProd:            5.7915, isTechB:    1.3597, isResearch:  5.7529,
@@ -873,9 +858,10 @@ function fogStep() {
     const foes = state.units.filter(u => u.owner === BOT && u.node === node);
     state.seenUnits[node] = {
       time: state.time,
-      marines: foes.filter(u => u.type === "marine").length,
-      scvs:    foes.filter(u => u.type === "scv" && u.task !== "gas").length,
-      gasScvs: foes.filter(u => u.type === "scv" && u.task === "gas").length,
+      marines:  foes.filter(u => u.type === "marine").length,
+      firebats: foes.filter(u => u.type === "firebat").length,
+      scvs:     foes.filter(u => u.type === "scv" && u.task !== "gas").length,
+      gasScvs:  foes.filter(u => u.type === "scv" && u.task === "gas").length,
     };
   }
 }
@@ -1500,10 +1486,10 @@ function sendFirebats(owner, node, dest, mode) {
   if (n > 0) sendUnits(owner, node, n, "firebat", dest, mode);
 }
 
-// Live macro decision layer. Enumerates every currently-legal build/train/research
-// action, scores each with a learned linear policy (MACRO_WEIGHTS_DEFAULT, or the
-// per-side override cfg.macroWeights during training). P is a situational snapshot;
-// W is the weight vector. New units/buildings enter the action space automatically.
+// Live macro decision layer. Scores every currently-legal build/train/research
+// action with a learned linear policy (MACRO_WEIGHTS_DEFAULT, or the per-side
+// override cfg.macroWeights during training). P is a situational snapshot; W is
+// the weight vector. Each action is one `add(dot({features}), exec)` call below.
 function macroPolicyBuild(add, P, W) {
   W = W || MACRO_WEIGHTS_DEFAULT;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -2220,16 +2206,17 @@ function renderNode(node) {
 // since units move and stale counts mislead) and actually counting something.
 function seenUnitsFresh(snap) {
   if (!snap || state.time - snap.time > SEEN_UNITS_TTL) return false;
-  return !!(snap.marines || snap.scvs || snap.gasScvs);
+  return !!(snap.marines || snap.firebats || snap.scvs || snap.gasScvs);
 }
 
-// Render a fading last-seen enemy unit count (marines/SCVs). Returns true if shown.
+// Render a fading last-seen enemy unit count (marines/firebats/SCVs). Returns true if shown.
 function appendSeenUnits(container, snap) {
   if (!seenUnitsFresh(snap)) return false;
   const age = state.time - snap.time;
   const totalScvs = (snap.scvs || 0) + (snap.gasScvs || 0);
   const rows = [
     snap.marines && ["marine", `Marines — ~${snap.marines}`],
+    snap.firebats && ["firebat", `Firebats — ~${snap.firebats}`],
     totalScvs && ["scv", `SCVs — ~${totalScvs}`],
   ].filter(Boolean);
   for (const [icon, name] of rows) {
@@ -3926,11 +3913,13 @@ function runTests() {
     "fog: enemy unit counts captured on sight, then expire after TTL"() {
       resetState(1);
       eq(state.seenUnits[AWAY], null, "no unit intel before scouting");
-      // bot has some marines at home; scout them
+      // bot has marines AND firebats at home; scout them
       for (let i = 0; i < 7; i++) { const m = newMarine(BOT, AWAY); m.task = "idle"; }
+      for (let i = 0; i < 3; i++) { const f = newFirebat(BOT, AWAY); f.task = "idle"; }
       const scout = newSCV(HUMAN, AWAY); scout.task = "idle";
       fogStep();
       ok(state.seenUnits[AWAY] && state.seenUnits[AWAY].marines === 7, "marine count captured");
+      eq(state.seenUnits[AWAY].firebats, 3, "firebat count captured");
       // scout leaves; intel lingers briefly then expires
       scout.node = -1; scout.task = "moving"; scout.transit = { to: HOME, progress: 0 };
       const seenAt = state.seenUnits[AWAY].time;
@@ -3941,9 +3930,10 @@ function runTests() {
     "fog: seenUnitsFresh gates the 'last seen' header"() {
       resetState(1);
       ok(!seenUnitsFresh(null), "no snapshot → nothing to show");
-      ok(!seenUnitsFresh({ time: state.time, marines: 0, scvs: 0, gasScvs: 0 }),
+      ok(!seenUnitsFresh({ time: state.time, marines: 0, firebats: 0, scvs: 0, gasScvs: 0 }),
          "scouted but empty → nothing to show (no lone header)");
       ok(seenUnitsFresh({ time: state.time, marines: 3 }), "fresh sighting with units → show");
+      ok(seenUnitsFresh({ time: state.time, firebats: 2 }), "fresh firebat-only sighting → show");
       ok(!seenUnitsFresh({ time: state.time - SEEN_UNITS_TTL - 1, marines: 3 }),
          "stale sighting → drop");
     },
