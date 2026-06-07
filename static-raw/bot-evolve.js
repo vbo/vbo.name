@@ -304,12 +304,24 @@ function runBrainGame(botBrain, humanBrain, seed) {
   return { win: ba >= ha ? 1 : 0, ticks: 1200 };
 }
 
+// Fixed training seeds: spread across the first 60 seeds so the policy is evaluated
+// on a diverse set of maps regardless of --games value. Seeds are shuffled to avoid
+// the optimizer exploiting ordering artifacts.
+function trainingSeeds(games) {
+  // Pick `games` seeds spread evenly across [0, 60), with a fixed permutation.
+  const stride = Math.max(1, Math.floor(60 / games));
+  const out = [];
+  for (let i = 0; i < games; i++) out.push((i * stride + 7) % 60);
+  return out;
+}
+
 // Fitness via self-play + HoF. null opponent = current live weights (anchor).
 function evaluatePolicy(brain, hof, games) {
   let total = 0, count = 0;
   const opps = hof.concat([null]);
+  const seeds = trainingSeeds(games);
   for (const opp of opps) {
-    for (let g = 0; g < games; g++) {
+    for (const g of seeds) {
       const r1 = runBrainGame(brain, opp, g); total += reward(r1.win, r1.ticks);
       const r2 = runBrainGame(opp, brain, g); total += reward(1 - r2.win, r2.ticks);
       count += 2;

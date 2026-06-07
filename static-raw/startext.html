@@ -455,8 +455,7 @@ const MACRO_WEIGHTS_DEFAULT = {
   scvFrac_worker: 0.6284, scvFrac_combat: 3.3682, ccFrac_prod: 1.9525, gameFrac_tech: 5.6483,
 };
 
-// Trained military weights. reserve=0: all units committed to attack waves.
-// Primary signals: timer (attack when wave interval elapsed), waveFailed (backoff).
+// Trained military weights. Primary signals: timer, waveFailed.
 const MILITARY_WEIGHTS_DEFAULT = {
   reserve:     0,       launchBias: -0.9123,
   relStr:      2.4485,  surplus:    -1.8416,  minArmy:     0.2928,
