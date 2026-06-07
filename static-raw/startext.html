@@ -2443,39 +2443,43 @@ function appendForces(container, owner, node, interactive) {
     (b.construct ? container : tail).appendChild(row);
   }
 
-  // SCVs — grouped; show mining/gas utilisation to help the player saturate.
+  // SCVs — one row per task group so each group can be targeted independently.
   const scvs = unitsOf(owner, node, null, "scv");
   if (scvs.length) {
     any = true;
-    const miningN  = scvs.filter(u => u.task === "mining").length;
-    const gasN     = scvs.filter(u => u.task === "gas").length;
-    const idleN    = scvs.filter(u => u.task === "idle" && !u.transit).length;
-    const buildN   = scvs.filter(u => u.task === "building").length;
-    const transitN = scvs.filter(u => u.transit).length;
-    const parts = [];
-    if (miningN) {
-      if (interactive) {
-        const mineOpt = activePatchCount(state.field[node]) * 2;
-        const oversat = miningN > mineOpt;
-        parts.push(`${miningN}/${mineOpt} mining${oversat ? " ⚠" : ""}`);
-      } else {
-        parts.push(`${miningN} mining`);
-      }
+    const mineOpt = activePatchCount(state.field[node]) * 2;
+    const scvGroups = [
+      { label: "idle",     units: scvs.filter(u => u.task === "idle" && !u.transit), tab: null },
+      { label: "mining",   units: scvs.filter(u => u.task === "mining"),              tab: "mine" },
+      { label: "gas",      units: scvs.filter(u => u.task === "gas"),                 tab: "mine" },
+      { label: "building", units: scvs.filter(u => u.task === "building"),            isStatic: true },
+      { label: "passing",  units: scvs.filter(u => u.task === "idle" && u.transit),  isStatic: true },
+    ];
+    for (const g of scvGroups) {
+      if (!g.units.length) continue;
+      let meta;
+      if (g.label === "idle")     meta = "idle";
+      else if (g.label === "mining") {
+        const oversat = g.units.length > mineOpt;
+        meta = interactive
+          ? `mining · ${g.units.length}/${mineOpt}${oversat ? " ⚠" : ""}`
+          : "mining";
+      } else if (g.label === "gas") meta = `gas · ${g.units.length}/${GAS_OPT}`;
+      else if (g.label === "building") meta = "building";
+      else meta = "passing through";
+      const tappable = interactive && !g.isStatic;
+      const gHp  = g.units.reduce((s, u) => s + u.hp, 0);
+      const gMax = g.units.reduce((s, u) => s + u.maxHp, 0);
+      const row = document.createElement(tappable ? "button" : "div");
+      row.className = "row" + (tappable ? "" : " static");
+      row.innerHTML = `${svgIcon("scv")}<div class="body">
+          <div class="name">SCVs — ${g.units.length}</div>
+          <div class="meta">${meta}</div>
+          ${hpBar(gHp, gMax)}
+        </div>${tappable ? '<span class="chev">›</span>' : ""}`;
+      if (tappable) row.onclick = () => openSheet({ kind: "scv", node, n: 1, tab: g.tab });
+      container.appendChild(row);
     }
-    if (gasN)     parts.push(`${gasN} gas`);
-    if (idleN)    parts.push(`${idleN} idle`);
-    if (buildN)   parts.push(`${buildN} building`);
-    if (transitN) parts.push(`${transitN} → passing`);
-    const sHp = scvs.reduce((s, u) => s + u.hp, 0), sMax = scvs.reduce((s, u) => s + u.maxHp, 0);
-    const row = document.createElement(interactive ? "button" : "div");
-    row.className = "row" + (interactive ? "" : " static");
-    row.innerHTML = `${svgIcon("scv")}<div class="body">
-        <div class="name">SCVs — ${scvs.length}</div>
-        <div class="meta">${parts.join(", ") || "—"}</div>
-        ${hpBar(sHp, sMax)}
-      </div>${interactive ? '<span class="chev">›</span>' : ""}`;
-    if (interactive) row.onclick = () => openSheet({ kind: "scv", node, n: 1 });
-    container.appendChild(row);
   }
 
   // Marines — exclude bunker occupants (task="bunker"); moving ones have node=-1 so already absent.
