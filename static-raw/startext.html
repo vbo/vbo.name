@@ -4202,6 +4202,25 @@ function runTests() {
       eq(unitsOf(BOT, AWAY, "mining", "scv").length, 10 - need, `keeps a ${10 - need}-miner income core`);
       eq(unitsOf(BOT, AWAY, "idle", "scv").length, need, `pulls exactly the ${need}-SCV shortfall`);
     },
+    "bot re-attacks within 80 ticks of building large army after a failed wave"() {
+      // Regression: waveFailed + minArmy negative weights suppressed attacks for 130-160
+      // ticks even with 38+ unit armies. With seed=7, the bot sat on 39 units for 145
+      // ticks before attacking again. Assert the window is now < 80 ticks.
+      resetState(7);
+      let maxWait = 0, wfStart = -1;
+      for (let i = 0; i < 900 && !state.over; i++) {
+        tick();
+        const army = state.units.filter(u => u.owner === BOT &&
+          (u.type === "marine" || u.type === "firebat")).length;
+        if (state.bot.waveFailed && army >= 22) {
+          if (wfStart < 0) wfStart = state.time;
+        } else {
+          if (wfStart >= 0) { maxWait = Math.max(maxWait, state.time - wfStart); wfStart = -1; }
+        }
+      }
+      if (wfStart >= 0) maxWait = Math.max(maxWait, state.time - wfStart);
+      ok(maxWait < 80, `bot re-attacks within 80 ticks of surplus army post-wave-fail (was ${maxWait}t)`);
+    },
     "pause flag freezes simulation in the loop"() {
       resetState(1);
       state.paused = true;

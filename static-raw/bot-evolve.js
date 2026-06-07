@@ -53,10 +53,10 @@ if (!resetState || !tick) { console.error('Game globals not found — check scri
 
 const DEFAULT_CFG = { ...ctx.BOT_CONFIG };
 
-// Reward: winning faster earns more; a draw (army-count tiebreak at time limit) or
-// loss both give negative reward. This strongly selects for aggressive play — hoarding
-// a large army without attacking is penalised the same as losing.
-const reward = (win, ticks) => win ? Math.max(0, 1 - ticks / 1200) : -0.15;
+// Reward: winning faster earns more; losses get a heavy penalty (-0.5). The large
+// loss penalty breaks the passive-symmetric-play trap in self-play: a bot that sits
+// on a 35-unit army and loses gets -0.5, strongly incentivising decisive attacks.
+const reward = (win, ticks) => win ? Math.max(0, 1 - ticks / 1200) : -0.5;
 
 // ── Replay system ─────────────────────────────────────────────────────────────
 const REPLAY_DIR = path.join(__dirname, 'replays');
