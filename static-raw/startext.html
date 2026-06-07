@@ -945,6 +945,13 @@ function buildingStep() {
           scv.engaged = WARMED_ENGAGED; // born here — fights immediately if attacked
           if (b.rally === "mining" && state.field[b.node] > 0) scv.task = "mining";
           else if (b.rally === "gas" && refineryReady(b.owner, b.node)) scv.task = "gas";
+          else if (typeof b.rally === "number" && b.rally !== b.node) {
+            const path = bfsPathVisited(b.owner, b.node, b.rally, state.map.adj, state.map.n);
+            if (path && path.length > 1) {
+              scv.transit = { to: b.rally, path, pathIdx: 1, progress: 0, mode: "move", dwellStart: null };
+              scv.task = "moving"; scv.node = -1;
+            }
+          }
         } else {
           // marine or firebat — same spawn + rally logic
           const unit = unitType === "firebat" ? newFirebat(b.owner, b.node) : newMarine(b.owner, b.node);
@@ -1392,10 +1399,12 @@ function loadBunker(owner, node, bunkerId) {
   if (!bunker) return;
   const freeSlots = C.bunker.capacity - bunker.loaded.length;
   if (freeSlots <= 0) return;
-  const avail = state.units.filter(u =>
-    u.owner === owner && u.node === node && u.task === "idle" &&
-    (u.type === "marine" || u.type === "firebat") && !u.transit
-  ).slice(0, freeSlots);
+  // Marines and firebats fill slots first; SCVs take remaining space.
+  const avail = state.units
+    .filter(u => u.owner === owner && u.node === node && u.task === "idle" &&
+      (u.type === "marine" || u.type === "firebat" || u.type === "scv") && !u.transit)
+    .sort((a, b) => (a.type === "scv" ? 1 : 0) - (b.type === "scv" ? 1 : 0))
+    .slice(0, freeSlots);
   for (const u of avail) {
     u.task = "bunker";
     u.buildingId = bunkerId;
@@ -2735,7 +2744,9 @@ function renderSheet() {
     // Offer Gas only where a refinery stands (or it's already the active rally, so
     // a player whose refinery was destroyed can still see/change the setting).
     const gasHere = refineryReady(HUMAN, cc.node) || rally === "gas";
-    const rallySel = r => rally === r ? "sel" : "";
+    const isNodeRally = typeof rally === "number";
+    const rallySel = r => (!isNodeRally && rally === r) ? "sel" : "";
+    const nodeRallyLabel = isNodeRally ? `→ ${nodeName(rally)}` : "→ Move to…";
     sheet.innerHTML = `
       <h2>Command Center</h2>
       <div class="sheet-sub">${nodeName(sel.node)} · HP ${Math.ceil(cc.hp)}/${cc.maxHp} · Queue ${inQ}/${C.cc.queueMax}</div>
@@ -2749,11 +2760,15 @@ function renderSheet() {
         ${gasHere ? `<button id="a-rally-gas" class="${rallySel("gas")}">⚡ Gas</button>` : ""}
         <button id="a-rally-idle" class="${rallySel("idle")}">🛑 Idle</button>
       </div>
+      <button class="act secondary ${isNodeRally ? "sel" : ""}" id="a-rally-node">
+        ${nodeRallyLabel} <span class="cost">— send SCVs to another node</span>
+      </button>
       <button class="act-close" id="a-close">Close</button>`;
     bind("a-train", () => { queueSCV(HUMAN, cc.node); refreshSheet(); });
     bind("a-rally-mine", () => { cc.rally = "mining"; refreshSheet(); });
     bind("a-rally-gas",  () => { cc.rally = "gas";    refreshSheet(); });
     bind("a-rally-idle", () => { cc.rally = "idle";   refreshSheet(); });
+    bind("a-rally-node", () => openSheet({ kind: "cc-rally", node: cc.node, ref: cc.id }));
 
   } else if (sel.kind === "barracks" || sel.kind === "barracks-group") {
     const allRax = buildingsOf(HUMAN, sel.node).filter(b => b.type === "barracks" && !b.construct);
@@ -2807,6 +2822,20 @@ function renderSheet() {
       <button class="act-close" id="a-close">Close</button>`;
     bind("rally-home", () => setRally(null));
     for (const d of dests) bind(`rally-${d}`, () => setRally(d));
+
+  } else if (sel.kind === "cc-rally") {
+    const cc = state.buildings.find(b => b.id === sel.ref);
+    if (!cc) { closeSheet(); return; }
+    const dests = sendDests(sel.node);
+    const setRally = dest => { cc.rally = dest; openSheet({ kind: "cc", node: sel.node, ref: sel.ref }); };
+    sheet.innerHTML = `
+      <h2>Set SCV Rally Point</h2>
+      <div class="sheet-sub">New SCVs from ${nodeName(sel.node)} auto-move to the rally node</div>
+      <button class="act secondary" id="cc-rally-mine">⛏️ Mine here — no rally</button>
+      ${dests.map(d => `<button class="act secondary" id="cc-rally-${d}">→ ${nodeName(d)} <span class="cost">— ${hopDist(sel.node, d) * EDGE_TIME}s travel</span></button>`).join("")}
+      <button class="act-close" id="a-close">Close</button>`;
+    bind("cc-rally-mine", () => setRally("mining"));
+    for (const d of dests) bind(`cc-rally-${d}`, () => setRally(d));
 
   } else if (sel.kind === "marine") {
     const node = sel.node;
@@ -2975,7 +3004,7 @@ function renderSheet() {
     const loadedUnits = loaded.map(id => state.units.find(u => u.id === id)).filter(Boolean);
     const avail = state.units.filter(u =>
       u.owner === HUMAN && u.node === node && u.task === "idle" &&
-      (u.type === "marine" || u.type === "firebat")).length;
+      (u.type === "marine" || u.type === "firebat" || u.type === "scv")).length;
     const full = loaded.length >= C.bunker.capacity;
     sheet.innerHTML = `
       <h2>Bunker</h2>
@@ -4508,6 +4537,46 @@ function runTests() {
       // Marines shown in forces panel should exclude bunker occupants.
       const visibleMarines = unitsOf(HUMAN, HOME, null, "marine").filter(u => u.task !== "bunker");
       eq(visibleMarines.length, 0, "loaded marine not shown as idle in forces panel");
+    },
+
+    "SCV can load into a bunker"() {
+      resetState(1);
+      state.minerals[HUMAN] = 999;
+      startBuilding(HUMAN, HOME, "barracks");
+      run(C.barracks.build + 1);
+      startBuilding(HUMAN, HOME, "bunker");
+      run(C.bunker.build + 1);
+      const bunk = state.buildings.find(b => b.owner === HUMAN && b.type === "bunker");
+      ok(bunk && !bunk.construct, "bunker ready for SCV test");
+      // Remove marines so only SCVs are candidates, confirming SCVs can load.
+      state.units = state.units.filter(u => !(u.owner === HUMAN && u.type === "marine"));
+      state.units.filter(u => u.owner === HUMAN && u.type === "scv" && u.node === HOME)
+        .forEach(u => u.task = "idle");
+      ok(state.units.some(u => u.owner === HUMAN && u.type === "scv" && u.task === "idle"), "idle SCV available");
+      loadBunker(HUMAN, HOME, bunk.id);
+      const loaded = state.units.filter(u => u.owner === HUMAN && u.type === "scv" && u.task === "bunker");
+      ok(loaded.length >= 1, "SCV loaded into bunker");
+      eq(bunk.loaded.length, loaded.length, "bunker loaded list updated");
+    },
+
+    "CC node rally sends new SCVs to another node"() {
+      resetState(1);
+      // Find a visited non-home node reachable from HOME.
+      const adj = state.map.adj[HOME];
+      const dest = adj[0]; // first adjacent node
+      state.visited[HUMAN][dest] = true;
+      // Set CC rally to that node.
+      const myCC = state.buildings.find(b => b.owner === HUMAN && b.type === "cc");
+      myCC.rally = dest;
+      // Give enough minerals and queue an SCV.
+      state.minerals[HUMAN] = 200;
+      queueSCV(HUMAN, HOME);
+      // Advance until the SCV finishes training.
+      run(C.cc.trainTime + 2);
+      // The new SCV should be in transit toward `dest`.
+      const travelling = state.units.filter(u =>
+        u.owner === HUMAN && u.type === "scv" && u.transit && u.transit.to === dest);
+      ok(travelling.length >= 1, "new SCV is travelling to rally node");
     },
 
     "bot expands to mineral nodes": function () {
