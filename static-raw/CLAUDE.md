@@ -68,13 +68,28 @@ decisions. Expansion, SCV tasking, and target selection use fixed shared rules.
   army balance (deficit/surplus/scvFrac), tech progress (gameFrac, gasFloat),
   expansion level (ccFrac, expNodesAvail), supply pressure, situational flags.
 - **Military** (`MILITARY_WEIGHTS_DEFAULT`): the army's attack-vs-hold launch
-  decision and home-reserve size come from a learned score over 12 combat
+  decision and home-reserve size come from a learned score over 11 combat
   features (relative strength, surplus, timer, target weakness, fresh intel,
-  recent-wave-failed, supply saturation, composition, expansion lead). Target
-  selection, staging, defense and mop-up stay shared rules.
+  recent-wave-failed, supply saturation, composition). Target selection,
+  staging, defense and mop-up stay shared rules.
   **No hard overrides** — all launch decisions come purely from trained weights.
   Never add hard-coded thresholds to the AI decision path; fix passivity by
   improving the reward function or adding better features, then retrain.
+
+### Two invariants that must never be broken
+
+**No hard-coded rules in AI logic.** Never add threshold conditions, magic
+constants, or overrides to the bot's decision functions (`macroPolicyBuild`,
+the military launch block). If the bot behaves badly, fix it by adjusting the
+reward function or adding better signals, then retrain.
+
+**No information asymmetry (no cheating).** Features fed to the trained policy
+must only use information the bot's side legitimately has: its own unit/building
+counts, scouted enemy positions (nodes it has visited), and estimates derived
+from observed battles. Never pass opponent's private state — mineral counts,
+CC counts at unvisited nodes, exact army composition — into any feature. If a
+signal requires looking at `state.X[opp]` for an unvisited node, it is cheating
+and must be removed.
 
 Per-game weight overrides via `cfg.macroWeights` / `cfg.militaryWeights`; null
 falls back to `MACRO_WEIGHTS_DEFAULT` / `MILITARY_WEIGHTS_DEFAULT`.

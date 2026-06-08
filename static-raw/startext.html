@@ -463,7 +463,6 @@ const MILITARY_WEIGHTS_DEFAULT = {
   relStr:      2.4630,  surplus:     1.4955,  minArmy:    -3.6175,
   intel:      -0.5591,  timer:       5.0921,  targetWeak: -3.3707,
   waveFailed: -2.9070,  supplyPres: -3.5287,  firebatFrac: 4.9600,
-  expLead: 0,
 };
 
 // Tech upgrades researched at the Academy.
@@ -1807,8 +1806,6 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
         waveFailed: ai.waveFailed ? 1 : 0,
         supplyPres: cl(1 - (supplyCap(owner) - supplyUsed(owner)) / 8, 0, 1),
         firebatFrac: cl(firebatsTotal / Math.max(1, allStrike), 0, 1),
-        expLead: cl((state.buildings.filter(b => b.owner === owner && b.type === "cc" && !b.construct).length -
-                     state.buildings.filter(b => b.owner === opp  && b.type === "cc" && !b.construct).length) / 2, -1, 1),
       };
       // All launch decisions come from trained weights only — no hard thresholds here.
       let milScore = 0; for (const k in f) milScore += (milW[k] || 0) * f[k];
@@ -1883,33 +1880,36 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     b.owner === owner && b.type === "academy" && !b.construct);
 
   // ── EXPANSION ────────────────────────────────────────────────────────────
-  // Try to expand to every visited resource node simultaneously — no one-at-a-time
-  // throttle. The expandMinScv threshold and CC cost naturally limit aggressiveness.
   let savingForCC = false;
   if (!underAttack) {
-    let scvsSent = 0;
-    for (let n = 0; n < mapN; n++) {
-      if (n === home || !state.visited[owner][n]) continue;
-      if (state.field[n] <= 0 && state.gasField[n] <= 0) continue;
-      if (state.buildings.some(b => b.owner === owner && b.node === n && b.type === "cc")) continue;
-      const scvThere = unitsOf(owner, n, null, "scv").length > 0;
-      const scvEnRoute = state.units.some(u =>
-        u.owner === owner && u.type === "scv" && u.transit && u.transit.to === n);
-      if (scvThere) {
-        startBuilding(owner, n, "cc");
-        savingForCC = true;
-      } else if (scvEnRoute) {
-        savingForCC = true;
-      } else {
-        const homeScvAvail = state.units.filter(u =>
-          u.owner === owner && u.node === home && u.type === "scv" &&
-          (u.task === "idle" || u.task === "mining" || u.task === "gas")).length - scvsSent;
-        if (homeScvAvail > cfg.expandMinScv) {
-          sendUnits(owner, home, 1, "scv", n);
-          scvsSent++;
-          const escort = Math.min(2, idleMarines(owner, home).length);
-          if (escort > 0) sendUnits(owner, home, escort, "marine", n, "move");
-          savingForCC = true;
+    const noExpanding = !state.buildings.some(
+      b => b.owner === owner && b.type === "cc" && b.construct && b.node !== home);
+    if (noExpanding) {
+      let expNode = -1, expDist = Infinity;
+      for (let n = 0; n < mapN; n++) {
+        if (n === home || !state.visited[owner][n] || state.field[n] <= 0) continue;
+        if (state.buildings.some(b => b.owner === owner && b.node === n && b.type === "cc")) continue;
+        if (distFromHome[n] < expDist) { expDist = distFromHome[n]; expNode = n; }
+      }
+      if (expNode !== -1) {
+        const scvThere = unitsOf(owner, expNode, null, "scv").length > 0;
+        const scvEnRoute = state.units.some(u =>
+          u.owner === owner && u.type === "scv" && u.transit && u.transit.to === expNode);
+        if (scvThere) {
+          startBuilding(owner, expNode, "cc");
+          savingForCC = min() < C.cc.cost;
+        } else if (scvEnRoute) {
+          savingForCC = min() < C.cc.cost;
+        } else {
+          const homeScvAvail = state.units.filter(u =>
+            u.owner === owner && u.node === home && u.type === "scv" &&
+            (u.task === "idle" || u.task === "mining" || u.task === "gas")).length;
+          if (homeScvAvail > cfg.expandMinScv) {
+            sendUnits(owner, home, 1, "scv", expNode);
+            const escort = Math.min(2, idleMarines(owner, home).length);
+            if (escort > 0) sendUnits(owner, home, escort, "marine", expNode, "move");
+            savingForCC = min() < C.cc.cost;
+          }
         }
       }
     }
@@ -1948,7 +1948,6 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     savingForCC,
     tick: state.time,
     ccCount: state.buildings.filter(b => b.owner === owner && b.type === "cc" && !b.construct).length,
-    oppCCCount: state.buildings.filter(b => b.owner === opp && b.type === "cc" && !b.construct).length,
     expNodesAvail: (() => {
       let cnt = 0;
       for (let n = 0; n < state.map.n; n++) {
