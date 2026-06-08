@@ -2502,8 +2502,8 @@ function appendForces(container, owner, node, interactive) {
     const mineOpt = activePatchCount(state.field[node]) * 2;
     const scvGroups = [
       { label: "idle",     units: scvs.filter(u => u.task === "idle" && !u.transit), tab: null },
-      { label: "mining",   units: scvs.filter(u => u.task === "mining"),              tab: "mine" },
-      { label: "gas",      units: scvs.filter(u => u.task === "gas"),                 tab: "mine" },
+      { label: "mining",   units: scvs.filter(u => u.task === "mining"),              tab: null },
+      { label: "gas",      units: scvs.filter(u => u.task === "gas"),                 tab: null },
       { label: "building", units: scvs.filter(u => u.task === "building"),            isStatic: true },
       { label: "passing",  units: scvs.filter(u => u.task === "idle" && u.transit),  isStatic: true },
     ];
