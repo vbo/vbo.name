@@ -453,6 +453,7 @@ const MACRO_WEIGHTS_DEFAULT = {
   gasFloat_research: 4.8993, gasFloat_firebat: 0, needGas_gas: 6,
   firstRax_prod: 4.6685, threat_defense: -0.2630,
   scvFrac_worker: -1.5181, scvFrac_combat: 4.3578, ccFrac_prod: 2.1832, gameFrac_tech: 2.7610,
+  expNodes_prod: 0,
 };
 
 // Trained military weights. reserve=17 gates launch until 18+ unit army exists;
@@ -462,6 +463,7 @@ const MILITARY_WEIGHTS_DEFAULT = {
   relStr:      2.4630,  surplus:     1.4955,  minArmy:    -3.6175,
   intel:      -0.5591,  timer:       5.0921,  targetWeak: -3.3707,
   waveFailed: -2.9070,  supplyPres: -3.5287,  firebatFrac: 4.9600,
+  expLead: 0,
 };
 
 // Tech upgrades researched at the Academy.
@@ -635,24 +637,24 @@ function resetState(seed) {
   // Symmetric pairs (one node close to HOME, its mirror close to AWAY) are rolled
   // together — both get resources or neither does. Equidistant mid nodes roll solo.
   // Asymmetric unpaired nodes are never given resources (would favour one side).
-  // Minerals and gas are rolled independently (~25% each), so a node can have
-  // minerals only, gas only, both, or neither. Symmetric pairs share the same
-  // roll so both sides always receive identical resources.
+  // Minerals and gas are rolled independently (~45% minerals, ~35% gas), so a
+  // node can have minerals only, gas only, both (~16%), or neither. Symmetric
+  // pairs share the same roll so both sides always receive identical resources.
   const expUsed = new Set();
   for (let i = 0; i < n; i++) {
     if (i === HOME || i === AWAY || expUsed.has(i)) continue;
     const dh = map.dist[HOME][i], da = map.dist[AWAY][i];
     if (dh === da) {
-      if (rng() < 0.25) { field[i] = EXPANSION_FIELD; }
-      if (rng() < 0.25) { gasField[i] = EXPANSION_GAS; }
+      if (rng() < 0.45) { field[i] = EXPANSION_FIELD; }
+      if (rng() < 0.35) { gasField[i] = EXPANSION_GAS; }
       expUsed.add(i);
     } else {
       const mirror = [...Array(n).keys()].find(
         j => j !== HOME && j !== AWAY && !expUsed.has(j) && j !== i &&
              map.dist[HOME][j] === da && map.dist[AWAY][j] === dh);
       if (mirror !== undefined) {
-        if (rng() < 0.25) { field[i] = EXPANSION_FIELD; field[mirror] = EXPANSION_FIELD; }
-        if (rng() < 0.25) { gasField[i] = EXPANSION_GAS; gasField[mirror] = EXPANSION_GAS; }
+        if (rng() < 0.45) { field[i] = EXPANSION_FIELD; field[mirror] = EXPANSION_FIELD; }
+        if (rng() < 0.35) { gasField[i] = EXPANSION_GAS; gasField[mirror] = EXPANSION_GAS; }
         expUsed.add(i); expUsed.add(mirror);
       }
     }
@@ -1552,7 +1554,8 @@ function macroPolicyBuild(add, P, W) {
   if (!P.raxConstructing && P.raxCount < P.raxTarget)
     add(dot({ bias: 1, isProd: 1, costFrac: costFrac(C.barracks.cost),
               firstRax_prod: P.raxCount === 0 ? 1 : 0, unlocksNew: P.raxCount === 0 ? 1 : 0,
-              haveCount: clamp(P.raxCount / 4, 0, 1), ccFrac_prod: ccFrac }),
+              haveCount: clamp(P.raxCount / 4, 0, 1), ccFrac_prod: ccFrac,
+              expNodes_prod: P.expNodesAvail ?? 0 }),
         () => startBuilding(P.owner, P.home, "barracks"), "build");
 
   if (P.raxDone && !P.academyExists && !P.underAttack)
@@ -1804,6 +1807,8 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
         waveFailed: ai.waveFailed ? 1 : 0,
         supplyPres: cl(1 - (supplyCap(owner) - supplyUsed(owner)) / 8, 0, 1),
         firebatFrac: cl(firebatsTotal / Math.max(1, allStrike), 0, 1),
+        expLead: cl((state.buildings.filter(b => b.owner === owner && b.type === "cc" && !b.construct).length -
+                     state.buildings.filter(b => b.owner === opp  && b.type === "cc" && !b.construct).length) / 2, -1, 1),
       };
       // All launch decisions come from trained weights only — no hard thresholds here.
       let milScore = 0; for (const k in f) milScore += (milW[k] || 0) * f[k];
@@ -1878,36 +1883,33 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     b.owner === owner && b.type === "academy" && !b.construct);
 
   // ── EXPANSION ────────────────────────────────────────────────────────────
+  // Try to expand to every visited resource node simultaneously — no one-at-a-time
+  // throttle. The expandMinScv threshold and CC cost naturally limit aggressiveness.
   let savingForCC = false;
   if (!underAttack) {
-    const noExpanding = !state.buildings.some(
-      b => b.owner === owner && b.type === "cc" && b.construct && b.node !== home);
-    if (noExpanding) {
-      let expNode = -1, expDist = Infinity;
-      for (let n = 0; n < mapN; n++) {
-        if (n === home || !state.visited[owner][n] || state.field[n] <= 0) continue;
-        if (state.buildings.some(b => b.owner === owner && b.node === n && b.type === "cc")) continue;
-        if (distFromHome[n] < expDist) { expDist = distFromHome[n]; expNode = n; }
-      }
-      if (expNode !== -1) {
-        const scvThere = unitsOf(owner, expNode, null, "scv").length > 0;
-        const scvEnRoute = state.units.some(u =>
-          u.owner === owner && u.type === "scv" && u.transit && u.transit.to === expNode);
-        if (scvThere) {
-          startBuilding(owner, expNode, "cc");
-          savingForCC = min() < C.cc.cost;
-        } else if (scvEnRoute) {
-          savingForCC = min() < C.cc.cost;
-        } else {
-          const homeScvAvail = state.units.filter(u =>
-            u.owner === owner && u.node === home && u.type === "scv" &&
-            (u.task === "idle" || u.task === "mining" || u.task === "gas")).length;
-          if (homeScvAvail > cfg.expandMinScv) {
-            sendUnits(owner, home, 1, "scv", expNode);
-            const escort = Math.min(2, idleMarines(owner, home).length);
-            if (escort > 0) sendUnits(owner, home, escort, "marine", expNode, "move");
-            savingForCC = min() < C.cc.cost;
-          }
+    let scvsSent = 0;
+    for (let n = 0; n < mapN; n++) {
+      if (n === home || !state.visited[owner][n]) continue;
+      if (state.field[n] <= 0 && state.gasField[n] <= 0) continue;
+      if (state.buildings.some(b => b.owner === owner && b.node === n && b.type === "cc")) continue;
+      const scvThere = unitsOf(owner, n, null, "scv").length > 0;
+      const scvEnRoute = state.units.some(u =>
+        u.owner === owner && u.type === "scv" && u.transit && u.transit.to === n);
+      if (scvThere) {
+        startBuilding(owner, n, "cc");
+        savingForCC = true;
+      } else if (scvEnRoute) {
+        savingForCC = true;
+      } else {
+        const homeScvAvail = state.units.filter(u =>
+          u.owner === owner && u.node === home && u.type === "scv" &&
+          (u.task === "idle" || u.task === "mining" || u.task === "gas")).length - scvsSent;
+        if (homeScvAvail > cfg.expandMinScv) {
+          sendUnits(owner, home, 1, "scv", n);
+          scvsSent++;
+          const escort = Math.min(2, idleMarines(owner, home).length);
+          if (escort > 0) sendUnits(owner, home, escort, "marine", n, "move");
+          savingForCC = true;
         }
       }
     }
@@ -1946,6 +1948,16 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
     savingForCC,
     tick: state.time,
     ccCount: state.buildings.filter(b => b.owner === owner && b.type === "cc" && !b.construct).length,
+    oppCCCount: state.buildings.filter(b => b.owner === opp && b.type === "cc" && !b.construct).length,
+    expNodesAvail: (() => {
+      let cnt = 0;
+      for (let n = 0; n < state.map.n; n++) {
+        if (n === home || !state.visited[owner][n]) continue;
+        if (state.field[n] <= 0 && state.gasField[n] <= 0) continue;
+        if (!state.buildings.some(b => b.owner === owner && b.node === n && b.type === "cc")) cnt++;
+      }
+      return Math.min(cnt / 3, 1);
+    })(),
     depotCount:        state.buildings.filter(b => b.owner === owner && b.type === "depot").length,
     depotConstructing: state.buildings.some(b => b.owner === owner && b.type === "depot" && b.construct),
     raxConstructing:   state.buildings.some(b => b.owner === owner && b.type === "barracks" && b.construct),
