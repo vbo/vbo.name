@@ -442,29 +442,29 @@ let ENABLE_HUMAN_BOT = false;
 // over 27 generic features; the military attack/hold decision uses
 // MILITARY_WEIGHTS_DEFAULT (11 features). See macroPolicyBuild for the action list.
 
-// Trained weights (30 gen × 12 pop self-play evolution; 91% holdout vs prior rule bot).
+// Trained weights (30 gen × 12 pop self-play evolution; 68% holdout vs prior policy).
 // Retrain with: node bot-evolve.js --gen 30 --pop 12 --games 8 --hof 3
 const MACRO_WEIGHTS_DEFAULT = {
-  bias:             -0.8739, isUnit:     2.1533, isCombat:   1.5376, firebat:    4.1395,
-  isProd:            4.2802, isTechB:    2.7555, isResearch:  5.2269,
-  isSupply:         -2.2706, isGas:      3.4015, isDefense:  -3.5967,
-  costFrac:          1.3422, gasBlocked: 5.2532, haveCount:   0.2226, unlocksNew: 1.8919,
-  supplyPress_supply: 5.5512,
-  float_unit: 3.4030, deficit_unit: 2.4234,
-  surplus_research: -0.3669, surplus_techB: 0.2515,
-  gasFloat_research: 4.8993, gasFloat_firebat: 0, needGas_gas: 6,
-  firstRax_prod: 4.6685, threat_defense: -0.2630,
-  scvFrac_worker: -1.5181, scvFrac_combat: 4.3578, ccFrac_prod: 2.1832, gameFrac_tech: 2.7610,
-  expNodes_prod: 0,
+  bias:              3.4792, isUnit:     1.8402, isCombat:   3.9405, firebat:    4.5463,
+  isProd:            6,      isTechB:    4.7155, isResearch:  4.8706,
+  isSupply:         -5.7373, isGas:      1.3686, isDefense:  -1.5728,
+  costFrac:         -1.2856, gasBlocked: 3.9156, haveCount:  -0.1128, unlocksNew: -0.2697,
+  supplyPress_supply: 6,
+  float_unit: 1.1851, deficit_unit: 3.9628,
+  surplus_research: 0.3742, surplus_techB: 2.9362,
+  gasFloat_research: 6, gasFloat_firebat: 1.4593, needGas_gas: 6,
+  firstRax_prod: 1.6594, threat_defense: -0.1132,
+  scvFrac_worker: -2.3556, scvFrac_combat: 3.3603, ccFrac_prod: -0.2172, gameFrac_tech: 4.3217,
+  expNodes_prod: 2.1590,
 };
 
-// Trained military weights. reserve=17 gates launch until 18+ unit army exists;
-// timer is the dominant attack signal once the wave interval has elapsed.
+// Trained military weights. reserve=18 gates launch until 19+ unit army exists;
+// waveFailed strongly suppresses retry; relStr and surplus guide launch timing.
 const MILITARY_WEIGHTS_DEFAULT = {
-  reserve:    16.7441,  launchBias: -0.9827,
-  relStr:      2.4630,  surplus:     1.4955,  minArmy:    -3.6175,
-  intel:      -0.5591,  timer:       5.0921,  targetWeak: -3.3707,
-  waveFailed: -2.9070,  supplyPres: -3.5287,  firebatFrac: 4.9600,
+  reserve:    17.7547,  launchBias: -0.3407,
+  relStr:      2.4720,  surplus:    -2.3536,  minArmy:    -1.9265,
+  intel:      -5.2918,  timer:       0.5715,  targetWeak:  0.4330,
+  waveFailed: -6,       supplyPres: -3.8520,  firebatFrac: 0.7016,
 };
 
 // Tech upgrades researched at the Academy.
@@ -4300,9 +4300,13 @@ function runTests() {
       resetState(1);
       cheat(BOT, 0);
       state.visited.bot = state.visited.bot.map(() => true); // fully scouted → enemy reachable
-      state.bot.lastWave = -999;        // wave overdue
-      state.bot.scoutTime = state.time; // fresh intel
-      state.bot.enemyArmy = 2;          // weak enemy → low launch threshold
+      state.bot.lastWave = -999;   // wave overdue
+      state.bot.scoutTime = null;  // stale intel (fresh intel penalises launch in current weights)
+      state.bot.enemyArmy = 2;     // weak enemy → low launch threshold
+      // Supply depots so supply headroom ≥ 8 (supplyPres = 0 → launch-friendly).
+      for (let i = 0; i < 4; i++)
+        state.buildings.push({ id: idSeq++, owner: BOT, node: AWAY, type: "depot",
+          hp: C.depot.hp, maxHp: C.depot.hp, construct: null });
       const adj = state.map.adj, distE = state.map.dist[HOME];
       const nbs = [...adj[AWAY]];
       const fwd = nbs.reduce((b, nb) => distE[nb] < distE[b] ? nb : b, nbs[0]);
@@ -4316,7 +4320,7 @@ function runTests() {
       for (let i = 0; i < 4; i++) { const m = newMarine(BOT, fwd); m.task = "idle"; }
       loadBunker(BOT, fwd, bunk.id);
       ok(bunk.loaded.length === 4, "bunker starts full");
-      for (let i = 0; i < 30; i++) { const m = newMarine(BOT, AWAY); m.task = "idle"; }
+      for (let i = 0; i < 26; i++) { const m = newMarine(BOT, AWAY); m.task = "idle"; }
       botEval();
       ok(bunk.loaded.length === 0, "bot unloaded the bunker to join the attack");
       const committed = state.units.filter(u =>
