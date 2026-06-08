@@ -331,8 +331,10 @@
 //                 | node -   →  prints "N passed, M failed", exits non-zero on fail
 //   In browser: open startext.html?test to see the same report instead of the game.
 //
-// Map: a random connected graph of 5–6 nodes (genMap). Only the two farthest-apart
-// nodes (the players' bases) hold resources. Movement is exploration-gated — you can
+// Map: a random connected graph of 5–6 nodes (genMap). Two modes: linear (bases
+// separated by mid nodes) or compact (bases adjacent, resource nodes branch behind
+// each base). Both base nodes always hold resources; expansion nodes may too.
+// Movement is exploration-gated — you can
 // only send units to a node adjacent to one you've already visited (canSendTo) — and
 // travel is hop-by-hop: EDGE_TIME per segment + DWELL_TIME pause at each intermediate
 // node (where units can scout and fight before moving on). Two modes: "move" (leave
@@ -568,32 +570,63 @@ function genMap() {
   }
   const adjArr = adj.map(s => [...s].sort((x, y) => x - y));
   const dist = adjArr.map((_, i) => bfsDist(i, adjArr, n));
-  // Start nodes = the farthest-apart pair (graph diameter endpoints).
-  let starts = [0, 1], best = -1;
-  for (let i = 0; i < n; i++)
-    for (let j = i + 1; j < n; j++)
-      if (dist[i][j] > best) { best = dist[i][j]; starts = [i, j]; }
+
+  // ~40% compact maps: pick adjacent pair where both nodes have ≥1 back branch,
+  // so the remaining nodes split behind the two bases instead of between them.
+  // ~60% linear maps: classic farthest-apart pair (graph diameter endpoints).
+  let starts = [0, 1], best = -1, pickedCompact = false;
+  if (rng() < 0.4) {
+    const candidates = [];
+    for (let i = 0; i < n; i++) {
+      for (const j of adjArr[i]) {
+        if (j <= i || adjArr[i].length < 2 || adjArr[j].length < 2) continue;
+        // Count back nodes on each side (dist=1 between adjacent, so no node is "between").
+        let behindI = 0, behindJ = 0;
+        for (let k = 0; k < n; k++) {
+          if (k === i || k === j) continue;
+          if (dist[j][k] > 1) behindI++; else behindJ++;
+        }
+        // Only symmetric pairs — equal back nodes on each side — get fair resource rolls.
+        if (behindI === behindJ) candidates.push([i, j]);
+      }
+    }
+    if (candidates.length) {
+      starts = candidates[(rng() * candidates.length) | 0];
+      pickedCompact = true;
+    }
+  }
+  if (!pickedCompact) {
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++)
+        if (dist[i][j] > best) { best = dist[i][j]; starts = [i, j]; }
+  }
   const names = Array.from({ length: n }, (_, i) => "Sector " + String.fromCharCode(65 + i));
   const pos = layoutNodes(n, adjArr, dist, starts);
   return { n, adj: adjArr, dist, starts, names, pos };
 }
 
-// Stable, readable graph layout: columns by hop-distance from the human base
-// (your base on the left, the enemy base on the right), nodes in each column
-// spread vertically. Positions are normalised to [0,1] and fixed at map-gen time
-// so revealed nodes never jump around. Returns [{x,y}, …] per node id.
+// Stable, readable graph layout. X-axis = (dist_from_home − dist_from_enemy),
+// normalized to [0,1] so home is leftmost and enemy rightmost. Back-home nodes
+// (further from enemy than home is) appear left of home; back-enemy nodes appear
+// right of enemy. Works for both linear and compact map topologies.
+// Positions are normalised to [0,1] and fixed at map-gen time so revealed nodes
+// never jump around. Returns [{x,y}, …] per node id.
 function layoutNodes(n, adj, dist, starts) {
-  const d = dist[starts[0]];
-  const maxD = Math.max(1, ...d.filter(x => x < Infinity));
+  const dh = dist[starts[0]], de = dist[starts[1]];
+  const vals = Array.from({ length: n }, (_, i) => dh[i] - de[i]);
+  const minV = Math.min(...vals), maxV = Math.max(...vals);
+  const span = Math.max(1, maxV - minV);
   const layers = {};
-  for (let i = 0; i < n; i++) (layers[d[i]] = layers[d[i]] || []).push(i);
+  for (let i = 0; i < n; i++) {
+    const key = vals[i];
+    (layers[key] = layers[key] || []).push(i);
+  }
   const pos = new Array(n);
-  for (const dl in layers) {
-    const group = layers[dl].sort((a, b) => a - b);
-    const x = (+dl) / maxD;
+  for (const key in layers) {
+    const group = layers[key].sort((a, b) => a - b);
+    const x = (+key - minV) / span;
     group.forEach((node, k) => {
-      const y = group.length === 1 ? 0.5 : k / (group.length - 1);
-      pos[node] = { x, y };
+      pos[node] = { x, y: group.length === 1 ? 0.5 : k / (group.length - 1) };
     });
   }
   return pos;
@@ -1085,10 +1118,13 @@ function combatStep() {
       if (!t) break;
       const dmg = Math.max(1, cfg.dmg + unitWeapons(u) - unitArmor(t));
       t.hp -= dmg;
-      // Firebat splash: deal damage to a second random target too.
+      // Firebat splash: always hit a *different* second target if one exists.
       if (cfg.splash && cfg.splash > 1) {
-        const t2 = pickTarget(enemy(u.owner), u.node);
-        if (t2 && t2 !== t) t2.hp -= Math.max(1, cfg.dmg + unitWeapons(u) - unitArmor(t2));
+        const others = targetsAt(enemy(u.owner), u.node).filter(x => x !== t);
+        if (others.length) {
+          const t2 = others[(rng() * others.length) | 0];
+          t2.hp -= Math.max(1, cfg.dmg + unitWeapons(u) - unitArmor(t2));
+        }
       }
       u.atkCd += cfg.atk;
     }
@@ -1627,9 +1663,12 @@ function evalSide(owner, home, oppHome, opp, ai, cfg) {
   const distFromHome = bfsDist(home, adj, mapN);
 
   // Forward node: home's neighbour closest to the enemy (natural choke / rally line).
+  // Exclude oppHome itself — on compact maps home and enemy are adjacent, and staging
+  // at the enemy's base node breaks all attack and garrison logic.
   const homeNeighbours = [...adj[home]];
-  const fwd = homeNeighbours.length
-    ? homeNeighbours.reduce((best, nb) => distE[nb] < distE[best] ? nb : best, homeNeighbours[0])
+  const fwdCandidates = homeNeighbours.filter(n => n !== oppHome && distE[n] < distE[home]);
+  const fwd = fwdCandidates.length
+    ? fwdCandidates.reduce((best, nb) => distE[nb] < distE[best] ? nb : best, fwdCandidates[0])
     : home;
   const fwdVisited = fwd !== home && !!state.visited[owner][fwd];
 
