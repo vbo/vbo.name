@@ -72,13 +72,18 @@ decisions. Expansion, SCV tasking, and target selection use fixed shared rules.
   features (relative strength, surplus, timer, target weakness, fresh intel,
   recent-wave-failed, supply saturation, composition). Target selection,
   staging, defense and mop-up stay shared rules.
-  **Hard override** (`forceByTimer`): if `waveFailed && timer ≥ 1.1 && surplus ≥ 10`,
-  the bot force-launches regardless of `milScore`. This prevents the waveFailed
-  penalty from suppressing attacks for more than one wave interval when the army
-  is large enough to try again (regression test: seed 7, < 120t window).
+  **No hard overrides** — all launch decisions come purely from trained weights.
+  Never add hard-coded thresholds to the AI decision path; fix passivity by
+  improving the reward function or adding better features, then retrain.
 
 Per-game weight overrides via `cfg.macroWeights` / `cfg.militaryWeights`; null
 falls back to `MACRO_WEIGHTS_DEFAULT` / `MILITARY_WEIGHTS_DEFAULT`.
+
+**Replay-game test**: Any `.txt` file in `static-raw/replays/` is automatically
+used as a quality gate. The test runs the bot against a scripted human (human
+follows the logged actions until exhausted, then AI takes over). The bot must win.
+To record a new replay: play a game in the browser, click "Copy replay log", save
+the text to `static-raw/replays/<name>.txt`.
 
 **To retrain** (self-play + Hall of Fame, outputs new weights but patches nothing):
 
