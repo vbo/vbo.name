@@ -66,12 +66,12 @@ decisions. Expansion, SCV tasking, and target selection use fixed shared rules.
   upgrade enters the action space just by appearing in the data tables.
   Feature groups: action type (isUnit/isCombat/isProd/…), cost/gas pressure,
   army balance (deficit/surplus/scvFrac), tech progress (gameFrac, gasFloat),
-  expansion level (ccFrac), supply pressure, situational flags.
+  expansion level (ccFrac, expNodesAvail), supply pressure, situational flags.
 - **Military** (`MILITARY_WEIGHTS_DEFAULT`): the army's attack-vs-hold launch
-  decision and home-reserve size come from a learned score over 11 combat
+  decision and home-reserve size come from a learned score over 12 combat
   features (relative strength, surplus, timer, target weakness, fresh intel,
-  recent-wave-failed, supply saturation, composition). Target selection,
-  staging, defense and mop-up stay shared rules.
+  recent-wave-failed, supply saturation, composition, expansion lead). Target
+  selection, staging, defense and mop-up stay shared rules.
   **No hard overrides** — all launch decisions come purely from trained weights.
   Never add hard-coded thresholds to the AI decision path; fix passivity by
   improving the reward function or adding better features, then retrain.
