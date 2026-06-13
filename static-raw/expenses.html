@@ -99,6 +99,8 @@
                     <label for="cur-usd">USD</label>
                     <input type="radio" name="currency" id="cur-rub" value="RUB">
                     <label for="cur-rub">RUB</label>
+                    <input type="radio" name="currency" id="cur-afn" value="AFN" data-currency-afn>
+                    <label for="cur-afn" data-currency-afn title="Stunden — 1 AFN entspricht 1 Stunde">AFN</label>
                 </div>
                 <label id="amexRow" class="mt-2 flex items-center gap-2 hidden">
                     <input type="checkbox" id="amex"
@@ -179,6 +181,13 @@
             Personal: 'Auswärts: Essen',
         };
 
+        // AFN tracks hours owed between us (1 AFN = 1 Stunde @ 30 CHF). The
+        // category is always Überweisen and takes precedence over the
+        // note-based guess.
+        const CURRENCY_DEFAULT_CATEGORY = {
+            AFN: 'Überweisen',
+        };
+
         // Substring patterns in the note → category. Order matters: more
         // specific patterns first (e.g. "salsa party" before plain "salsa").
         const CATEGORY_RULES = [
@@ -212,8 +221,11 @@
 
         function applyCategoryDefault() {
             if (categoryUserOverridden) return;
+            const currencyOverride = CURRENCY_DEFAULT_CATEGORY[selectedCurrency()];
             const guess = guessCategory(noteEl.value);
-            categoryEl.value = guess || SHEET_DEFAULT_CATEGORY[selectedSheet()];
+            categoryEl.value = currencyOverride
+                || guess
+                || SHEET_DEFAULT_CATEGORY[selectedSheet()];
         }
 
         function todayISO() {
@@ -231,8 +243,16 @@
         }
 
         function syncSheetUI() {
+            const personal = selectedSheet() === 'Personal';
             // Personal expenses are always Andrey's, so don't ask.
-            paidByRow.classList.toggle('hidden', selectedSheet() === 'Personal');
+            paidByRow.classList.toggle('hidden', personal);
+            // AFN (Stunden) only makes sense on the Common sheet.
+            document.querySelectorAll('[data-currency-afn]')
+                .forEach(el => el.classList.toggle('hidden', personal));
+            if (personal && selectedCurrency() === 'AFN') {
+                document.querySelector('input[name="currency"][value="CHF"]').checked = true;
+                syncAmexUI();
+            }
         }
 
         document.querySelectorAll('input[name="sheet"]').forEach(el =>
@@ -304,7 +324,10 @@
         }
 
         document.querySelectorAll('input[name="currency"]').forEach(
-            el => el.addEventListener('change', syncAmexUI));
+            el => el.addEventListener('change', () => {
+                syncAmexUI();
+                applyCategoryDefault();
+            }));
         amexEl.addEventListener('change', syncAmexUI);
         amountEl.addEventListener('input', () => { if (amexEl.checked) syncAmexUI(); });
 
