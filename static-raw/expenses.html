@@ -31,6 +31,13 @@
             <p class="text-sm text-slate-500">Neue Buchung erfassen</p>
         </header>
 
+        <div class="seg flex mb-4">
+            <input type="radio" name="sheet" id="sheet-common" value="Common" checked>
+            <label for="sheet-common">Gemeinsam</label>
+            <input type="radio" name="sheet" id="sheet-personal" value="Personal">
+            <label for="sheet-personal">Persönlich</label>
+        </div>
+
         <form id="form" class="space-y-4 bg-white rounded-2xl shadow-sm p-4">
             <label class="block">
                 <span class="text-sm font-medium text-slate-700">Betrag</span>
@@ -100,7 +107,7 @@
                 <p id="amexPreview" class="text-xs text-slate-500 mt-1 hidden"></p>
             </div>
 
-            <div>
+            <div id="paidByRow">
                 <span class="text-sm font-medium text-slate-700">Bezahlt von</span>
                 <div class="seg mt-1 flex">
                     <input type="radio" name="paidBy" id="paid-andrey" value="Andrey" checked>
@@ -159,6 +166,7 @@
         const amexRow = document.getElementById('amexRow');
         const amexEl = document.getElementById('amex');
         const amexPreviewEl = document.getElementById('amexPreview');
+        const paidByRow = document.getElementById('paidByRow');
 
         // Foreign currency charged on a CHF Amex card: convert to CHF at the
         // live rate plus a fixed card commission.
@@ -174,6 +182,18 @@
         function selectedCurrency() {
             return document.querySelector('input[name="currency"]:checked').value;
         }
+
+        function selectedSheet() {
+            return document.querySelector('input[name="sheet"]:checked').value;
+        }
+
+        function syncSheetUI() {
+            // Personal expenses are always Andrey's, so don't ask.
+            paidByRow.classList.toggle('hidden', selectedSheet() === 'Personal');
+        }
+
+        document.querySelectorAll('input[name="sheet"]').forEach(el =>
+            el.addEventListener('change', () => { syncSheetUI(); loadRecent(); }));
 
         function resetToDefaults() {
             amountEl.value = '';
@@ -243,14 +263,18 @@
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
+            const sheet = selectedSheet();
             const payload = {
+                sheet,
                 date: dateEl.value,
                 amount: parseFloat(amountEl.value),
                 note: noteEl.value.trim(),
                 category: categoryEl.value,
-                currency: document.querySelector('input[name="currency"]:checked').value,
-                paidBy: document.querySelector('input[name="paidBy"]:checked').value,
+                currency: selectedCurrency(),
             };
+            if (sheet === 'Common') {
+                payload.paidBy = document.querySelector('input[name="paidBy"]:checked').value;
+            }
 
             submitBtn.disabled = true;
             setStatus('Speichern…', 'info');
@@ -356,7 +380,8 @@
             recentLoaderEl.classList.remove('hidden');
             recentStatusEl.textContent = '';
             try {
-                const res = await fetch(WEB_APP_URL, { method: 'GET' });
+                const url = WEB_APP_URL + '?sheet=' + encodeURIComponent(selectedSheet());
+                const res = await fetch(url, { method: 'GET' });
                 const text = await res.text();
                 if (seq !== recentSeq) return; // a newer load superseded this one
                 let parsed;
