@@ -55,15 +55,18 @@
                 <span class="text-sm font-medium text-slate-700">Kategorie</span>
                 <select id="category"
                     class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                    <optgroup label="Essen">
+                    <optgroup label="Häufig">
                         <option value="Lebensmittel: Essen">Lebensmittel: Essen</option>
                         <option value="Auswärts: Essen">Auswärts: Essen</option>
-                    </optgroup>
-                    <optgroup label="Leben">
+                        <option value="Bus/Zug: Verkehrsmittel">Bus/Zug: Verkehrsmittel</option>
+                        <option value="Sport: Unterhaltung">Sport: Unterhaltung</option>
+                        <option value="Medizinisch: Leben">Medizinisch: Leben</option>
                         <option value="Kleidung: Leben">Kleidung: Leben</option>
                         <option value="Geschenke: Leben">Geschenke: Leben</option>
+                        <option value="Überweisen">Überweisen</option>
+                    </optgroup>
+                    <optgroup label="Leben">
                         <option value="Betreuung: Leben">Betreuung: Leben</option>
-                        <option value="Medizinisch: Leben">Medizinisch: Leben</option>
                         <option value="Andere: Leben">Andere: Leben</option>
                     </optgroup>
                     <optgroup label="Zuhause">
@@ -73,7 +76,6 @@
                         <option value="Andere: Zuhause">Andere: Zuhause</option>
                     </optgroup>
                     <optgroup label="Unterhaltung">
-                        <option value="Sport: Unterhaltung">Sport: Unterhaltung</option>
                         <option value="Spielzeuge: Unterhaltung">Spielzeuge: Unterhaltung</option>
                         <option value="Andere: Unterhaltung">Andere: Unterhaltung</option>
                     </optgroup>
@@ -82,7 +84,6 @@
                     </optgroup>
                     <optgroup label="Sonstiges">
                         <option value="Verkehrsmittel">Verkehrsmittel</option>
-                        <option value="Überweisen">Überweisen</option>
                     </optgroup>
                 </select>
             </label>
@@ -150,7 +151,6 @@
         const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyKCfEYka8l7KoNwnbcxSy1isH9NX_j3Z4lnp9Gw8Ypitv-zMZwHEIuPhYh1IeshSF_/exec';
 
         const DEFAULTS = {
-            category: 'Lebensmittel: Essen',
             currency: 'CHF',
             paidBy: 'Andrey',
         };
@@ -173,6 +173,49 @@
         const AMEX_COMMISSION = 0.025;
         const AMEX_CONVERTIBLE = ['EUR', 'USD'];
 
+        // Different sheets have different most-likely categories.
+        const SHEET_DEFAULT_CATEGORY = {
+            Common: 'Lebensmittel: Essen',
+            Personal: 'Auswärts: Essen',
+        };
+
+        // Substring patterns in the note → category. Order matters: more
+        // specific patterns first (e.g. "salsa party" before plain "salsa").
+        const CATEGORY_RULES = [
+            [['salsa party'],                                                                'Andere: Unterhaltung'],
+            [['salsa', 'bachata', 'salsarica'],                                              'Sport: Unterhaltung'],
+            [['migros', 'coop', 'denner', 'hellofresh'],                                     'Lebensmittel: Essen'],
+            [['sbb', 'tram', 'publibike', 'bolt', 'taxi'],                                   'Bus/Zug: Verkehrsmittel'],
+            [['krankenkasse', 'krankenpflege', 'zahnarzt', 'apotheke', 'arzt',
+              'impfung', 'antihistamin', 'symbicort', 'ventolin'],                           'Medizinisch: Leben'],
+            [['bier', 'kaffee', 'tee', 'mcdonalds', 'sushi', 'brot&ware', 'pizza', 'kebab'], 'Auswärts: Essen'],
+            [['splitwise', 'bargeld', 'stunde wechsel', 'abholen', 'verdorben'],             'Überweisen'],
+            [['miete', 'nebenkosten'],                                                       'Miete: Zuhause'],
+            [['betreuung', 'kita', 'afn'],                                                   'Betreuung: Leben'],
+            [['fiber', 'globaltel', 'breitband', 'mobilfunk'],                               'Breitband: Versorgungsunternehmen'],
+            [['schuhe', 'jacke', 'hose', 'hemd', 't-shirt', 'tshirt', 'kleidung',
+              'unterwäsche', 'socken', 'sandalen', 'hausschuhe'],                            'Kleidung: Leben'],
+        ];
+
+        function guessCategory(note) {
+            const n = String(note || '').toLowerCase();
+            if (!n) return null;
+            for (const [keywords, cat] of CATEGORY_RULES) {
+                if (keywords.some(k => n.includes(k))) return cat;
+            }
+            return null;
+        }
+
+        // Track whether the user has manually picked a category since the
+        // last reset / sheet switch. While false, auto-suggest is in charge.
+        let categoryUserOverridden = false;
+
+        function applyCategoryDefault() {
+            if (categoryUserOverridden) return;
+            const guess = guessCategory(noteEl.value);
+            categoryEl.value = guess || SHEET_DEFAULT_CATEGORY[selectedSheet()];
+        }
+
         function todayISO() {
             const d = new Date();
             const tz = d.getTimezoneOffset() * 60000;
@@ -193,12 +236,24 @@
         }
 
         document.querySelectorAll('input[name="sheet"]').forEach(el =>
-            el.addEventListener('change', () => { syncSheetUI(); loadRecent(); }));
+            el.addEventListener('change', () => {
+                syncSheetUI();
+                // Switching sheets revisits the default category, but only
+                // if the user hasn't already picked one manually.
+                applyCategoryDefault();
+                loadRecent();
+            }));
+
+        // User picking a category from the dropdown locks in their choice.
+        categoryEl.addEventListener('change', () => { categoryUserOverridden = true; });
+        // Note keystrokes re-evaluate the auto-suggest while not overridden.
+        noteEl.addEventListener('input', applyCategoryDefault);
 
         function resetToDefaults() {
             amountEl.value = '';
             noteEl.value = '';
-            categoryEl.value = DEFAULTS.category;
+            categoryUserOverridden = false;
+            categoryEl.value = SHEET_DEFAULT_CATEGORY[selectedSheet()];
             document.querySelector(`input[name="currency"][value="${DEFAULTS.currency}"]`).checked = true;
             document.querySelector(`input[name="paidBy"][value="${DEFAULTS.paidBy}"]`).checked = true;
             dateEl.value = todayISO();
