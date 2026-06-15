@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="theme-color" content="#0f172a">
-    <title>Daily Check</title>
+    <title>Daily Tracker</title>
 
     <!-- PWA: the App Badging API only paints a badge on the home-screen icon
          once this page is installed as a standalone web app. -->
@@ -14,7 +14,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Daily Check">
+    <meta name="apple-mobile-web-app-title" content="Daily Tracker">
 
     <style>
         :root { color-scheme: dark; }
@@ -25,89 +25,151 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             background: #0f172a;
             color: #e2e8f0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
             min-height: 100svh;
-            padding: max(env(safe-area-inset-top), 1.5rem) 1.5rem max(env(safe-area-inset-bottom), 1.5rem);
-            text-align: center;
+            padding: max(env(safe-area-inset-top), 1rem) 1rem max(env(safe-area-inset-bottom), 1rem);
             -webkit-tap-highlight-color: transparent;
         }
-        h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
-        .date { color: #94a3b8; font-size: 0.95rem; margin: 0 0 2rem; }
-
-        /* The one checkbox, made big and tappable. */
-        .box {
-            position: relative;
-            width: 9rem;
-            height: 9rem;
-            cursor: pointer;
-            user-select: none;
+        .wrap { max-width: 30rem; margin: 0 auto; }
+        header { text-align: center; margin-bottom: 1.25rem; }
+        h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 0.15rem; }
+        .date { color: #94a3b8; font-size: 0.9rem; margin: 0; }
+        .summary {
+            margin: 0.75rem auto 0;
+            font-size: 0.95rem;
+            color: #94a3b8;
         }
-        .box input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
-        .box .face {
-            width: 100%;
-            height: 100%;
-            border-radius: 1.75rem;
-            border: 4px solid #334155;
+        .summary.done { color: #4ade80; }
+        .summary b { color: #e2e8f0; font-weight: 600; }
+
+        ul { list-style: none; margin: 0; padding: 0; }
+        .item {
             background: #1e293b;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            border: 1px solid #334155;
+            border-radius: 1rem;
+            padding: 0.9rem 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .item-top { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+        .item-label { font-size: 1.05rem; font-weight: 500; word-break: break-word; }
+        .item-remaining { font-size: 0.8rem; color: #f59e0b; white-space: nowrap; }
+        .item-remaining.done { color: #4ade80; }
+        .del {
+            background: none; border: none; color: #475569; font-size: 1.25rem;
+            line-height: 1; padding: 0.1rem 0.3rem; cursor: pointer;
+        }
+        .del:hover { color: #f87171; }
+
+        .controls { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.85rem; flex-wrap: wrap; }
+
+        /* Single checkbox */
+        .box { position: relative; width: 3rem; height: 3rem; cursor: pointer; flex: none; }
+        .box .face {
+            width: 100%; height: 100%; border-radius: 0.75rem;
+            border: 3px solid #475569; background: #0f172a;
+            display: flex; align-items: center; justify-content: center;
             transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
         }
-        .box .face svg { width: 5.5rem; height: 5.5rem; stroke: #0f172a; stroke-width: 5; fill: none;
+        .box.checked .face { background: #22c55e; border-color: #22c55e; }
+        .box .face svg { width: 1.8rem; height: 1.8rem; stroke: #0f172a; stroke-width: 6; fill: none;
             stroke-linecap: round; stroke-linejoin: round;
             stroke-dasharray: 100; stroke-dashoffset: 100; transition: stroke-dashoffset 0.2s ease; }
-        .box input:checked + .face {
-            background: #22c55e;
-            border-color: #22c55e;
-        }
-        .box input:checked + .face svg { stroke-dashoffset: 0; }
-        .box input:active + .face { transform: scale(0.96); }
+        .box.checked .face svg { stroke-dashoffset: 0; }
+        .box:active .face { transform: scale(0.94); }
 
-        .label { margin-top: 1.5rem; font-size: 1.05rem; min-height: 1.5rem; }
-        .label.done { color: #4ade80; }
-
-        button {
-            font-size: 1rem;
-            font-family: inherit;
-            margin-top: 2rem;
-            padding: 0.7rem 1.2rem;
-            border-radius: 0.75rem;
-            border: 1px solid #334155;
-            background: #1e293b;
-            color: #e2e8f0;
-            cursor: pointer;
+        /* Counter */
+        .pips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        .pip {
+            width: 1.9rem; height: 1.9rem; border-radius: 0.55rem;
+            border: 2px solid #475569; background: #0f172a; cursor: pointer; flex: none;
+            transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
         }
-        button:disabled { opacity: 0.5; cursor: default; }
-        .hint { margin-top: 1.5rem; max-width: 22rem; color: #64748b; font-size: 0.8rem; line-height: 1.5; }
+        .pip.on { background: #22c55e; border-color: #22c55e; }
+        .pip.extra { border-color: #16a34a; background: #15803d; }
+        .pip:active { transform: scale(0.9); }
+        .counter-num { font-variant-numeric: tabular-nums; font-size: 1.05rem; min-width: 3.2rem; text-align: center; }
+        .counter-num b { font-size: 1.25rem; }
+        .step {
+            width: 2.6rem; height: 2.6rem; border-radius: 0.7rem; flex: none;
+            border: 1px solid #334155; background: #0f172a; color: #e2e8f0;
+            font-size: 1.4rem; line-height: 1; cursor: pointer;
+        }
+        .step:active { background: #1e293b; }
+
+        .empty { text-align: center; color: #64748b; padding: 1.5rem 0; }
+
+        /* Add form */
+        form.add {
+            margin-top: 1.5rem; background: #1e293b; border: 1px solid #334155;
+            border-radius: 1rem; padding: 1rem;
+        }
+        form.add h2 { font-size: 0.95rem; margin: 0 0 0.75rem; color: #cbd5e1; font-weight: 600; }
+        .field { margin-bottom: 0.7rem; }
+        label.flbl { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.25rem; }
+        input, select {
+            font-size: 16px; font-family: inherit; width: 100%;
+            padding: 0.6rem 0.7rem; border-radius: 0.6rem;
+            border: 1px solid #334155; background: #0f172a; color: #e2e8f0;
+        }
+        input[type="number"] { width: 6rem; }
+        .row { display: flex; gap: 0.7rem; align-items: flex-end; }
+        button.primary {
+            font-size: 1rem; font-family: inherit; width: 100%; margin-top: 0.4rem;
+            padding: 0.7rem; border-radius: 0.7rem; border: none;
+            background: #22c55e; color: #052e16; font-weight: 600; cursor: pointer;
+        }
+        button.primary:active { background: #16a34a; }
+
+        button.ghost {
+            font-size: 0.95rem; font-family: inherit; margin-top: 1.25rem;
+            padding: 0.7rem 1rem; border-radius: 0.7rem;
+            border: 1px solid #334155; background: #1e293b; color: #e2e8f0; cursor: pointer; width: 100%;
+        }
+        #badgeState { margin-top: 0.6rem; font-size: 0.78rem; color: #64748b; min-height: 1rem; text-align: center; }
+        .hint { margin-top: 1.25rem; color: #64748b; font-size: 0.78rem; line-height: 1.5; text-align: center; }
         .hint b { color: #94a3b8; font-weight: 600; }
-        #badgeState { margin-top: 0.75rem; font-size: 0.8rem; color: #64748b; min-height: 1rem; }
     </style>
 </head>
 <body>
-    <h1>Daily Check</h1>
-    <p class="date" id="date"></p>
+    <div class="wrap">
+        <header>
+            <h1>Daily Tracker</h1>
+            <p class="date" id="date"></p>
+            <p class="summary" id="summary"></p>
+        </header>
 
-    <label class="box">
-        <input type="checkbox" id="check" aria-label="Mark today as done">
-        <span class="face">
-            <svg viewBox="0 0 100 100" aria-hidden="true"><path d="M22 52 L42 72 L78 30"/></svg>
-        </span>
-    </label>
+        <ul id="list"></ul>
 
-    <p class="label" id="label"></p>
+        <form class="add" id="addForm" autocomplete="off">
+            <h2>Add an item</h2>
+            <div class="field">
+                <label class="flbl" for="newLabel">Label</label>
+                <input type="text" id="newLabel" placeholder="e.g. Learn anki cards" required>
+            </div>
+            <div class="row">
+                <div class="field" style="flex:1">
+                    <label class="flbl" for="newType">Type</label>
+                    <select id="newType">
+                        <option value="checkbox">Checkbox (once a day)</option>
+                        <option value="counter">Counter (N times a day)</option>
+                    </select>
+                </div>
+                <div class="field" id="minField" hidden>
+                    <label class="flbl" for="newMin">Times</label>
+                    <input type="number" id="newMin" min="1" step="1" value="3" inputmode="numeric">
+                </div>
+            </div>
+            <button class="primary" type="submit">Add item</button>
+        </form>
 
-    <button id="enable" type="button" hidden>Enable home-screen badge</button>
-    <p id="badgeState" aria-live="polite"></p>
+        <button id="enable" class="ghost" type="button" hidden>Enable home-screen badge</button>
+        <p id="badgeState" aria-live="polite"></p>
 
-    <p class="hint">
-        On <b>iPhone</b>: open this page in Safari, tap <b>Share → Add to Home&nbsp;Screen</b>,
-        then open it from the new icon and allow notifications. Any day you don't tick the box,
-        a red badge stays on the icon until you do.
-    </p>
+        <p class="hint">
+            On <b>iPhone</b>: open in Safari, tap <b>Share &rarr; Add to Home&nbsp;Screen</b>,
+            then open from the icon and allow notifications. The icon badge shows how many
+            things you still have left to do today.
+        </p>
+    </div>
 
     <script>
     (function () {
@@ -123,26 +185,54 @@
             return new Date(d.getTime() - tz).toISOString().slice(0, 10);
         }
 
-        // The badge count to show given whether today's box is ticked:
-        // 0 (cleared) when done, 1 (a dot/number on the icon) when not.
-        function badgeFor(checkedToday) {
-            return checkedToday ? 0 : 1;
+        // How many ticks an item still owes today, given its progress count.
+        //  - checkbox: 1 until ticked once, then 0.
+        //  - counter:  the shortfall below its required minimum (never below 0).
+        function remainingFor(item, count) {
+            count = count || 0;
+            if (item.type === 'counter') {
+                const min = Math.max(0, Math.floor(item.min || 0));
+                return Math.max(0, min - count);
+            }
+            return count >= 1 ? 0 : 1;
+        }
+
+        // Total badge = sum of every item's shortfall with the given progress.
+        function totalBadge(items, progress) {
+            progress = progress || {};
+            return items.reduce((sum, it) => sum + remainingFor(it, progress[it.id] || 0), 0);
+        }
+
+        // Badge when nothing has been done yet (start of a fresh day).
+        function fullBadge(items) {
+            return items.reduce((sum, it) => sum + remainingFor(it, 0), 0);
         }
 
         function runTests() {
             const results = [];
             const ok = (name, cond) => results.push({ name, pass: !!cond });
+            const cb = { id: 'a', type: 'checkbox' };
+            const ctr = { id: 'b', type: 'counter', min: 3 };
 
             ok('dateKey is local YYYY-MM-DD',
                 /^\d{4}-\d{2}-\d{2}$/.test(dateKey(new Date(2026, 5, 15, 23, 30))));
             ok('dateKey uses local calendar day, not UTC',
                 dateKey(new Date(2026, 0, 1, 0, 5)) === '2026-01-01');
-            ok('badge lit when not done', badgeFor(false) === 1);
-            ok('badge cleared when done', badgeFor(true) === 0);
+            ok('checkbox owes 1 when untouched', remainingFor(cb, 0) === 1);
+            ok('checkbox owes 0 when ticked', remainingFor(cb, 1) === 0);
+            ok('counter owes full min when untouched', remainingFor(ctr, 0) === 3);
+            ok('counter owes shortfall partway', remainingFor(ctr, 2) === 1);
+            ok('counter owes 0 when met', remainingFor(ctr, 3) === 0);
+            ok('counter never negative past min', remainingFor(ctr, 5) === 0);
+            ok('total sums across items',
+                totalBadge([cb, ctr], { b: 1 }) === 1 + 2);
+            ok('total is 0 when all done',
+                totalBadge([cb, ctr], { a: 1, b: 3 }) === 0);
+            ok('fullBadge is sum of minimums', fullBadge([cb, ctr]) === 1 + 3);
 
             const passed = results.filter((r) => r.pass).length;
             const failed = results.length - passed;
-            for (const r of results) console.log((r.pass ? 'PASS' : 'FAIL') + ' — ' + r.name);
+            for (const r of results) console.log((r.pass ? 'PASS' : 'FAIL') + ' \u2014 ' + r.name);
             console.log(passed + ' passed, ' + failed + ' failed');
             return { passed, failed };
         }
@@ -162,121 +252,265 @@
             return;
         }
 
-        // ---- Per-day persisted state ----
+        // ---- Storage ----
+        // Item definitions persist across days; progress is keyed per local day.
+        const ITEMS_KEY = 'dailycheck:items';
+        const PROGRESS_PREFIX = 'dailycheck:progress:';
 
-        const STORAGE_PREFIX = 'dailycheck:';
-        const checkEl = document.getElementById('check');
-        const labelEl = document.getElementById('label');
+        function loadItems() {
+            try { return JSON.parse(localStorage.getItem(ITEMS_KEY)) || []; }
+            catch (_) { return []; }
+        }
+        function saveItems() {
+            try { localStorage.setItem(ITEMS_KEY, JSON.stringify(items)); } catch (_) {}
+        }
+        function loadProgress() {
+            try { return JSON.parse(localStorage.getItem(PROGRESS_PREFIX + dateKey())) || {}; }
+            catch (_) { return {}; }
+        }
+        function saveProgress() {
+            try { localStorage.setItem(PROGRESS_PREFIX + dateKey(), JSON.stringify(progress)); } catch (_) {}
+        }
+
+        let items = loadItems();
+        let progress = loadProgress();
+        let shownDay = dateKey();
+
+        // ---- DOM refs ----
+        const listEl = document.getElementById('list');
         const dateEl = document.getElementById('date');
+        const summaryEl = document.getElementById('summary');
+        const addForm = document.getElementById('addForm');
+        const newLabel = document.getElementById('newLabel');
+        const newType = document.getElementById('newType');
+        const newMin = document.getElementById('newMin');
+        const minField = document.getElementById('minField');
         const enableBtn = document.getElementById('enable');
         const badgeStateEl = document.getElementById('badgeState');
 
-        let shownDay = dateKey();
-
-        function isCheckedToday() {
-            try { return localStorage.getItem(STORAGE_PREFIX + dateKey()) === '1'; }
-            catch (_) { return false; }
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, (c) => (
+                { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+            ));
         }
 
-        function setCheckedToday(value) {
-            const key = STORAGE_PREFIX + dateKey();
-            try {
-                if (value) localStorage.setItem(key, '1');
-                else localStorage.removeItem(key);
-            } catch (_) { /* private mode etc. */ }
-            // Mirror the last ticked day into IndexedDB so the service worker
-            // can recompute the badge in the background where supported.
-            writeLastChecked(value ? dateKey() : null);
+        function makeId() {
+            return 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
         }
 
+        function countOf(id) { return progress[id] || 0; }
+
+        function setCount(id, n) {
+            n = Math.max(0, Math.floor(n));
+            if (n === 0) delete progress[id];
+            else progress[id] = n;
+            saveProgress();
+            render();
+            updateBadge();
+        }
+
+        // ---- Rendering ----
         function renderDate() {
             try {
                 dateEl.textContent = new Date().toLocaleDateString(undefined,
-                    { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+                    { weekday: 'long', month: 'long', day: 'numeric' });
             } catch (_) { dateEl.textContent = dateKey(); }
         }
 
-        function renderLabel() {
-            if (checkEl.checked) {
-                labelEl.textContent = 'Done for today \u2713';
-                labelEl.classList.add('done');
+        function itemHtml(it) {
+            const count = countOf(it.id);
+            const rem = remainingFor(it, count);
+            const remClass = rem === 0 ? 'item-remaining done' : 'item-remaining';
+            const remText = rem === 0 ? 'done \u2713'
+                : (it.type === 'counter' ? rem + ' left' : 'not yet');
+
+            let controls;
+            if (it.type === 'counter') {
+                const min = Math.max(1, Math.floor(it.min || 1));
+                const total = Math.max(min, count);
+                let pips = '';
+                for (let i = 0; i < total; i++) {
+                    const cls = i < count ? (i < min ? 'pip on' : 'pip extra') : 'pip';
+                    pips += '<span class="' + cls + '" data-action="set" data-id="' + it.id +
+                        '" data-n="' + (i + 1) + '" role="button" aria-label="set to ' + (i + 1) + '"></span>';
+                }
+                controls =
+                    '<div class="controls">' +
+                        '<button class="step" data-action="dec" data-id="' + it.id + '" aria-label="minus">\u2212</button>' +
+                        '<span class="counter-num"><b>' + count + '</b> / ' + min + '</span>' +
+                        '<button class="step" data-action="inc" data-id="' + it.id + '" aria-label="plus">+</button>' +
+                        '<span class="pips">' + pips + '</span>' +
+                    '</div>';
             } else {
-                labelEl.textContent = 'Not done yet today';
-                labelEl.classList.remove('done');
+                const checked = count >= 1 ? ' checked' : '';
+                controls =
+                    '<div class="controls">' +
+                        '<span class="box' + checked + '" data-action="toggle" data-id="' + it.id +
+                        '" role="checkbox" aria-checked="' + (count >= 1) + '" tabindex="0">' +
+                            '<span class="face"><svg viewBox="0 0 100 100" aria-hidden="true">' +
+                            '<path d="M22 52 L42 72 L78 30"/></svg></span>' +
+                        '</span>' +
+                    '</div>';
+            }
+
+            return '<li class="item">' +
+                '<div class="item-top">' +
+                    '<span class="item-label">' + escapeHtml(it.label) + '</span>' +
+                    '<span class="' + remClass + '">' + remText + '</span>' +
+                    '<button class="del" data-action="delete" data-id="' + it.id +
+                        '" aria-label="Delete item">\u00d7</button>' +
+                '</div>' + controls +
+                '</li>';
+        }
+
+        function renderSummary() {
+            const left = totalBadge(items, progress);
+            if (items.length === 0) { summaryEl.textContent = ''; summaryEl.className = 'summary'; return; }
+            if (left === 0) {
+                summaryEl.textContent = 'All done for today \u2713';
+                summaryEl.className = 'summary done';
+            } else {
+                summaryEl.innerHTML = '<b>' + left + '</b> thing' + (left === 1 ? '' : 's') + ' left today';
+                summaryEl.className = 'summary';
             }
         }
 
-        // ---- App Badging ----
+        function render() {
+            if (items.length === 0) {
+                listEl.innerHTML = '<li class="empty">No items yet. Add one below.</li>';
+            } else {
+                listEl.innerHTML = items.map(itemHtml).join('');
+            }
+            renderSummary();
+        }
 
+        // ---- Interactions (event delegation) ----
+        listEl.addEventListener('click', (e) => {
+            const t = e.target.closest('[data-action]');
+            if (!t) return;
+            const id = t.getAttribute('data-id');
+            const action = t.getAttribute('data-action');
+            const it = items.find((x) => x.id === id);
+            if (!it && action !== 'delete') return;
+
+            if (action === 'toggle') {
+                setCount(id, countOf(id) >= 1 ? 0 : 1);
+            } else if (action === 'inc') {
+                setCount(id, countOf(id) + 1);
+            } else if (action === 'dec') {
+                setCount(id, countOf(id) - 1);
+            } else if (action === 'set') {
+                const n = parseInt(t.getAttribute('data-n'), 10);
+                // Tapping the highest lit pip clears it; otherwise fill up to it.
+                setCount(id, countOf(id) === n ? n - 1 : n);
+            } else if (action === 'delete') {
+                items = items.filter((x) => x.id !== id);
+                delete progress[id];
+                saveItems();
+                saveProgress();
+                render();
+                updateBadge();
+            }
+        });
+
+        newType.addEventListener('change', () => {
+            minField.hidden = newType.value !== 'counter';
+        });
+
+        addForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const label = newLabel.value.trim();
+            if (!label) return;
+            const type = newType.value === 'counter' ? 'counter' : 'checkbox';
+            const item = { id: makeId(), label, type };
+            if (type === 'counter') item.min = Math.max(1, Math.floor(Number(newMin.value) || 1));
+            items.push(item);
+            saveItems();
+            newLabel.value = '';
+            newType.value = 'checkbox';
+            minField.hidden = true;
+            render();
+            updateBadge();
+            newLabel.focus();
+        });
+
+        // ---- App Badging ----
         function badgingSupported() {
             return 'setAppBadge' in navigator && 'clearAppBadge' in navigator;
         }
 
         async function updateBadge() {
+            writeMirror();
             if (!badgingSupported()) {
                 badgeStateEl.textContent = 'Badge API not available in this browser.';
                 return;
             }
-            const count = badgeFor(checkEl.checked);
+            const count = totalBadge(items, progress);
             try {
                 if (count === 0) {
                     await navigator.clearAppBadge();
-                    badgeStateEl.textContent = 'Badge cleared.';
+                    badgeStateEl.textContent = items.length ? 'Badge cleared \u2014 all done.' : '';
                 } else {
                     await navigator.setAppBadge(count);
-                    badgeStateEl.textContent = 'Badge on \u2014 tick the box to clear it.';
+                    badgeStateEl.textContent = 'Badge shows ' + count + ' left.';
                 }
             } catch (_) {
                 badgeStateEl.textContent = 'Add to Home Screen and allow notifications to get the badge.';
             }
-            // Ask the worker to keep the background badge in sync too.
             navigator.serviceWorker?.controller?.postMessage({ type: 'refresh-badge' });
         }
 
-        // ---- Day rollover: re-evaluate when a new local day begins while open ----
-
+        // ---- Day rollover ----
         function refreshForToday() {
             const today = dateKey();
             if (today !== shownDay) {
                 shownDay = today;
+                progress = loadProgress();
                 renderDate();
             }
-            checkEl.checked = isCheckedToday();
-            renderLabel();
+            render();
             updateBadge();
         }
-
-        // Check once a minute for midnight crossing, and on every foreground.
         setInterval(refreshForToday, 60 * 1000);
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') refreshForToday();
         });
         window.addEventListener('focus', refreshForToday);
 
-        checkEl.addEventListener('change', () => {
-            setCheckedToday(checkEl.checked);
-            renderLabel();
-            updateBadge();
-        });
-
         // ---- Notifications permission (iOS gates badging behind it) ----
-
         function syncEnableButton() {
             const needsPermission =
                 'Notification' in window && Notification.permission === 'default';
             enableBtn.hidden = !needsPermission;
         }
-
         enableBtn.addEventListener('click', async () => {
-            try {
-                if ('Notification' in window) await Notification.requestPermission();
-            } catch (_) { /* ignore */ }
+            try { if ('Notification' in window) await Notification.requestPermission(); }
+            catch (_) {}
             syncEnableButton();
             updateBadge();
         });
 
-        // ---- Service worker registration + daily background refresh ----
+        // ---- IndexedDB mirror so the worker can refresh the badge in the
+        // background (where supported). Stores today's badge plus the
+        // "nothing done yet" badge for a fresh day. ----
+        function openDb() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open('dailycheck', 1);
+                req.onupgradeneeded = () => req.result.createObjectStore('state');
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+        function writeMirror() {
+            if (!('indexedDB' in window)) return;
+            const rec = { date: dateKey(), badge: totalBadge(items, progress), fullBadge: fullBadge(items) };
+            openDb().then((db) => {
+                const tx = db.transaction('state', 'readwrite');
+                tx.objectStore('state').put(rec, 'today');
+            }).catch(() => {});
+        }
 
+        // ---- Service worker registration + daily background refresh ----
         async function registerSW() {
             if (!('serviceWorker' in navigator)) return;
             try {
@@ -294,29 +528,9 @@
             } catch (_) { /* offline / unsupported */ }
         }
 
-        // ---- IndexedDB mirror for the worker ----
-
-        function openDb() {
-            return new Promise((resolve, reject) => {
-                const req = indexedDB.open('dailycheck', 1);
-                req.onupgradeneeded = () => req.result.createObjectStore('state');
-                req.onsuccess = () => resolve(req.result);
-                req.onerror = () => reject(req.error);
-            });
-        }
-
-        function writeLastChecked(dayOrNull) {
-            if (!('indexedDB' in window)) return;
-            openDb().then((db) => {
-                const tx = db.transaction('state', 'readwrite');
-                tx.objectStore('state').put(dayOrNull, 'lastCheckedDate');
-            }).catch(() => {});
-        }
-
         // ---- Boot ----
         renderDate();
-        checkEl.checked = isCheckedToday();
-        renderLabel();
+        render();
         syncEnableButton();
         updateBadge();
         registerSW();
