@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
+    <title>Daily Check</title>
+
+    <!-- PWA: the App Badging API only paints a badge on the home-screen icon
+         once this page is installed as a standalone web app. -->
+    <link rel="manifest" href="dailycheck.webmanifest">
+    <link rel="apple-touch-icon" href="dailycheck-icon.svg">
+    <link rel="icon" href="dailycheck-icon.svg" type="image/svg+xml">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Daily Check">
+
+    <style>
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100svh;
+            padding: max(env(safe-area-inset-top), 1.5rem) 1.5rem max(env(safe-area-inset-bottom), 1.5rem);
+            text-align: center;
+            -webkit-tap-highlight-color: transparent;
+        }
+        h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.25rem; }
+        .date { color: #94a3b8; font-size: 0.95rem; margin: 0 0 2rem; }
+
+        /* The one checkbox, made big and tappable. */
+        .box {
+            position: relative;
+            width: 9rem;
+            height: 9rem;
+            cursor: pointer;
+            user-select: none;
+        }
+        .box input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+        .box .face {
+            width: 100%;
+            height: 100%;
+            border-radius: 1.75rem;
+            border: 4px solid #334155;
+            background: #1e293b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+        }
+        .box .face svg { width: 5.5rem; height: 5.5rem; stroke: #0f172a; stroke-width: 5; fill: none;
+            stroke-linecap: round; stroke-linejoin: round;
+            stroke-dasharray: 100; stroke-dashoffset: 100; transition: stroke-dashoffset 0.2s ease; }
+        .box input:checked + .face {
+            background: #22c55e;
+            border-color: #22c55e;
+        }
+        .box input:checked + .face svg { stroke-dashoffset: 0; }
+        .box input:active + .face { transform: scale(0.96); }
+
+        .label { margin-top: 1.5rem; font-size: 1.05rem; min-height: 1.5rem; }
+        .label.done { color: #4ade80; }
+
+        button {
+            font-size: 1rem;
+            font-family: inherit;
+            margin-top: 2rem;
+            padding: 0.7rem 1.2rem;
+            border-radius: 0.75rem;
+            border: 1px solid #334155;
+            background: #1e293b;
+            color: #e2e8f0;
+            cursor: pointer;
+        }
+        button:disabled { opacity: 0.5; cursor: default; }
+        .hint { margin-top: 1.5rem; max-width: 22rem; color: #64748b; font-size: 0.8rem; line-height: 1.5; }
+        .hint b { color: #94a3b8; font-weight: 600; }
+        #badgeState { margin-top: 0.75rem; font-size: 0.8rem; color: #64748b; min-height: 1rem; }
+    </style>
+</head>
+<body>
+    <h1>Daily Check</h1>
+    <p class="date" id="date"></p>
+
+    <label class="box">
+        <input type="checkbox" id="check" aria-label="Mark today as done">
+        <span class="face">
+            <svg viewBox="0 0 100 100" aria-hidden="true"><path d="M22 52 L42 72 L78 30"/></svg>
+        </span>
+    </label>
+
+    <p class="label" id="label"></p>
+
+    <button id="enable" type="button" hidden>Enable home-screen badge</button>
+    <p id="badgeState" aria-live="polite"></p>
+
+    <p class="hint">
+        On <b>iPhone</b>: open this page in Safari, tap <b>Share → Add to Home&nbsp;Screen</b>,
+        then open it from the new icon and allow notifications. Any day you don't tick the box,
+        a red badge stays on the icon until you do.
+    </p>
+
+    <script>
+    (function () {
+        'use strict';
+
+        // ---- Pure, DOM-free logic (also exercised by the ?test self-test) ----
+
+        // Local-time YYYY-MM-DD. Local (not UTC) so "today" flips at the
+        // user's midnight, which is what a daily habit cares about.
+        function dateKey(d) {
+            d = d || new Date();
+            const tz = d.getTimezoneOffset() * 60000;
+            return new Date(d.getTime() - tz).toISOString().slice(0, 10);
+        }
+
+        // The badge count to show given whether today's box is ticked:
+        // 0 (cleared) when done, 1 (a dot/number on the icon) when not.
+        function badgeFor(checkedToday) {
+            return checkedToday ? 0 : 1;
+        }
+
+        function runTests() {
+            const results = [];
+            const ok = (name, cond) => results.push({ name, pass: !!cond });
+
+            ok('dateKey is local YYYY-MM-DD',
+                /^\d{4}-\d{2}-\d{2}$/.test(dateKey(new Date(2026, 5, 15, 23, 30))));
+            ok('dateKey uses local calendar day, not UTC',
+                dateKey(new Date(2026, 0, 1, 0, 5)) === '2026-01-01');
+            ok('badge lit when not done', badgeFor(false) === 1);
+            ok('badge cleared when done', badgeFor(true) === 0);
+
+            const passed = results.filter((r) => r.pass).length;
+            const failed = results.length - passed;
+            for (const r of results) console.log((r.pass ? 'PASS' : 'FAIL') + ' — ' + r.name);
+            console.log(passed + ' passed, ' + failed + ' failed');
+            return { passed, failed };
+        }
+
+        // Headless (node) or ?test in the browser: run tests and stop.
+        const isBrowser = typeof document !== 'undefined';
+        if (!isBrowser) {
+            const res = runTests();
+            if (typeof process !== 'undefined') process.exit(res.failed ? 1 : 0);
+            return;
+        }
+        if (location.search.indexOf('test') !== -1) {
+            const res = runTests();
+            document.body.innerHTML =
+                '<pre style="color:#e2e8f0;padding:1rem">' +
+                res.passed + ' passed, ' + res.failed + ' failed</pre>';
+            return;
+        }
+
+        // ---- Per-day persisted state ----
+
+        const STORAGE_PREFIX = 'dailycheck:';
+        const checkEl = document.getElementById('check');
+        const labelEl = document.getElementById('label');
+        const dateEl = document.getElementById('date');
+        const enableBtn = document.getElementById('enable');
+        const badgeStateEl = document.getElementById('badgeState');
+
+        let shownDay = dateKey();
+
+        function isCheckedToday() {
+            try { return localStorage.getItem(STORAGE_PREFIX + dateKey()) === '1'; }
+            catch (_) { return false; }
+        }
+
+        function setCheckedToday(value) {
+            const key = STORAGE_PREFIX + dateKey();
+            try {
+                if (value) localStorage.setItem(key, '1');
+                else localStorage.removeItem(key);
+            } catch (_) { /* private mode etc. */ }
+            // Mirror the last ticked day into IndexedDB so the service worker
+            // can recompute the badge in the background where supported.
+            writeLastChecked(value ? dateKey() : null);
+        }
+
+        function renderDate() {
+            try {
+                dateEl.textContent = new Date().toLocaleDateString(undefined,
+                    { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            } catch (_) { dateEl.textContent = dateKey(); }
+        }
+
+        function renderLabel() {
+            if (checkEl.checked) {
+                labelEl.textContent = 'Done for today \u2713';
+                labelEl.classList.add('done');
+            } else {
+                labelEl.textContent = 'Not done yet today';
+                labelEl.classList.remove('done');
+            }
+        }
+
+        // ---- App Badging ----
+
+        function badgingSupported() {
+            return 'setAppBadge' in navigator && 'clearAppBadge' in navigator;
+        }
+
+        async function updateBadge() {
+            if (!badgingSupported()) {
+                badgeStateEl.textContent = 'Badge API not available in this browser.';
+                return;
+            }
+            const count = badgeFor(checkEl.checked);
+            try {
+                if (count === 0) {
+                    await navigator.clearAppBadge();
+                    badgeStateEl.textContent = 'Badge cleared.';
+                } else {
+                    await navigator.setAppBadge(count);
+                    badgeStateEl.textContent = 'Badge on \u2014 tick the box to clear it.';
+                }
+            } catch (_) {
+                badgeStateEl.textContent = 'Add to Home Screen and allow notifications to get the badge.';
+            }
+            // Ask the worker to keep the background badge in sync too.
+            navigator.serviceWorker?.controller?.postMessage({ type: 'refresh-badge' });
+        }
+
+        // ---- Day rollover: re-evaluate when a new local day begins while open ----
+
+        function refreshForToday() {
+            const today = dateKey();
+            if (today !== shownDay) {
+                shownDay = today;
+                renderDate();
+            }
+            checkEl.checked = isCheckedToday();
+            renderLabel();
+            updateBadge();
+        }
+
+        // Check once a minute for midnight crossing, and on every foreground.
+        setInterval(refreshForToday, 60 * 1000);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') refreshForToday();
+        });
+        window.addEventListener('focus', refreshForToday);
+
+        checkEl.addEventListener('change', () => {
+            setCheckedToday(checkEl.checked);
+            renderLabel();
+            updateBadge();
+        });
+
+        // ---- Notifications permission (iOS gates badging behind it) ----
+
+        function syncEnableButton() {
+            const needsPermission =
+                'Notification' in window && Notification.permission === 'default';
+            enableBtn.hidden = !needsPermission;
+        }
+
+        enableBtn.addEventListener('click', async () => {
+            try {
+                if ('Notification' in window) await Notification.requestPermission();
+            } catch (_) { /* ignore */ }
+            syncEnableButton();
+            updateBadge();
+        });
+
+        // ---- Service worker registration + daily background refresh ----
+
+        async function registerSW() {
+            if (!('serviceWorker' in navigator)) return;
+            try {
+                const reg = await navigator.serviceWorker.register('dailycheck-sw.js');
+                if ('periodicSync' in reg) {
+                    try {
+                        const status = await navigator.permissions.query({ name: 'periodic-background-sync' });
+                        if (status.state === 'granted') {
+                            await reg.periodicSync.register('dailycheck-refresh', {
+                                minInterval: 12 * 60 * 60 * 1000,
+                            });
+                        }
+                    } catch (_) { /* not supported (e.g. iOS) — page handles refresh */ }
+                }
+            } catch (_) { /* offline / unsupported */ }
+        }
+
+        // ---- IndexedDB mirror for the worker ----
+
+        function openDb() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open('dailycheck', 1);
+                req.onupgradeneeded = () => req.result.createObjectStore('state');
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        function writeLastChecked(dayOrNull) {
+            if (!('indexedDB' in window)) return;
+            openDb().then((db) => {
+                const tx = db.transaction('state', 'readwrite');
+                tx.objectStore('state').put(dayOrNull, 'lastCheckedDate');
+            }).catch(() => {});
+        }
+
+        // ---- Boot ----
+        renderDate();
+        checkEl.checked = isCheckedToday();
+        renderLabel();
+        syncEnableButton();
+        updateBadge();
+        registerSW();
+    })();
+    </script>
+</body>
+</html>
