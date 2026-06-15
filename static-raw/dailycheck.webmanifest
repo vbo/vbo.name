@@ -1,0 +1,19 @@
+{
+  "name": "Daily Check",
+  "short_name": "Daily Check",
+  "description": "One checkbox a day. Your home-screen icon shows a badge until you tick today's box.",
+  "start_url": "./dailycheck.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "./dailycheck-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
