@@ -1,7 +1,7 @@
 {
-  "name": "Daily Check",
-  "short_name": "Daily Check",
-  "description": "One checkbox a day. Your home-screen icon shows a badge until you tick today's box.",
+  "name": "Daily Tracker",
+  "short_name": "Daily Tracker",
+  "description": "Track your daily to-dos. The home-screen icon badge counts how many things you still have left to do today.",
   "start_url": "./dailycheck.html",
   "scope": "./",
   "display": "standalone",

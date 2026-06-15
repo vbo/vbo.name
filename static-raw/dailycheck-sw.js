@@ -15,7 +15,7 @@
  * ran, and a new day's unticked box re-lights it the next time you open it.
  */
 
-const CACHE = 'dailycheck-v1';
+const CACHE = 'dailycheck-v2';
 const ASSETS = [
   './dailycheck.html',
   './dailycheck.webmanifest',
@@ -45,7 +45,9 @@ self.addEventListener('fetch', (event) => {
 });
 
 // --- Shared state in IndexedDB (localStorage is unavailable in a worker) ---
-// The page writes the last date the box was ticked here; the worker reads it.
+// The page writes today's badge count here; the worker reads it. The record is
+// { date, badge, fullBadge } so the worker can tell a stale day apart from a
+// fresh one (where nothing has been done yet and the full badge applies).
 const DB_NAME = 'dailycheck';
 const STORE = 'state';
 
@@ -74,11 +76,17 @@ function localDateKey(d = new Date()) {
 
 async function refreshBadge() {
   if (!self.navigator || !('setAppBadge' in self.navigator)) return;
-  const lastChecked = await idbGet('lastCheckedDate').catch(() => null);
-  if (lastChecked === localDateKey()) {
-    await self.navigator.clearAppBadge().catch(() => {});
+  const rec = await idbGet('today').catch(() => null);
+  let count = 0;
+  if (rec && rec.date === localDateKey()) {
+    count = rec.badge || 0;        // same day: use the page's last computed badge
+  } else if (rec) {
+    count = rec.fullBadge || 0;    // new day: nothing done yet, everything is owed
+  }
+  if (count > 0) {
+    await self.navigator.setAppBadge(count).catch(() => {});
   } else {
-    await self.navigator.setAppBadge(1).catch(() => {});
+    await self.navigator.clearAppBadge().catch(() => {});
   }
 }
 
