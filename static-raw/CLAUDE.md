@@ -2,6 +2,12 @@
 
 Files here are copied verbatim into `public/` at build time (`hexo generate` doesn't touch them — see the `cpSync` step in `package.json`'s `build` script). Hexo's link validator (`npm run validate`) does check the copied output for broken links, but it doesn't parse JSX inside `<script type="text/babel">` blocks, so syntax errors in those land at runtime in the browser console.
 
+## CDN deps must be pinned to exact versions
+
+Every external `<script>` / stylesheet in these HTML files **must reference an exact version** — never `latest`, never major-only (`@7`, `@18`). On 2026-06-16 `@babel/standalone` flipped from `7.29.7` to `8.0.0` upstream, `preset-react`'s default JSX runtime changed, and `multiply_kittens.html` silently rendered as a blank page (the parse error landed in DevTools' Issues tab, not the Console). The page's own bytes hadn't changed in two weeks. There is no build-time bundling here, so a floating dist-tag is a live time bomb.
+
+Rule: pin every `unpkg.com/<pkg>@X.Y.Z/...` and `cdn.tailwindcss.com/X.Y.Z` to a specific version. To intentionally upgrade a dep, change the version in-place and re-test in the browser. Do not introduce new floating tags.
+
 ## Git: how work reaches the live site (Claude self-merges)
 
 The live site builds from `master`. The expected flow for Claude is:

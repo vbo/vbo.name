@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#4f46e5">
     <title>Ausgaben</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tailwind Play CDN pinned to an exact version. See the long-form
+         note in multiply_kittens.html for why floating tags are not safe
+         here (Babel 8.0.0 silently broke that page on 2026-06-16). -->
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
     <style>
         /* Prevent iOS auto-zoom on focus by keeping inputs at 16px. */
         input, select, textarea, button { font-size: 16px; }

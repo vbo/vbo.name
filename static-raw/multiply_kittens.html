@@ -4,20 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Math</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <!-- Pinned to 7.29.7: @babel/standalone@8.0.0 (2026-06-16) flipped
-         preset-react's default to the automatic JSX runtime, which emits
-         `import { jsx } from "react/jsx-runtime"` at the top of the
-         compiled output. Babel injects that compiled code back as a
-         classic (non-module) <script>, so the browser throws
-         "Cannot use import statement outside a module" at parse time and
-         the whole React tree never mounts (page comes up blank, error
-         lands in the Issues tab rather than the console). Pinning to
-         7.x keeps the classic React.createElement runtime as default. -->
+    <!-- All CDN deps pinned to exact versions. Bumping `latest` upstream
+         once silently broke this page (Babel 8.0.0 on 2026-06-16 flipped
+         preset-react's default JSX runtime → `<script type="text/babel">`
+         emitted `import { jsx } from "react/jsx-runtime"`, browser threw
+         "Cannot use import statement outside a module" at parse time, and
+         the whole React tree silently failed to mount). To bump any of
+         these intentionally, change the version here and re-test in the
+         browser; never go back to floating tags. -->
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+    <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/lucide@1.20.0/dist/umd/lucide.min.js"></script>
     <style>
         @keyframes coin-fly {
             0% { transform: translate(-50%, 0) scale(1) rotate(0deg); opacity: 1; }
@@ -196,7 +195,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.28';
+    const VERSION = '1.29';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
