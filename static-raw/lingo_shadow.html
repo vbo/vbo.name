@@ -3,8 +3,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Linguist Shadow - Audio Comparison</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/wavesurfer.js@7"></script>
+    <!-- CDN deps pinned to exact versions. See the long-form note in
+         multiply_kittens.html for why floating tags are not safe here
+         (Babel 8.0.0 silently broke that page on 2026-06-16). Bump
+         versions here intentionally, never via `latest` / major-only. -->
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+    <script src="https://unpkg.com/wavesurfer.js@7.12.8/dist/wavesurfer.min.js"></script>
     <style>
         .waveform-container {
             background: #f9fafb;
