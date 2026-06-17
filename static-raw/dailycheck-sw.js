@@ -1,21 +1,23 @@
 /*
  * Service worker for dailycheck.html.
  *
- * Two jobs:
+ * Jobs:
  *   1. Make the page installable / offline-capable (a precondition for the
  *      App Badging API to work on an iPhone home-screen web app).
  *   2. Where the platform supports Periodic Background Sync (Chromium on
  *      Android/desktop), re-evaluate the badge once a day even while the app
- *      is closed: badge stays lit until the day's box is ticked.
+ *      is closed.
+ *   3. Handle Web Push ("push" event). This is the only mechanism that updates
+ *      the badge on a *locked, untouched* iPhone. A daily payload-less push
+ *      (sent by dailycheck-push.gs) wakes this worker, which recomputes today's
+ *      badge from IndexedDB and shows a notification. See dailycheck-push.gs.
  *
- * iOS/Safari does NOT support periodic background sync, so there the badge is
- * refreshed by the page itself whenever the installed web app is opened or
- * brought to the foreground (see dailycheck.html). That is the realistic
- * iPhone behaviour: the badge reflects the state as of the last time the app
- * ran, and a new day's unticked box re-lights it the next time you open it.
+ * iOS/Safari does NOT support periodic background sync, so without push the
+ * badge is refreshed by the page itself whenever the installed web app is
+ * opened or brought to the foreground (see dailycheck.html).
  */
 
-const CACHE = 'dailycheck-v2';
+const CACHE = 'dailycheck-v3';
 const ASSETS = [
   './dailycheck.html',
   './dailycheck.webmanifest',
@@ -74,20 +76,25 @@ function localDateKey(d = new Date()) {
   return new Date(d - tz).toISOString().slice(0, 10);
 }
 
-async function refreshBadge() {
-  if (!self.navigator || !('setAppBadge' in self.navigator)) return;
+// How many things are still owed today, from the page's IndexedDB mirror.
+// A stale record (date != today) means a fresh day where nothing is done yet,
+// so everything is owed (fullBadge).
+async function badgeCount() {
   const rec = await idbGet('today').catch(() => null);
-  let count = 0;
-  if (rec && rec.date === localDateKey()) {
-    count = rec.badge || 0;        // same day: use the page's last computed badge
-  } else if (rec) {
-    count = rec.fullBadge || 0;    // new day: nothing done yet, everything is owed
-  }
+  if (rec && rec.date === localDateKey()) return rec.badge || 0;
+  if (rec) return rec.fullBadge || 0;
+  return 0;
+}
+
+async function refreshBadge() {
+  if (!self.navigator || !('setAppBadge' in self.navigator)) return 0;
+  const count = await badgeCount();
   if (count > 0) {
     await self.navigator.setAppBadge(count).catch(() => {});
   } else {
     await self.navigator.clearAppBadge().catch(() => {});
   }
+  return count;
 }
 
 self.addEventListener('periodicsync', (event) => {
@@ -101,4 +108,41 @@ self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'refresh-badge') {
     event.waitUntil(refreshBadge());
   }
+});
+
+// --- Web Push ---------------------------------------------------------------
+// The daily push carries no payload (a "tickle"): we recompute the badge here
+// and show a notification. iOS requires every push to show a user-visible
+// notification, so we always call showNotification.
+async function handlePush() {
+  const count = await refreshBadge();
+  const title = 'Daily Tracker';
+  const body = count > 0
+    ? 'You have ' + count + ' thing' + (count === 1 ? '' : 's') + ' to do today.'
+    : 'All done for today \u2713';
+  await self.registration.showNotification(title, {
+    body: body,
+    tag: 'dailycheck-daily',
+    renotify: true,
+    icon: './dailycheck-icon.svg',
+    badge: './dailycheck-icon.svg',
+    data: { url: './dailycheck.html' },
+  });
+}
+
+self.addEventListener('push', (event) => {
+  event.waitUntil(handlePush());
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || './dailycheck.html';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      for (const client of list) {
+        if ('focus' in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(url);
+    })
+  );
 });
