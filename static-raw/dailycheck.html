@@ -452,6 +452,19 @@
             return 'setAppBadge' in navigator && 'clearAppBadge' in navigator;
         }
 
+        // Message the active service worker (controller can be null right after
+        // first load, so fall back to the ready registration's worker).
+        function swPost(msg) {
+            if (!('serviceWorker' in navigator)) return;
+            if (navigator.serviceWorker.controller) {
+                navigator.serviceWorker.controller.postMessage(msg);
+                return;
+            }
+            navigator.serviceWorker.ready
+                .then((reg) => reg.active && reg.active.postMessage(msg))
+                .catch(() => {});
+        }
+
         async function updateBadge() {
             writeMirror();
             if (!badgingSupported()) {
@@ -470,7 +483,7 @@
             } catch (_) {
                 badgeStateEl.textContent = 'Add to Home Screen and allow notifications to get the badge.';
             }
-            navigator.serviceWorker?.controller?.postMessage({ type: 'refresh-badge' });
+            swPost({ type: 'refresh-badge' });
         }
 
         // ---- Day rollover ----
@@ -483,6 +496,9 @@
             }
             render();
             updateBadge();
+            // Opening / returning to the app dismisses the morning push banner
+            // so it can't show a stale count after you start ticking things off.
+            swPost({ type: 'clear-notifications' });
         }
         setInterval(refreshForToday, 60 * 1000);
         document.addEventListener('visibilitychange', () => {
@@ -589,6 +605,7 @@
         render();
         syncEnableButton();
         updateBadge();
+        swPost({ type: 'clear-notifications' }); // clear morning banner on cold launch
         registerSW().then(setupPush);
     })();
     </script>
