@@ -17,7 +17,7 @@
  * opened or brought to the foreground (see dailycheck.html).
  */
 
-const CACHE = 'dailycheck-v3';
+const CACHE = 'dailycheck-v4';
 const ASSETS = [
   './dailycheck.html',
   './dailycheck.webmanifest',
@@ -103,10 +103,22 @@ self.addEventListener('periodicsync', (event) => {
   }
 });
 
-// Lets the page nudge the worker to recompute (e.g. right after a toggle).
+// Dismiss the daily push notification (called when the app is opened, so a
+// stale "you have N things to do" banner doesn't linger after you start
+// ticking things off — the live icon badge is the source of truth).
+async function clearDailyNotifications() {
+  if (!self.registration.getNotifications) return;
+  const notes = await self.registration.getNotifications({ tag: 'dailycheck-daily' });
+  for (const note of notes) note.close();
+}
+
+// Lets the page nudge the worker (recompute the badge, clear notifications).
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'refresh-badge') {
+  const type = event.data && event.data.type;
+  if (type === 'refresh-badge') {
     event.waitUntil(refreshBadge());
+  } else if (type === 'clear-notifications') {
+    event.waitUntil(clearDailyNotifications());
   }
 });
 
