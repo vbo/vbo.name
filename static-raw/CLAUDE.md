@@ -41,6 +41,29 @@ git rebase origin/master
 
 Git's `--reapply-cherry-picks` detection automatically drops commits whose content is already on master (the squashed ones) — so the rebase is usually a no-op or applies only the genuinely new commits.
 
+## dailycheck.html specifically
+
+- A daily-habit tracker PWA (vanilla JS, no build step). Items (checkbox or
+  counter type) live in `localStorage`; per-day progress under
+  `dailycheck:progress:YYYY-MM-DD`. The home-screen icon badge = sum of each
+  item's shortfall (`navigator.setAppBadge`).
+- Pure logic (`dateKey`, `remainingFor`, `totalBadge`, `fullBadge`) has a
+  headless self-test, same style as `startext.html`:
+
+  ```
+  cd static-raw
+  sed -n '/<script>/,/<\/script>/p' dailycheck.html | sed '1d;$d' | node -
+  ```
+
+  Browser equivalent: open `dailycheck.html?test`.
+- Companion files: `dailycheck-sw.js` (service worker: offline cache, badge
+  refresh, Web Push handler), `dailycheck.webmanifest`, `dailycheck-icon.svg`.
+- Optional daily morning push (the only way to refresh the badge on a locked
+  iPhone) is in `dailycheck-push.gs` — a Google Apps Script sender using
+  payload-less Web Push + a VAPID ES256 JWT signed via jsrsasign. It's inert
+  until you fill `VAPID_PUBLIC_KEY` + `PUSH_API_URL` in `dailycheck.html`;
+  full setup steps are in the `.gs` header comment.
+
 ## multiply_kittens.html specifically
 
 - Single HTML file, no build step for JSX. React 18 + Babel standalone + Tailwind, all via CDN.

@@ -125,6 +125,7 @@
             border: 1px solid #334155; background: #1e293b; color: #e2e8f0; cursor: pointer; width: 100%;
         }
         #badgeState { margin-top: 0.6rem; font-size: 0.78rem; color: #64748b; min-height: 1rem; text-align: center; }
+        #pushState { margin-top: 0.2rem; font-size: 0.78rem; color: #4ade80; min-height: 1rem; text-align: center; }
         .hint { margin-top: 1.25rem; color: #64748b; font-size: 0.78rem; line-height: 1.5; text-align: center; }
         .hint b { color: #94a3b8; font-weight: 600; }
     </style>
@@ -163,6 +164,7 @@
 
         <button id="enable" class="ghost" type="button" hidden>Enable home-screen badge</button>
         <p id="badgeState" aria-live="polite"></p>
+        <p id="pushState" aria-live="polite"></p>
 
         <p class="hint">
             On <b>iPhone</b>: open in Safari, tap <b>Share &rarr; Add to Home&nbsp;Screen</b>,
@@ -174,6 +176,17 @@
     <script>
     (function () {
         'use strict';
+
+        // ---- Web Push config (optional) -------------------------------------
+        // Fill these in to get a daily morning notification that refreshes the
+        // badge on a locked iPhone. Leave blank and the app still works (badge
+        // just refreshes on open). See dailycheck-push.gs for the server and
+        // setup steps.
+        //   VAPID_PUBLIC_KEY: the base64url public key from
+        //     `npx web-push generate-vapid-keys` (same key the server signs with).
+        //   PUSH_API_URL: the deployed Apps Script web app /exec URL.
+        const VAPID_PUBLIC_KEY = '';
+        const PUSH_API_URL = '';
 
         // ---- Pure, DOM-free logic (also exercised by the ?test self-test) ----
 
@@ -478,6 +491,8 @@
         window.addEventListener('focus', refreshForToday);
 
         // ---- Notifications permission (iOS gates badging behind it) ----
+        const pushStateEl = document.getElementById('pushState');
+
         function syncEnableButton() {
             const needsPermission =
                 'Notification' in window && Notification.permission === 'default';
@@ -488,7 +503,48 @@
             catch (_) {}
             syncEnableButton();
             updateBadge();
+            setupPush();
         });
+
+        // ---- Web Push subscription (daily morning refresh) ----
+        function pushConfigured() {
+            return !!VAPID_PUBLIC_KEY && !!PUSH_API_URL &&
+                'serviceWorker' in navigator && 'PushManager' in window;
+        }
+
+        function urlBase64ToUint8Array(base64) {
+            const padding = '='.repeat((4 - (base64.length % 4)) % 4);
+            const b64 = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+            const raw = atob(b64);
+            const out = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+            return out;
+        }
+
+        // Subscribe to push (if configured + permission granted) and hand the
+        // subscription to the Apps Script server so it can push us each morning.
+        async function setupPush() {
+            if (!pushConfigured()) return;
+            if (!('Notification' in window) || Notification.permission !== 'granted') return;
+            try {
+                const reg = await navigator.serviceWorker.ready;
+                let sub = await reg.pushManager.getSubscription();
+                if (!sub) {
+                    sub = await reg.pushManager.subscribe({
+                        userVisibleOnly: true,
+                        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+                    });
+                }
+                await fetch(PUSH_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ type: 'subscribe', subscription: sub.toJSON() }),
+                });
+                pushStateEl.textContent = 'Daily morning reminder is on.';
+            } catch (_) {
+                pushStateEl.textContent = '';
+            }
+        }
 
         // ---- IndexedDB mirror so the worker can refresh the badge in the
         // background (where supported). Stores today's badge plus the
@@ -533,7 +589,7 @@
         render();
         syncEnableButton();
         updateBadge();
-        registerSW();
+        registerSW().then(setupPush);
     })();
     </script>
 </body>
