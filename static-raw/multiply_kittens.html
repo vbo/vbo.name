@@ -123,8 +123,7 @@
      *
      * WHAT IT IS
      * Random multiplication, carry-addition (e.g. 73 + 8), borrow-subtraction
-     * (e.g. 75 − 6), and division (framed as "a × ? = product" — the word
-     * "division" never appears, the ÷ symbol never appears). First-try
+     * (e.g. 75 − 6), and division (e.g. 25 / 5). First-try
      * correct earns coins. Misses drop into a typed step-by-step correction
      * breakdown that walks her to the answer. She must TYPE every sub-step's
      * answer — never just "next" — so she can't skim past help.
@@ -195,7 +194,7 @@
     const STORAGE_KEY = 'math_kittens_fsrs_state_v7';
     const QUEUE_SIZE = 5;
     // Bump by 0.01 with every merge to master so the kid can tell builds apart.
-    const VERSION = '1.29';
+    const VERSION = '1.30';
     // Pace metric: keep the last N answer events ({coins, ms}); skip any
     // answer that took longer than DISTRACTION_MS (likely interrupted).
     const PACE_WINDOW = 100;
@@ -463,9 +462,7 @@
             ),
         },
         div: {
-            // Division framed as "find the missing factor": shown as a × ? = a·b.
-            // Kid types b. Same operand space as mul (2..12) so it slots neatly
-            // alongside multiplication facts she already practises.
+            // a·b ÷ a = b. Same operand space as mul (2..12).
             generate: () => ({
                 a: Math.floor(Math.random() * 11) + 2,
                 b: Math.floor(Math.random() * 11) + 2,
@@ -474,16 +471,15 @@
             // so the id is NOT commutative.
             idOf: (a, b) => `div:${a}_${b}`,
             compute: (a, b) => b,
-            label: (a, b) => `${a} × ? = ${a * b}`,
+            label: (a, b) => `${a * b} / ${a}`,
             strategy: (a, b) => getDivisionStrategy(a, b),
             selfContained: true, // renderPrompt already shows the full equation
             renderPrompt: ({ a, b }) => (
                 <>
-                    <span>{a}</span>
-                    <span className="text-indigo-500 text-3xl">×</span>
-                    <span className="text-slate-400">?</span>
-                    <span className="text-indigo-500 text-3xl">=</span>
                     <span>{a * b}</span>
+                    <span className="text-indigo-500 text-3xl">/</span>
+                    <span>{a}</span>
+                    <span className="text-indigo-500 text-3xl">=</span>
                 </>
             ),
         },
@@ -524,14 +520,12 @@
     };
 
     // --- practice picker model --------------------------------------------
-    // Kid-facing metadata for the selection screen. Division is intentionally
-    // NOT called "division" and never shows ÷ (same rule as the in-game
-    // prompt — it's framed as "find the missing number").
+    // Kid-facing metadata for the selection screen.
     const OP_META = {
         mul: { symbol: '×',  name: 'Times',   accent: 'fuchsia' },
         add: { symbol: '+',  name: 'Plus',    accent: 'emerald' },
         sub: { symbol: '−',  name: 'Minus',   accent: 'sky'     },
-        div: { symbol: '?',  name: 'Mystery', accent: 'amber'   },
+        div: { symbol: '÷',  name: 'Division', accent: 'amber'   },
     };
 
     // Total distinct problems each op can ever generate, derived by walking
@@ -730,7 +724,7 @@
         if (mulSteps.length === 1 && mulSteps[0].hint) {
             return [{
                 hint: mulSteps[0].hint,
-                prompt: `${a} × ? = ${product}`,
+                prompt: `${product} / ${a} = ?`,
                 answer: b,
                 inline: true,
             }];
@@ -740,7 +734,7 @@
         for (let i = 1; i <= b; i++) multiples.push(a * i);
         return [{
             hint: `Skip-count ${a}s: ${multiples.join(", ")}. Count them!`,
-            prompt: `${a} × ? = ${product}`,
+            prompt: `${product} / ${a} = ?`,
             answer: b,
             inline: true,
         }];
@@ -883,7 +877,7 @@
         }
         assert(subGenBad === 0, "sub generator: 2-digit − 1-digit, forces borrow, ones in [1, b-1]");
 
-        // Division op (framed as a × ? = product)
+        // Division op (product / divisor = quotient)
         const divCard = makeCard('div', 4, 6);
         assert(divCard.id === 'div:4_6', "div ids use a_b shape");
         assert(divCard.answer === 6, "div answer is the missing factor b");
@@ -897,12 +891,12 @@
         assert(consecutiveSteps.length === 1 && consecutiveSteps[0].answer === 8
             && consecutiveSteps[0].inline === true
             && consecutiveSteps[0].hint.includes("5, 6, 7, 8"),
-            "7 × ? = 56 → single inline step with the consecutive-digit mnemonic");
+            "56 / 7 = ? → single inline step with the consecutive-digit mnemonic");
         assert(getDivisionStrategy(7, 7)[0].hint.includes("7, 14")
             && getDivisionStrategy(7, 7)[0].hint.includes("49"),
-            "7 × ? = 49 → skip-count (squares are hintless; no jargon for 8-year-olds)");
+            "49 / 7 = ? → skip-count (squares are hintless; no jargon for 8-year-olds)");
         assert(getDivisionStrategy(2, 3)[0].hint === "Doubling!",
-            "2 × ? = 6 → single inline step with the stepDouble 'Doubling!' anchor");
+            "6 / 2 = ? → single inline step with the stepDouble 'Doubling!' anchor");
 
         // Non-Tier-1 strategies: single inline step with a skip-count hint
         // listing the multiples (no mul chain that uses b as input).
@@ -911,7 +905,7 @@
             && ninesSteps[0].inline === true && ninesSteps[0].answer === 9
             && ninesSteps[0].hint.includes("7, 14")
             && ninesSteps[0].hint.includes("63"),
-            "7 × ? = 63 → single skip-count step listing multiples of 7 up to 63");
+            "63 / 7 = ? → single skip-count step listing multiples of 7 up to 63");
 
         // Pace: 3 coins in 30s + 2 coins in 30s = 5 coins per minute.
         assert(computePace([{ coins: 3, ms: 30_000 }, { coins: 2, ms: 30_000 }]) === 5,
@@ -1002,7 +996,7 @@
             && foursSteps[0].inline === true && foursSteps[0].answer === 6
             && foursSteps[0].hint.includes("4, 8")
             && foursSteps[0].hint.includes("24"),
-            "4 × ? = 24 → single skip-count step listing multiples of 4 up to 24");
+            "24 / 4 = ? → single skip-count step listing multiples of 4 up to 24");
 
         // Practice picker: universe counts match the generators' constraints.
         assert(OP_UNIVERSE.mul === 66, "mul universe = 66 distinct commutative facts (2..12)");
@@ -1781,7 +1775,7 @@
 
                         {breakdown && (() => {
                             const step = breakdown.steps[breakdown.idx];
-                            // Steps marked inline (e.g. div: "a × ? = product") already contain
+                            // Steps marked inline (e.g. div: "product / a = ?") already contain
                             // their own '?'. Render the prompt with '?' or the answer in place.
                             const stepLine = step.inline
                                 ? (breakdown.reveal
