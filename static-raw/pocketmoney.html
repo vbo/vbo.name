@@ -12,80 +12,98 @@
     <style>
         /* Keep inputs at 16px so iOS doesn't auto-zoom on focus. */
         input, select, textarea, button { font-size: 16px; }
-        /* Segmented-toggle look for radio groups (same idea as expenses.html). */
-        .seg input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
-        .seg label {
-            flex: 1; text-align: center; padding: 0.6rem 0.5rem;
-            border: 1px solid #cbd5e1; background: #fff; color: #334155;
-            cursor: pointer; user-select: none; font-weight: 600;
-        }
-        .seg label:first-of-type { border-top-left-radius: 0.75rem; border-bottom-left-radius: 0.75rem; }
-        .seg label:last-of-type  { border-top-right-radius: 0.75rem; border-bottom-right-radius: 0.75rem; }
-        .seg label + label { border-left: none; }
-        .seg input[type="radio"]:checked + label {
-            background: #0d9488; color: #fff; border-color: #0d9488;
-        }
     </style>
 </head>
 <body class="antialiased bg-slate-50 min-h-screen">
     <div class="max-w-md mx-auto p-4">
-        <header class="mb-4 flex items-center justify-between">
-            <div>
+        <header class="mb-4 flex items-center justify-between gap-3">
+            <div class="min-w-0">
                 <h1 class="text-2xl font-bold text-slate-900">Pocket Money</h1>
-                <p class="text-sm text-slate-500">Your virtual account</p>
+                <p id="subtitle" class="text-sm text-slate-500 truncate">Your virtual account</p>
             </div>
             <button id="parentToggle" type="button"
-                class="text-sm font-medium text-teal-700 hover:text-teal-900 rounded-lg px-3 py-2 border border-teal-200 bg-white">
+                class="shrink-0 text-sm font-medium text-teal-700 hover:text-teal-900 rounded-lg px-3 py-2 border border-teal-200 bg-white">
                 Parent
             </button>
         </header>
 
-        <!-- Which kid's account are we looking at -->
-        <div id="accountSeg" class="seg flex mb-4"></div>
-
-        <!-- Big balance card -->
-        <section class="bg-white rounded-2xl shadow-sm p-5 text-center mb-4">
-            <p class="text-xs uppercase tracking-wide text-slate-400">Remaining balance</p>
-            <p id="balance" class="text-4xl font-bold text-slate-900 mt-1">–</p>
-            <p id="balanceHint" class="text-xs text-slate-400 mt-1"></p>
+        <!-- Landing (no personal link): nothing sensitive is shown here. -->
+        <section id="landing" class="hidden bg-white rounded-2xl shadow-sm p-5 text-center">
+            <p class="text-slate-700 font-medium">Open your personal link to see your balance.</p>
+            <p class="text-sm text-slate-400 mt-2">Ask a parent for your link, then add it to your Home Screen.</p>
         </section>
 
-        <!-- Kid: spend money (deduct only) -->
-        <form id="spendForm" class="space-y-4 bg-white rounded-2xl shadow-sm p-4">
-            <h2 class="text-sm font-semibold text-slate-700">Spend money</h2>
-            <label class="block">
-                <span class="text-sm font-medium text-slate-700">How much did you spend?</span>
-                <div class="mt-1 flex items-stretch">
-                    <span class="inline-flex items-center rounded-l-lg border border-r-0 border-slate-300 px-3 bg-slate-100 text-slate-500 text-sm">CHF</span>
-                    <input id="spendAmount" type="number" inputmode="decimal" step="0.05" min="0" required
-                        class="w-full rounded-r-lg border border-slate-300 px-3 py-3 text-lg focus:outline-none focus:ring-2 focus:ring-teal-500" />
-                </div>
-            </label>
-            <label class="block">
-                <span class="text-sm font-medium text-slate-700">What did you buy?</span>
-                <input id="spendNote" type="text" autocomplete="off" placeholder="e.g. sweets"
-                    class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500" />
-            </label>
-            <button id="spendBtn" type="submit"
-                class="w-full rounded-lg bg-teal-600 text-white text-lg font-semibold px-4 py-3 hover:bg-teal-700 active:bg-teal-800 disabled:opacity-50 disabled:cursor-not-allowed">
-                Record expense
-            </button>
-            <p id="spendStatus" class="text-sm text-slate-600 min-h-[1.25rem] text-center" aria-live="polite"></p>
-        </form>
+        <!-- Kid view: locked to one account via the ?k=<key> in the URL. -->
+        <div id="kidView" class="hidden">
+            <section class="bg-white rounded-2xl shadow-sm p-5 text-center mb-4">
+                <p class="text-xs uppercase tracking-wide text-slate-400">Remaining balance</p>
+                <p id="balance" class="text-4xl font-bold text-slate-900 mt-1">–</p>
+                <p id="balanceHint" class="text-xs text-slate-400 mt-1"></p>
+            </section>
 
-        <!-- Parent: add money (credit only, PIN protected) -->
+            <form id="spendForm" class="space-y-4 bg-white rounded-2xl shadow-sm p-4">
+                <h2 class="text-sm font-semibold text-slate-700">Spend money</h2>
+                <label class="block">
+                    <span class="text-sm font-medium text-slate-700">How much did you spend?</span>
+                    <div class="mt-1 flex items-stretch">
+                        <span class="inline-flex items-center rounded-l-lg border border-r-0 border-slate-300 px-3 bg-slate-100 text-slate-500 text-sm">CHF</span>
+                        <input id="spendAmount" type="number" inputmode="decimal" step="0.05" min="0" required
+                            class="w-full rounded-r-lg border border-slate-300 px-3 py-3 text-lg focus:outline-none focus:ring-2 focus:ring-teal-500" />
+                    </div>
+                </label>
+                <label class="block">
+                    <span class="text-sm font-medium text-slate-700">What did you buy?</span>
+                    <input id="spendNote" type="text" autocomplete="off" placeholder="e.g. sweets"
+                        class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500" />
+                </label>
+                <button id="spendBtn" type="submit"
+                    class="w-full rounded-lg bg-teal-600 text-white text-lg font-semibold px-4 py-3 hover:bg-teal-700 active:bg-teal-800 disabled:opacity-50 disabled:cursor-not-allowed">
+                    Record expense
+                </button>
+                <p id="spendStatus" class="text-sm text-slate-600 min-h-[1.25rem] text-center" aria-live="polite"></p>
+            </form>
+
+            <section class="mt-6">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-sm font-semibold text-slate-700">Recent activity</h2>
+                    <button id="refresh" type="button" class="text-xs text-teal-600 hover:text-teal-800">Refresh</button>
+                </div>
+                <ul id="recent" class="space-y-2"></ul>
+                <div id="recentLoader" class="hidden py-6 flex justify-center">
+                    <div class="h-6 w-6 rounded-full border-2 border-slate-300 border-t-teal-600 animate-spin"></div>
+                </div>
+                <p id="recentStatus" class="text-xs text-slate-400 mt-2 text-center"></p>
+            </section>
+        </div>
+
+        <!-- Parent: add money (credit only, PIN protected). -->
         <form id="adminForm" class="space-y-4 bg-white rounded-2xl shadow-sm p-4 mt-4 hidden border-2 border-teal-200">
             <div class="flex items-center justify-between">
                 <h2 class="text-sm font-semibold text-slate-700">Parent · add money</h2>
                 <button id="adminClose" type="button" class="text-xs text-slate-400 hover:text-slate-600">Close</button>
             </div>
 
-            <div id="adminOverview" class="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 space-y-1"></div>
+            <label class="block">
+                <span class="text-sm font-medium text-slate-700">Parent PIN</span>
+                <div class="mt-1 flex gap-2">
+                    <input id="adminPin" type="password" inputmode="numeric" autocomplete="off"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500" />
+                    <button id="adminLoad" type="button"
+                        class="shrink-0 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                        Show balances
+                    </button>
+                </div>
+                <span class="text-xs text-slate-400">Only the parent knows this. Kept for this session only.</span>
+            </label>
+
+            <div id="adminOverview" class="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 space-y-1 hidden"></div>
 
             <label class="block">
                 <span class="text-sm font-medium text-slate-700">Account</span>
                 <select id="adminAccount"
-                    class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-teal-500"></select>
+                    class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-teal-500">
+                    <option value="">— enter PIN and tap “Show balances” —</option>
+                </select>
             </label>
             <label class="block">
                 <span class="text-sm font-medium text-slate-700">Amount to add</span>
@@ -100,31 +118,12 @@
                 <input id="adminNote" type="text" autocomplete="off" placeholder="e.g. 5 days at school"
                     class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500" />
             </label>
-            <label class="block">
-                <span class="text-sm font-medium text-slate-700">Parent PIN</span>
-                <input id="adminPin" type="password" inputmode="numeric" autocomplete="off"
-                    class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500" />
-                <span class="text-xs text-slate-400">Only the parent knows this. Kept for this session only.</span>
-            </label>
             <button id="adminBtn" type="submit"
                 class="w-full rounded-lg bg-emerald-600 text-white text-lg font-semibold px-4 py-3 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed">
                 Add money
             </button>
             <p id="adminStatus" class="text-sm text-slate-600 min-h-[1.25rem] text-center" aria-live="polite"></p>
         </form>
-
-        <!-- Recent activity for the selected account -->
-        <section class="mt-6">
-            <div class="flex items-center justify-between mb-2">
-                <h2 class="text-sm font-semibold text-slate-700">Recent activity</h2>
-                <button id="refresh" type="button" class="text-xs text-teal-600 hover:text-teal-800">Refresh</button>
-            </div>
-            <ul id="recent" class="space-y-2"></ul>
-            <div id="recentLoader" class="hidden py-6 flex justify-center">
-                <div class="h-6 w-6 rounded-full border-2 border-slate-300 border-t-teal-600 animate-spin"></div>
-            </div>
-            <p id="recentStatus" class="text-xs text-slate-400 mt-2 text-center"></p>
-        </section>
 
         <p id="configNotice" class="hidden text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3 mt-4"></p>
         <p class="text-[11px] text-slate-300 text-center mt-6" id="footer"></p>
@@ -137,18 +136,18 @@
         // ─── Config ─────────────────────────────────────────────────────────
         // Deploy pocketmoney.gs as a Google Apps Script web app and paste its
         // /exec URL here. Until then the app runs in read-only demo mode.
+        //
+        // NOTE: no kids' names or keys live in this file. Each kid opens the app
+        // through their own private link (…/pocketmoney.html?k=<secret>); the
+        // secret→account mapping and the parent PIN live only on the server
+        // (see pocketmoney.gs), so nothing here is sensitive to view-source.
         const WEB_APP_URL = '';
 
-        // The tab/sheet inside the spreadsheet where rows are appended. The
-        // backend creates it (with a header row) on first use.
+        // The tab/sheet inside the spreadsheet where rows are appended.
         const SHEET_NAME = 'PocketMoney';
 
-        // The kids' accounts. Edit these to your children's names — they show up
-        // as tabs for the kid view and as the account picker for the parent.
-        const ACCOUNTS = ['Kid A', 'Kid B'];
-
         const CURRENCY = 'CHF';
-        const VERSION = '1.0';
+        const VERSION = '1.1';
 
         // ─── Pure, DOM-free logic (also exercised by the ?test self-test) ─────
 
@@ -175,8 +174,7 @@
         }
 
         function formatMoney(n) {
-            const v = roundMoney(n);
-            return CURRENCY + ' ' + v.toFixed(2);
+            return CURRENCY + ' ' + roundMoney(n).toFixed(2);
         }
 
         // A kid may only spend what they actually have.
@@ -239,13 +237,17 @@
             return;
         }
 
-        // ─── State ────────────────────────────────────────────────────────────
-        let state = { balances: {}, rows: [] };
-        let selectedAccount = ACCOUNTS[0];
-        const PIN_KEY = 'pocketmoney:pin';
+        // ─── Mode + state ──────────────────────────────────────────────────────
+        const params = new URLSearchParams(location.search);
+        const kidKey = params.get('k') || params.get('key'); // present => locked kid mode
+        let kidAccount = null;   // resolved by the server from the key
+        let kidBalance = 0;
+        let kidRows = [];
 
         // ─── DOM refs ─────────────────────────────────────────────────────────
-        const accountSeg = document.getElementById('accountSeg');
+        const subtitle = document.getElementById('subtitle');
+        const landing = document.getElementById('landing');
+        const kidView = document.getElementById('kidView');
         const balanceEl = document.getElementById('balance');
         const balanceHintEl = document.getElementById('balanceHint');
         const spendForm = document.getElementById('spendForm');
@@ -262,6 +264,7 @@
         const adminNote = document.getElementById('adminNote');
         const adminPin = document.getElementById('adminPin');
         const adminBtn = document.getElementById('adminBtn');
+        const adminLoad = document.getElementById('adminLoad');
         const adminStatus = document.getElementById('adminStatus');
         const recentEl = document.getElementById('recent');
         const recentStatusEl = document.getElementById('recentStatus');
@@ -284,84 +287,6 @@
             el.className = `text-sm min-h-[1.25rem] text-center ${colors[kind] || colors.info}`;
         }
 
-        // ─── Build the account tabs + admin picker ─────────────────────────────
-        function buildAccountControls() {
-            accountSeg.innerHTML = ACCOUNTS.map((name, i) => {
-                const id = 'acct-' + i;
-                const checked = name === selectedAccount ? ' checked' : '';
-                return `<input type="radio" name="acct" id="${id}" value="${escapeHtml(name)}"${checked}>` +
-                    `<label for="${id}">${escapeHtml(name)}</label>`;
-            }).join('');
-            accountSeg.querySelectorAll('input[name="acct"]').forEach((el) =>
-                el.addEventListener('change', () => {
-                    selectedAccount = el.value;
-                    render();
-                }));
-            // Hide the segmented control entirely when there is only one account.
-            accountSeg.classList.toggle('hidden', ACCOUNTS.length < 2);
-
-            adminAccount.innerHTML = ACCOUNTS.map((name) =>
-                `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
-        }
-
-        // ─── Rendering ─────────────────────────────────────────────────────────
-        function balanceOf(account) {
-            return state.balances && Object.prototype.hasOwnProperty.call(state.balances, account)
-                ? state.balances[account] : 0;
-        }
-
-        function renderBalance() {
-            const bal = balanceOf(selectedAccount);
-            balanceEl.textContent = formatMoney(bal);
-            balanceEl.className = 'text-4xl font-bold mt-1 ' +
-                (bal <= 0 ? 'text-slate-400' : 'text-slate-900');
-            balanceHintEl.textContent = bal <= 0 ? 'Nothing to spend right now.' : '';
-        }
-
-        function typeMeta(row) {
-            if (row.type === 'credit') {
-                return { sign: '+', cls: 'text-emerald-600', label: row.by === 'admin' ? 'Added' : 'Credit' };
-            }
-            return { sign: '\u2212', cls: 'text-rose-600', label: 'Spent' };
-        }
-
-        function renderRecent() {
-            const rows = (state.rows || []).filter((r) => r.account === selectedAccount);
-            recentEl.innerHTML = '';
-            if (rows.length === 0) {
-                recentStatusEl.textContent = 'No activity yet.';
-                return;
-            }
-            for (const r of rows) {
-                const m = typeMeta(r);
-                const li = document.createElement('li');
-                li.className = 'bg-white rounded-lg shadow-sm px-3 py-2 text-sm flex items-baseline justify-between gap-2';
-                li.innerHTML =
-                    `<div class="min-w-0">
-                        <div class="text-slate-700 truncate">${escapeHtml(r.note || m.label)}</div>
-                        <div class="text-xs text-slate-400">${escapeHtml(r.date || '')}</div>
-                    </div>
-                    <span class="font-semibold whitespace-nowrap ${m.cls}">${m.sign}${escapeHtml(formatMoney(Number(r.amount) || 0))}</span>`;
-                recentEl.appendChild(li);
-            }
-            recentStatusEl.textContent = '';
-        }
-
-        function renderAdminOverview() {
-            adminOverview.innerHTML = ACCOUNTS.map((name) =>
-                `<div class="flex justify-between"><span>${escapeHtml(name)}</span>` +
-                `<span class="font-semibold text-slate-700">${escapeHtml(formatMoney(balanceOf(name)))}</span></div>`
-            ).join('');
-        }
-
-        function render() {
-            buildAccountControls();
-            renderBalance();
-            renderRecent();
-            renderAdminOverview();
-        }
-
-        // ─── Networking ─────────────────────────────────────────────────────────
         function configured() { return !!WEB_APP_URL; }
 
         function showConfigNotice() {
@@ -371,41 +296,40 @@
                 '/exec URL into WEB_APP_URL at the top of this file.';
         }
 
-        function applyState(data) {
-            if (data && data.balances) state.balances = data.balances;
-            if (data && Array.isArray(data.rows)) state.rows = data.rows;
+        // ─── Rendering (kid) ───────────────────────────────────────────────────
+        function renderBalance() {
+            balanceEl.textContent = formatMoney(kidBalance);
+            balanceEl.className = 'text-4xl font-bold mt-1 ' +
+                (kidBalance <= 0 ? 'text-slate-400' : 'text-slate-900');
+            balanceHintEl.textContent = kidBalance <= 0 ? 'Nothing to spend right now.' : '';
         }
 
-        let loadSeq = 0;
-        async function loadState() {
-            if (!configured()) { showConfigNotice(); render(); return; }
-            const seq = ++loadSeq;
-            recentEl.classList.add('hidden');
-            recentLoaderEl.classList.remove('hidden');
-            try {
-                const url = WEB_APP_URL + '?sheet=' + encodeURIComponent(SHEET_NAME);
-                const res = await fetch(url, { method: 'GET' });
-                const text = await res.text();
-                if (seq !== loadSeq) return;
-                let parsed;
-                try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
-                if (!parsed || parsed.ok !== true) {
-                    recentStatusEl.textContent = 'Could not load balances.';
-                    return;
-                }
-                applyState(parsed);
-                render();
-            } catch (_) {
-                if (seq !== loadSeq) return;
-                recentStatusEl.textContent = 'Could not load balances.';
-            } finally {
-                if (seq === loadSeq) {
-                    recentLoaderEl.classList.add('hidden');
-                    recentEl.classList.remove('hidden');
-                }
+        // Per request, the activity list just shows the note (no "type" label);
+        // a green +/red − keeps "money in" vs "money out" glanceable.
+        function renderRecent() {
+            recentEl.innerHTML = '';
+            if (!kidRows.length) { recentStatusEl.textContent = 'No activity yet.'; return; }
+            for (const r of kidRows) {
+                const credit = r.type === 'credit';
+                const sign = credit ? '+' : '\u2212';
+                const cls = credit ? 'text-emerald-600' : 'text-rose-600';
+                const label = (r.note && r.note.trim()) || (credit ? 'Pocket money' : 'Spent');
+                const li = document.createElement('li');
+                li.className = 'bg-white rounded-lg shadow-sm px-3 py-2 text-sm flex items-baseline justify-between gap-2';
+                li.innerHTML =
+                    `<div class="min-w-0">
+                        <div class="text-slate-700 truncate">${escapeHtml(label)}</div>
+                        <div class="text-xs text-slate-400">${escapeHtml(r.date || '')}</div>
+                    </div>
+                    <span class="font-semibold whitespace-nowrap ${cls}">${sign}${escapeHtml(formatMoney(Number(r.amount) || 0))}</span>`;
+                recentEl.appendChild(li);
             }
+            recentStatusEl.textContent = '';
         }
 
+        function renderKid() { renderBalance(); renderRecent(); }
+
+        // ─── Networking ─────────────────────────────────────────────────────────
         async function postOp(payload) {
             const res = await fetch(WEB_APP_URL, {
                 method: 'POST',
@@ -420,12 +344,51 @@
             return parsed;
         }
 
+        function applyKidState(data) {
+            if (!data) return;
+            if (data.account) { kidAccount = data.account; subtitle.textContent = 'Hi, ' + data.account; }
+            if (typeof data.balance === 'number') kidBalance = data.balance;
+            if (Array.isArray(data.rows)) kidRows = data.rows;
+        }
+
+        let loadSeq = 0;
+        async function loadKid() {
+            if (!configured()) { showConfigNotice(); return; }
+            const seq = ++loadSeq;
+            recentEl.classList.add('hidden');
+            recentLoaderEl.classList.remove('hidden');
+            try {
+                const url = WEB_APP_URL + '?k=' + encodeURIComponent(kidKey) +
+                    '&sheet=' + encodeURIComponent(SHEET_NAME);
+                const res = await fetch(url, { method: 'GET' });
+                const text = await res.text();
+                if (seq !== loadSeq) return;
+                let parsed;
+                try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
+                if (!parsed || parsed.ok !== true) {
+                    recentStatusEl.textContent =
+                        parsed && parsed.error ? parsed.error : 'Could not load your balance.';
+                    return;
+                }
+                applyKidState(parsed);
+                renderKid();
+            } catch (_) {
+                if (seq !== loadSeq) return;
+                recentStatusEl.textContent = 'Could not load your balance.';
+            } finally {
+                if (seq === loadSeq) {
+                    recentLoaderEl.classList.add('hidden');
+                    recentEl.classList.remove('hidden');
+                }
+            }
+        }
+
         // ─── Kid: record an expense ─────────────────────────────────────────────
         spendForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             if (!configured()) { showConfigNotice(); return; }
             const amount = roundMoney(parseFloat(spendAmount.value));
-            const check = validateSpend(balanceOf(selectedAccount), amount);
+            const check = validateSpend(kidBalance, amount);
             if (!check.ok) { setStatus(spendStatus, check.error, 'err'); return; }
 
             spendBtn.disabled = true;
@@ -434,12 +397,12 @@
                 const parsed = await postOp({
                     op: 'expense',
                     sheet: SHEET_NAME,
-                    account: selectedAccount,
+                    key: kidKey,
                     amount,
                     note: spendNote.value.trim(),
                 });
-                applyState(parsed);
-                render();
+                applyKidState(parsed);
+                renderKid();
                 setStatus(spendStatus, 'Saved \u2713', 'ok');
                 spendAmount.value = '';
                 spendNote.value = '';
@@ -451,24 +414,51 @@
         });
 
         // ─── Parent panel ───────────────────────────────────────────────────────
-        function openAdmin() {
-            adminForm.classList.remove('hidden');
-            const saved = sessionStorage.getItem(PIN_KEY);
-            if (saved) adminPin.value = saved;
-            adminAccount.value = selectedAccount;
-            renderAdminOverview();
-            adminForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        function renderAdminOverview(balances) {
+            const names = Object.keys(balances || {});
+            if (!names.length) { adminOverview.classList.add('hidden'); return; }
+            adminOverview.classList.remove('hidden');
+            adminOverview.innerHTML = names.map((name) =>
+                `<div class="flex justify-between"><span>${escapeHtml(name)}</span>` +
+                `<span class="font-semibold text-slate-700">${escapeHtml(formatMoney(balances[name]))}</span></div>`
+            ).join('');
         }
-        function closeAdmin() { adminForm.classList.add('hidden'); }
 
-        parentToggle.addEventListener('click', () => {
-            if (adminForm.classList.contains('hidden')) openAdmin(); else closeAdmin();
+        function fillAccountSelect(accounts) {
+            const prev = adminAccount.value;
+            adminAccount.innerHTML = accounts.map((name) =>
+                `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+            if (accounts.indexOf(prev) !== -1) adminAccount.value = prev;
+        }
+
+        function applyAdminState(data) {
+            if (!data) return;
+            if (data.balances) renderAdminOverview(data.balances);
+            if (Array.isArray(data.accounts)) fillAccountSelect(data.accounts);
+        }
+
+        adminLoad.addEventListener('click', async () => {
+            if (!configured()) { showConfigNotice(); return; }
+            const pin = adminPin.value.trim();
+            if (!pin) { setStatus(adminStatus, 'Enter the parent PIN.', 'err'); return; }
+            adminLoad.disabled = true;
+            setStatus(adminStatus, 'Loading…', 'info');
+            try {
+                const parsed = await postOp({ op: 'overview', sheet: SHEET_NAME, pin });
+                applyAdminState(parsed);
+                setStatus(adminStatus, 'Balances loaded.', 'ok');
+            } catch (err) {
+                setStatus(adminStatus, 'Error: ' + err.message, 'err');
+            } finally {
+                adminLoad.disabled = false;
+            }
         });
-        adminClose.addEventListener('click', closeAdmin);
 
         adminForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             if (!configured()) { showConfigNotice(); return; }
+            const account = adminAccount.value;
+            if (!account) { setStatus(adminStatus, 'Load balances and pick an account first.', 'err'); return; }
             const amount = roundMoney(parseFloat(adminAmount.value));
             if (!Number.isFinite(amount) || amount <= 0) {
                 setStatus(adminStatus, 'Enter an amount greater than 0.', 'err');
@@ -483,30 +473,49 @@
                 const parsed = await postOp({
                     op: 'credit',
                     sheet: SHEET_NAME,
-                    account: adminAccount.value,
+                    account,
                     amount,
                     note: adminNote.value.trim(),
                     pin,
                 });
-                applyState(parsed);
-                // Remember the PIN for this session only so repeated top-ups are quick.
-                sessionStorage.setItem(PIN_KEY, pin);
-                render();
-                setStatus(adminStatus, 'Added ' + formatMoney(amount) + ' to ' + adminAccount.value + ' \u2713', 'ok');
+                applyAdminState(parsed);
+                setStatus(adminStatus, 'Added ' + formatMoney(amount) + ' to ' + account + ' \u2713', 'ok');
                 adminAmount.value = '';
                 adminNote.value = '';
+                // If the parent is standing at this kid's device, reflect it live.
+                if (kidKey) loadKid();
             } catch (err) {
-                if (/pin/i.test(err.message)) sessionStorage.removeItem(PIN_KEY);
                 setStatus(adminStatus, 'Error: ' + err.message, 'err');
             } finally {
                 adminBtn.disabled = false;
             }
         });
 
+        parentToggle.addEventListener('click', () => {
+            const hidden = adminForm.classList.toggle('hidden');
+            if (!hidden) adminForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        adminClose.addEventListener('click', () => adminForm.classList.add('hidden'));
+
         // ─── Boot ─────────────────────────────────────────────────────────────
-        refreshBtn.addEventListener('click', loadState);
-        render();
-        loadState();
+        refreshBtn.addEventListener('click', loadKid);
+
+        if (kidKey) {
+            // Locked kid mode: only this account is ever shown or spendable, and
+            // the parent controls stay out of the way on the kid's own device.
+            landing.classList.add('hidden');
+            kidView.classList.remove('hidden');
+            parentToggle.classList.add('hidden');
+            if (!configured()) showConfigNotice();
+            loadKid();
+        } else {
+            // Neutral landing: no balances shown until a personal link is used;
+            // the parent uses the PIN-protected panel.
+            subtitle.textContent = 'Parent & family';
+            landing.classList.remove('hidden');
+            kidView.classList.add('hidden');
+            if (!configured()) showConfigNotice();
+        }
     })();
     </script>
 </body>
