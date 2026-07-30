@@ -13,8 +13,10 @@
  *     one sibling can never see or charge another sibling's account, even by
  *     editing the URL, because the key→account map lives only on the server
  *     (Script Properties) and never in the public HTML.
- *   - Only the parent, by supplying the ADMIN_PIN, can add money or view all
- *     balances at once. Kids can only ever deduct.
+ *   - Only the parent, by supplying the ADMIN_PIN, can add money, rename the
+ *     accounts, or view all balances at once. Kids can only ever deduct, and
+ *     never below zero. The parent (with the PIN) can also "charge" an account
+ *     below zero to record a loan; that debt is repaid by later credits.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * IMPORTANT — this file defines NO doGet / doPost and NO plain global names.
@@ -43,6 +45,10 @@
  *      KID_KEYS  = <JSON mapping each account to its secret key>, e.g.
  *          {"Daughter":"7fk2-daughter","Son":"9mq4-son"}
  *      Pick keys that are hard to guess and keep them secret from each other.
+ *      (Optional) KID_NAMES = <JSON of display names>, e.g.
+ *          {"Daughter":"Eva","Son":"Martin"}
+ *      You don't need to set this by hand — it's editable from the parent UI
+ *      ("Save names") and stored here automatically.
  *      (Optional) SPREADSHEET_ID = <id> if this project is NOT bound to the
  *      spreadsheet you want; leave unset to use the bound/active spreadsheet.
  *
@@ -86,7 +92,7 @@
 
 var PM_SHEET_NAME = 'PocketMoney';
 var PM_HEADERS = ['Timestamp', 'Date', 'Account', 'Type', 'Amount', 'Note', 'By'];
-var PM_VERSION = '1.2';
+var PM_VERSION = '1.3';
 
 // ── HTTP entry points (called from the project's doGet/doPost) ───────────────
 
@@ -119,13 +125,19 @@ function pmDoPost(e) {
     }
 
     // Parent-only operations require the admin PIN.
-    if (data.op === 'credit' || data.op === 'overview') {
+    if (data.op === 'credit' || data.op === 'charge' ||
+        data.op === 'overview' || data.op === 'setNames') {
       var expected = PropertiesService.getScriptProperties().getProperty('ADMIN_PIN');
       if (!expected) return pmJson_({ ok: false, error: 'Server is missing ADMIN_PIN' });
       if (String(data.pin || '') !== String(expected)) {
         return pmJson_({ ok: false, error: 'Wrong PIN' });
       }
       if (data.op === 'overview') return pmJson_(pmAdminState_(sheet));
+      if (data.op === 'setNames') { pmSetNames_(data.names); return pmJson_(pmAdminState_(sheet)); }
+      // A parent-authorised charge is a debit that may take the balance below
+      // zero (a loan). Kids' own expenses can never overdraw — see pmDoGet's
+      // expense path — but the parent, with the PIN, can.
+      if (data.op === 'charge') return pmJson_(pmAddCharge_(sheet, data));
       return pmJson_(pmAddCredit_(sheet, data));
     }
 
@@ -181,6 +193,26 @@ function pmAddCredit_(sheet, data) {
   }
 }
 
+// Parent-authorised debit that is allowed to push the balance negative (loan).
+function pmAddCharge_(sheet, data) {
+  var account = String(data.account || '').trim();
+  if (!account) return { ok: false, error: 'Missing account' };
+  if (!pmAccountKeys_()[account]) return { ok: false, error: 'Unknown account' };
+  var amount = pmRoundMoney_(Number(data.amount));
+  if (!isFinite(amount) || amount <= 0) return { ok: false, error: 'Invalid amount' };
+  var note = String(data.note || '').trim();
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    // No balance check on purpose: this is the parent loaning money.
+    pmAppendRow_(sheet, account, 'expense', amount, note, 'admin');
+    return pmAdminState_(sheet);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function pmAppendRow_(sheet, account, type, amount, note, by) {
   var now = new Date();
   var date = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
@@ -205,6 +237,7 @@ function pmKidState_(sheet, account) {
     ok: true,
     version: PM_VERSION,
     account: account,
+    name: pmDisplayName_(account),
     balance: pmRoundMoney_(balance),
     rows: rows.slice(0, 50),
   };
@@ -226,11 +259,16 @@ function pmAdminState_(sheet) {
   }
   Object.keys(balances).forEach(function (k) { balances[k] = pmRoundMoney_(balances[k]); });
   rows.reverse();
+  var accounts = Object.keys(balances);
+  var namesMap = pmNames_();
+  var names = {};
+  accounts.forEach(function (a) { names[a] = namesMap[a] || a; });
   return {
     ok: true,
     version: PM_VERSION,
     balances: balances,
-    accounts: Object.keys(balances),
+    accounts: accounts,
+    names: names,
     rows: rows.slice(0, 50),
   };
 }
@@ -279,6 +317,39 @@ function pmAccountForKey_(key) {
     if (String(map[names[i]]) === key) return names[i];
   }
   return null;
+}
+
+// Optional display names: { accountName: "Martin", ... }. Editable from the
+// parent UI (setNames) and stored in the KID_NAMES script property. Falls back
+// to the internal account name when none is set.
+function pmNames_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('KID_NAMES');
+  if (!raw) return {};
+  try {
+    var obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function pmDisplayName_(account) {
+  var names = pmNames_();
+  return names[account] || account;
+}
+
+// Merge in new display names (only for known accounts); an empty name clears
+// the override so it falls back to the account's internal name.
+function pmSetNames_(input) {
+  if (!input || typeof input !== 'object') return;
+  var known = pmAccountKeys_();
+  var current = pmNames_();
+  Object.keys(input).forEach(function (account) {
+    if (!known[account]) return;
+    var value = String(input[account] == null ? '' : input[account]).trim();
+    if (value) current[account] = value; else delete current[account];
+  });
+  PropertiesService.getScriptProperties().setProperty('KID_NAMES', JSON.stringify(current));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
