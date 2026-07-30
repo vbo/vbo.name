@@ -97,7 +97,8 @@
             </label>
 
             <div id="adminAccounts" class="hidden bg-slate-50 rounded-lg p-3">
-                <div id="adminAccountsList" class="space-y-1 text-xs text-slate-500"></div>
+                <p class="text-xs font-medium text-slate-500 mb-2">Balances &amp; private links</p>
+                <div id="adminAccountsList" class="space-y-3 text-xs text-slate-500"></div>
             </div>
 
             <label class="block">
@@ -157,7 +158,7 @@
         const SHEET_NAME = 'PocketMoney';
 
         const CURRENCY = 'CHF';
-        const VERSION = '1.6';
+        const VERSION = '1.7';
 
         // ─── Pure, DOM-free logic (also exercised by the ?test self-test) ─────
 
@@ -257,6 +258,7 @@
 
         // Parent-panel state, populated after the PIN unlocks an overview.
         let adminBalances = {};
+        let adminKeys = {};      // account → secret key, for building share links
 
         // ─── DOM refs ─────────────────────────────────────────────────────────
         const subtitle = document.getElementById('subtitle');
@@ -440,7 +442,16 @@
         });
 
         // ─── Parent panel ───────────────────────────────────────────────────────
-        // Read-only balances overview (the account name is the name shown).
+        // The kid's page lives at this URL; a private link just adds ?k=<key>.
+        const shareBase = location.origin + location.pathname;
+        const shareLabel = ('share' in navigator) ? 'Share' : 'Copy';
+
+        function linkFor(account) {
+            const key = adminKeys && adminKeys[account];
+            return key ? shareBase + '?k=' + encodeURIComponent(key) : '';
+        }
+
+        // Read-only balances overview + each kid's private link (name = shown name).
         function renderAdminAccounts() {
             const accounts = Object.keys(adminBalances || {});
             if (!accounts.length) { adminAccountsWrap.classList.add('hidden'); return; }
@@ -448,12 +459,67 @@
             adminAccountsList.innerHTML = accounts.map((a) => {
                 const bal = adminBalances[a];
                 const balCls = bal < 0 ? 'text-rose-600' : 'text-slate-700';
-                return `<div class="flex justify-between gap-2">
-                    <span class="truncate">${escapeHtml(a)}</span>
-                    <span class="font-semibold whitespace-nowrap ${balCls}">${escapeHtml(formatMoney(bal))}</span>
+                const link = linkFor(a);
+                const linkRow = link ? `
+                    <div class="flex gap-2 mt-1">
+                        <input readonly value="${escapeHtml(link)}" data-link
+                            class="flex-1 min-w-0 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-500">
+                        <button type="button" data-share="${escapeHtml(link)}" data-name="${escapeHtml(a)}"
+                            class="shrink-0 rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100">
+                            ${shareLabel}
+                        </button>
+                    </div>` : '';
+                return `<div>
+                    <div class="flex justify-between gap-2">
+                        <span class="truncate font-medium text-slate-700">${escapeHtml(a)}</span>
+                        <span class="font-semibold whitespace-nowrap ${balCls}">${escapeHtml(formatMoney(bal))}</span>
+                    </div>${linkRow}
                 </div>`;
             }).join('');
         }
+
+        async function copyText(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+                return;
+            }
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+        }
+
+        function flashButton(btn, text) {
+            const orig = btn.textContent;
+            btn.textContent = text;
+            setTimeout(() => { btn.textContent = orig; }, 1500);
+        }
+
+        // Tap a link field to select it; the Share button opens the native share
+        // sheet where supported, otherwise copies to the clipboard.
+        adminAccountsList.addEventListener('click', async (e) => {
+            const field = e.target.closest('input[data-link]');
+            if (field) { field.focus(); field.select(); return; }
+            const btn = e.target.closest('[data-share]');
+            if (!btn) return;
+            const link = btn.getAttribute('data-share');
+            const name = btn.getAttribute('data-name') || '';
+            try {
+                if (navigator.share) {
+                    await navigator.share({ title: 'Pocket Money — ' + name, url: link });
+                } else {
+                    await copyText(link);
+                    flashButton(btn, 'Copied \u2713');
+                }
+            } catch (_) {
+                // Share cancelled or unavailable — fall back to a copy.
+                try { await copyText(link); flashButton(btn, 'Copied \u2713'); } catch (_) {}
+            }
+        });
 
         function fillAccountSelect(accounts) {
             const prev = adminAccount.value;
@@ -465,6 +531,7 @@
         function applyAdminState(data) {
             if (!data) return;
             if (data.balances) adminBalances = data.balances;
+            if (data.keys) adminKeys = data.keys;
             renderAdminAccounts();
             if (Array.isArray(data.accounts)) fillAccountSelect(data.accounts);
         }
