@@ -145,7 +145,7 @@
         const SHEET_NAME = 'PocketMoney';
 
         const CURRENCY = 'CHF';
-        const VERSION = '1.8';
+        const VERSION = '1.9';
 
         // ─── Pure, DOM-free logic (also exercised by the ?test self-test) ─────
 
@@ -367,12 +367,48 @@
             if (Array.isArray(data.rows)) kidRows = data.rows;
         }
 
+        // Apps Script + Sheets can take a few seconds to wake, so the last known
+        // balance is cached per kid link and shown instantly while a fresh copy
+        // loads in the background (stale-while-revalidate).
+        const KID_CACHE_PREFIX = 'pocketmoney:kid:';
+        const ADMIN_CACHE_KEY = 'pocketmoney:admin';
+        const PIN_SESSION_KEY = 'pocketmoney:pin';
+        let hasKidData = false;
+
+        function kidCacheKey() { return KID_CACHE_PREFIX + kidKey; }
+        function readKidCache() {
+            try { return JSON.parse(localStorage.getItem(kidCacheKey())); } catch (_) { return null; }
+        }
+        function writeKidCache() {
+            try {
+                localStorage.setItem(kidCacheKey(), JSON.stringify({
+                    account: kidAccount, balance: kidBalance, rows: kidRows,
+                }));
+            } catch (_) { /* storage full / disabled */ }
+        }
+        function readAdminCache() {
+            try { return JSON.parse(localStorage.getItem(ADMIN_CACHE_KEY)); } catch (_) { return null; }
+        }
+        function writeAdminCache() {
+            try {
+                localStorage.setItem(ADMIN_CACHE_KEY, JSON.stringify({
+                    balances: adminBalances, keys: adminKeys,
+                    accounts: Object.keys(adminBalances),
+                }));
+            } catch (_) {}
+        }
+
         let loadSeq = 0;
         async function loadKid() {
             if (!configured()) { showConfigNotice(); return; }
             const seq = ++loadSeq;
-            recentEl.classList.add('hidden');
-            recentLoaderEl.classList.remove('hidden');
+            const showSpinner = !hasKidData;
+            if (showSpinner) {
+                recentEl.classList.add('hidden');
+                recentLoaderEl.classList.remove('hidden');
+            } else {
+                recentStatusEl.textContent = 'Updating…';
+            }
             try {
                 const url = WEB_APP_URL + '?k=' + encodeURIComponent(kidKey) +
                     '&sheet=' + encodeURIComponent(SHEET_NAME);
@@ -382,17 +418,24 @@
                 let parsed;
                 try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
                 if (!parsed || parsed.ok !== true) {
-                    recentStatusEl.textContent =
-                        parsed && parsed.error ? parsed.error : 'Could not load your balance.';
+                    if (!hasKidData) {
+                        recentStatusEl.textContent =
+                            parsed && parsed.error ? parsed.error : 'Could not load your balance.';
+                    } else {
+                        recentStatusEl.textContent = '';
+                    }
                     return;
                 }
                 applyKidState(parsed);
+                hasKidData = true;
+                writeKidCache();
                 renderKid();
+                recentStatusEl.textContent = '';
             } catch (_) {
                 if (seq !== loadSeq) return;
-                recentStatusEl.textContent = 'Could not load your balance.';
+                recentStatusEl.textContent = hasKidData ? '' : 'Could not load your balance.';
             } finally {
-                if (seq === loadSeq) {
+                if (seq === loadSeq && showSpinner) {
                     recentLoaderEl.classList.add('hidden');
                     recentEl.classList.remove('hidden');
                 }
@@ -418,6 +461,8 @@
                     note: spendNote.value.trim(),
                 });
                 applyKidState(parsed);
+                hasKidData = true;
+                writeKidCache();
                 renderKid();
                 setStatus(spendStatus, 'Saved \u2713', 'ok');
                 spendAmount.value = '';
@@ -522,6 +567,7 @@
             if (data.keys) adminKeys = data.keys;
             renderAdminAccounts();
             if (Array.isArray(data.accounts)) fillAccountSelect(data.accounts);
+            writeAdminCache();
         }
 
         // "Add money" (credit) vs "Charge / loan" (a debit that may go below 0).
@@ -539,23 +585,45 @@
         syncAdminMode();
 
         // Parent login: the PIN both proves it's the parent and loads the
-        // overview. On success the login form is swapped for the full panel.
+        // overview. If the same PIN was accepted earlier this browser session,
+        // show the cached overview instantly while a fresh copy loads.
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             if (!configured()) { showConfigNotice(); return; }
             const pin = loginPin.value.trim();
             if (!pin) { setStatus(loginStatus, 'Enter the parent PIN.', 'err'); return; }
             loginBtn.disabled = true;
-            setStatus(loginStatus, 'Checking…', 'info');
+
+            const stale = pin === sessionStorage.getItem(PIN_SESSION_KEY) && readAdminCache();
+            if (stale) {
+                applyAdminState(stale);
+                adminPinValue = pin;
+                loginForm.classList.add('hidden');
+                adminPanel.classList.remove('hidden');
+                subtitle.textContent = 'Parent';
+                setStatus(adminStatus, 'Updating…', 'info');
+            } else {
+                setStatus(loginStatus, 'Checking…', 'info');
+            }
+
             try {
                 const parsed = await postOp({ op: 'overview', sheet: SHEET_NAME, pin });
                 adminPinValue = pin;
+                sessionStorage.setItem(PIN_SESSION_KEY, pin);
                 applyAdminState(parsed);
                 loginForm.classList.add('hidden');
                 adminPanel.classList.remove('hidden');
                 subtitle.textContent = 'Parent';
+                setStatus(adminStatus, '', 'info');
+                setStatus(loginStatus, '', 'info');
             } catch (err) {
-                setStatus(loginStatus, /pin/i.test(err.message) ? 'Wrong PIN.' : ('Error: ' + err.message), 'err');
+                if (stale) {
+                    adminPanel.classList.add('hidden');
+                    loginForm.classList.remove('hidden');
+                    adminPinValue = '';
+                }
+                setStatus(loginStatus,
+                    /pin/i.test(err.message) ? 'Wrong PIN.' : ('Error: ' + err.message), 'err');
             } finally {
                 loginBtn.disabled = false;
             }
@@ -607,6 +675,13 @@
         if (kidKey) {
             // Locked kid mode: only this account is ever shown or spendable.
             kidView.classList.remove('hidden');
+            const cached = readKidCache();
+            if (cached) {
+                applyKidState(cached);
+                hasKidData = true;
+                renderKid();
+                recentEl.classList.remove('hidden');
+            }
             if (!configured()) showConfigNotice();
             loadKid();
         } else {
