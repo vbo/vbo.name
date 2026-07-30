@@ -157,7 +157,7 @@
         const SHEET_NAME = 'PocketMoney';
 
         const CURRENCY = 'CHF';
-        const VERSION = '1.4';
+        const VERSION = '1.5';
 
         // ─── Pure, DOM-free logic (also exercised by the ?test self-test) ─────
 
@@ -251,14 +251,12 @@
         // ─── Mode + state ──────────────────────────────────────────────────────
         const params = new URLSearchParams(location.search);
         const kidKey = params.get('k') || params.get('key'); // present => locked kid mode
-        let kidAccount = null;   // resolved by the server from the key
-        let kidName = null;      // display name (parent-editable), falls back to account
+        let kidAccount = null;   // resolved by the server from the key; also the shown name
         let kidBalance = 0;
         let kidRows = [];
 
         // Parent-panel state, populated after the PIN unlocks an overview.
         let adminBalances = {};
-        let adminNames = {};
 
         // ─── DOM refs ─────────────────────────────────────────────────────────
         const subtitle = document.getElementById('subtitle');
@@ -374,9 +372,7 @@
 
         function applyKidState(data) {
             if (!data) return;
-            if (data.account) kidAccount = data.account;
-            kidName = data.name || data.account || kidName;
-            if (kidName) subtitle.textContent = 'Hi, ' + kidName;
+            if (data.account) { kidAccount = data.account; subtitle.textContent = 'Hi, ' + data.account; }
             if (typeof data.balance === 'number') kidBalance = data.balance;
             if (Array.isArray(data.rows)) kidRows = data.rows;
         }
@@ -444,11 +440,7 @@
         });
 
         // ─── Parent panel ───────────────────────────────────────────────────────
-        function nameFor(account) {
-            return (adminNames && adminNames[account]) || account;
-        }
-
-        // Read-only balances overview (names come from KID_KEYS on the server).
+        // Read-only balances overview (the account name is the name shown).
         function renderAdminAccounts() {
             const accounts = Object.keys(adminBalances || {});
             if (!accounts.length) { adminAccountsWrap.classList.add('hidden'); return; }
@@ -457,7 +449,7 @@
                 const bal = adminBalances[a];
                 const balCls = bal < 0 ? 'text-rose-600' : 'text-slate-700';
                 return `<div class="flex justify-between gap-2">
-                    <span class="truncate">${escapeHtml(nameFor(a))}</span>
+                    <span class="truncate">${escapeHtml(a)}</span>
                     <span class="font-semibold whitespace-nowrap ${balCls}">${escapeHtml(formatMoney(bal))}</span>
                 </div>`;
             }).join('');
@@ -466,14 +458,13 @@
         function fillAccountSelect(accounts) {
             const prev = adminAccount.value;
             adminAccount.innerHTML = accounts.map((a) =>
-                `<option value="${escapeHtml(a)}">${escapeHtml(nameFor(a))}</option>`).join('');
+                `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
             if (accounts.indexOf(prev) !== -1) adminAccount.value = prev;
         }
 
         function applyAdminState(data) {
             if (!data) return;
             if (data.balances) adminBalances = data.balances;
-            if (data.names) adminNames = data.names;
             renderAdminAccounts();
             if (Array.isArray(data.accounts)) fillAccountSelect(data.accounts);
         }
@@ -537,7 +528,7 @@
                 applyAdminState(parsed);
                 setStatus(adminStatus,
                     (charge ? 'Charged ' : 'Added ') + formatMoney(amount) +
-                    (charge ? ' from ' : ' to ') + nameFor(account) + ' \u2713', 'ok');
+                    (charge ? ' from ' : ' to ') + account + ' \u2713', 'ok');
                 adminAmount.value = '';
                 adminNote.value = '';
                 // If the parent is standing at this kid's device, reflect it live.
