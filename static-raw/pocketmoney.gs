@@ -89,7 +89,7 @@
 
 var PM_SHEET_NAME = 'PocketMoney';
 var PM_HEADERS = ['Timestamp', 'Date', 'Account', 'Type', 'Amount', 'Note', 'By'];
-var PM_VERSION = '1.5';
+var PM_VERSION = '1.6';
 
 // ── HTTP entry points (called from the project's doGet/doPost) ───────────────
 
@@ -258,6 +258,10 @@ function pmAdminState_(sheet) {
     version: PM_VERSION,
     balances: balances,
     accounts: Object.keys(balances),
+    // The secret keys, so the parent can copy each kid's private link. This is
+    // only ever returned on a PIN-authenticated response (overview/credit/
+    // charge) — kids' own responses (pmKidState_) never include keys.
+    keys: pmAccounts_(),
     rows: rows.slice(0, 50),
   };
 }
