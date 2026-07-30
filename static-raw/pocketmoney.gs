@@ -42,14 +42,9 @@
  *
  * 1. Script properties (Project Settings → Script properties):
  *      ADMIN_PIN = <a PIN only you, the parent, know>            (e.g. 4629)
- *      KID_KEYS  = <JSON mapping each account to its secret key and, optionally,
- *      a display name>. The simplest form uses the shown name as the account:
+ *      KID_KEYS  = <JSON mapping each account (the name shown in the app) to its
+ *      secret key>, e.g.
  *          {"Eva":"7fk2-eva","Martin":"9mq4-martin"}
- *      If you'd rather keep a stable internal id separate from the shown name
- *      (so renaming never touches the sheet's Account column), use the object
- *      form per account:
- *          {"kid1":{"key":"7fk2-eva","name":"Eva"},
- *           "kid2":{"key":"9mq4-martin","name":"Martin"}}
  *      Pick keys that are hard to guess and keep them secret from each other.
  *      (Optional) SPREADSHEET_ID = <id> if this project is NOT bound to the
  *      spreadsheet you want; leave unset to use the bound/active spreadsheet.
@@ -94,7 +89,7 @@
 
 var PM_SHEET_NAME = 'PocketMoney';
 var PM_HEADERS = ['Timestamp', 'Date', 'Account', 'Type', 'Amount', 'Note', 'By'];
-var PM_VERSION = '1.4';
+var PM_VERSION = '1.5';
 
 // ── HTTP entry points (called from the project's doGet/doPost) ───────────────
 
@@ -237,7 +232,6 @@ function pmKidState_(sheet, account) {
     ok: true,
     version: PM_VERSION,
     account: account,
-    name: pmDisplayName_(account),
     balance: pmRoundMoney_(balance),
     rows: rows.slice(0, 50),
   };
@@ -246,10 +240,9 @@ function pmKidState_(sheet, account) {
 // What the parent sees: every account's balance plus recent activity.
 function pmAdminState_(sheet) {
   var values = sheet.getDataRange().getValues();
-  var known = pmAccounts_();
   var balances = {};
   // Seed with configured accounts so brand-new ones show a 0 balance.
-  Object.keys(known).forEach(function (a) { balances[a] = 0; });
+  Object.keys(pmAccounts_()).forEach(function (a) { balances[a] = 0; });
   var rows = [];
   for (var i = 1; i < values.length; i++) {
     var account = String(values[i][2] || '');
@@ -260,15 +253,11 @@ function pmAdminState_(sheet) {
   }
   Object.keys(balances).forEach(function (k) { balances[k] = pmRoundMoney_(balances[k]); });
   rows.reverse();
-  var accounts = Object.keys(balances);
-  var names = {};
-  accounts.forEach(function (a) { names[a] = (known[a] && known[a].name) || a; });
   return {
     ok: true,
     version: PM_VERSION,
     balances: balances,
-    accounts: accounts,
-    names: names,
+    accounts: Object.keys(balances),
     rows: rows.slice(0, 50),
   };
 }
@@ -297,41 +286,27 @@ function pmReadRow_(r) {
 
 // ── Keys / config ─────────────────────────────────────────────────────────────
 
-// Parsed KID_KEYS → { accountId: { key: <secret>, name: <display> }, ... }.
-// Each KID_KEYS value may be a plain string (the secret; display name = the
-// account id) or an object { key, name } when the shown name should differ
-// from the internal account id.
+// Parsed KID_KEYS → { account: secretKey, ... }. The account name is the name
+// shown in the app.
 function pmAccounts_() {
   var raw = PropertiesService.getScriptProperties().getProperty('KID_KEYS');
   if (!raw) return {};
-  var obj;
-  try { obj = JSON.parse(raw); } catch (err) { return {}; }
-  if (!obj || typeof obj !== 'object') return {};
-  var out = {};
-  Object.keys(obj).forEach(function (id) {
-    var v = obj[id];
-    if (v && typeof v === 'object') {
-      out[id] = { key: String(v.key || ''), name: String(v.name || id) };
-    } else {
-      out[id] = { key: String(v), name: id };
-    }
-  });
-  return out;
+  try {
+    var obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch (err) {
+    return {};
+  }
 }
 
 function pmAccountForKey_(key) {
   if (!key) return null;
   var accounts = pmAccounts_();
-  var ids = Object.keys(accounts);
-  for (var i = 0; i < ids.length; i++) {
-    if (accounts[ids[i]].key && accounts[ids[i]].key === key) return ids[i];
+  var names = Object.keys(accounts);
+  for (var i = 0; i < names.length; i++) {
+    if (String(accounts[names[i]]) === key) return names[i];
   }
   return null;
-}
-
-function pmDisplayName_(account) {
-  var a = pmAccounts_()[account];
-  return a ? a.name : account;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
