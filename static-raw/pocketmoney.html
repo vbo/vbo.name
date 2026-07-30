@@ -16,22 +16,24 @@
 </head>
 <body class="antialiased bg-slate-50 min-h-screen">
     <div class="max-w-md mx-auto p-4">
-        <header class="mb-4 flex items-center justify-between gap-3">
-            <div class="min-w-0">
-                <h1 class="text-2xl font-bold text-slate-900">Pocket Money</h1>
-                <p id="subtitle" class="text-sm text-slate-500 truncate">Your virtual account</p>
-            </div>
-            <button id="parentToggle" type="button"
-                class="shrink-0 text-sm font-medium text-teal-700 hover:text-teal-900 rounded-lg px-3 py-2 border border-teal-200 bg-white">
-                Parent
-            </button>
+        <header class="mb-4">
+            <h1 class="text-2xl font-bold text-slate-900">Pocket Money</h1>
+            <p id="subtitle" class="text-sm text-slate-500 truncate">Your virtual account</p>
         </header>
 
-        <!-- Landing (no personal link): nothing sensitive is shown here. -->
-        <section id="landing" class="hidden bg-white rounded-2xl shadow-sm p-5 text-center">
-            <p class="text-slate-700 font-medium">Open your personal link to see your balance.</p>
-            <p class="text-sm text-slate-400 mt-2">Ask a parent for your link, then add it to your Home Screen.</p>
-        </section>
+        <!-- Parent login (shown on the base URL, i.e. no personal ?k= link). -->
+        <form id="loginForm" class="hidden space-y-4 bg-white rounded-2xl shadow-sm p-4">
+            <label class="block">
+                <span class="text-sm font-medium text-slate-700">Parent PIN</span>
+                <input id="loginPin" type="password" inputmode="numeric" autocomplete="off"
+                    class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500" />
+            </label>
+            <button id="loginBtn" type="submit"
+                class="w-full rounded-lg bg-teal-600 text-white text-lg font-semibold px-4 py-3 hover:bg-teal-700 active:bg-teal-800 disabled:opacity-50 disabled:cursor-not-allowed">
+                OK
+            </button>
+            <p id="loginStatus" class="text-sm text-slate-600 min-h-[1.25rem] text-center" aria-live="polite"></p>
+        </form>
 
         <!-- Kid view: locked to one account via the ?k=<key> in the URL. -->
         <div id="kidView" class="hidden">
@@ -76,30 +78,15 @@
             </section>
         </div>
 
-        <!-- Parent: add money (credit only, PIN protected). -->
-        <form id="adminForm" class="space-y-4 bg-white rounded-2xl shadow-sm p-4 mt-4 hidden border-2 border-teal-200">
-            <div class="flex items-center justify-between">
-                <h2 class="text-sm font-semibold text-slate-700">Parent · add money</h2>
-                <button id="adminClose" type="button" class="text-xs text-slate-400 hover:text-slate-600">Close</button>
-            </div>
-
-            <label class="block">
-                <span class="text-sm font-medium text-slate-700">Parent PIN</span>
-                <div class="mt-1 flex gap-2">
-                    <input id="adminPin" type="password" inputmode="numeric" autocomplete="off"
-                        class="w-full rounded-lg border border-slate-300 px-3 py-3 focus:outline-none focus:ring-2 focus:ring-teal-500" />
-                    <button id="adminLoad" type="button"
-                        class="shrink-0 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                        Show balances
-                    </button>
-                </div>
-                <span class="text-xs text-slate-400">Only the parent knows this. Kept for this session only.</span>
-            </label>
-
-            <div id="adminAccounts" class="hidden bg-slate-50 rounded-lg p-3">
+        <!-- Parent panel (revealed once the PIN is accepted). -->
+        <div id="adminPanel" class="hidden space-y-4">
+            <div id="adminAccounts" class="bg-slate-50 rounded-2xl shadow-sm p-4">
                 <p class="text-xs font-medium text-slate-500 mb-2">Balances &amp; private links</p>
                 <div id="adminAccountsList" class="space-y-3 text-xs text-slate-500"></div>
             </div>
+
+            <form id="adminForm" class="space-y-4 bg-white rounded-2xl shadow-sm p-4">
+            <h2 class="text-sm font-semibold text-slate-700">Add or charge money</h2>
 
             <label class="block">
                 <span class="text-sm font-medium text-slate-700">Action</span>
@@ -113,7 +100,6 @@
                 <span class="text-sm font-medium text-slate-700">Account</span>
                 <select id="adminAccount"
                     class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 bg-white focus:outline-none focus:ring-2 focus:ring-teal-500">
-                    <option value="">— enter PIN and tap “Show balances” —</option>
                 </select>
             </label>
             <label class="block">
@@ -134,7 +120,8 @@
                 Add money
             </button>
             <p id="adminStatus" class="text-sm text-slate-600 min-h-[1.25rem] text-center" aria-live="polite"></p>
-        </form>
+            </form>
+        </div>
 
         <p id="configNotice" class="hidden text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3 mt-4"></p>
         <p class="text-[11px] text-slate-300 text-center mt-6" id="footer"></p>
@@ -158,7 +145,7 @@
         const SHEET_NAME = 'PocketMoney';
 
         const CURRENCY = 'CHF';
-        const VERSION = '1.7';
+        const VERSION = '1.8';
 
         // ─── Pure, DOM-free logic (also exercised by the ?test self-test) ─────
 
@@ -259,10 +246,10 @@
         // Parent-panel state, populated after the PIN unlocks an overview.
         let adminBalances = {};
         let adminKeys = {};      // account → secret key, for building share links
+        let adminPinValue = '';  // the accepted PIN, reused for add/charge this session
 
         // ─── DOM refs ─────────────────────────────────────────────────────────
         const subtitle = document.getElementById('subtitle');
-        const landing = document.getElementById('landing');
         const kidView = document.getElementById('kidView');
         const balanceEl = document.getElementById('balance');
         const balanceHintEl = document.getElementById('balanceHint');
@@ -271,18 +258,19 @@
         const spendNote = document.getElementById('spendNote');
         const spendBtn = document.getElementById('spendBtn');
         const spendStatus = document.getElementById('spendStatus');
-        const parentToggle = document.getElementById('parentToggle');
+        const loginForm = document.getElementById('loginForm');
+        const loginPin = document.getElementById('loginPin');
+        const loginBtn = document.getElementById('loginBtn');
+        const loginStatus = document.getElementById('loginStatus');
+        const adminPanel = document.getElementById('adminPanel');
         const adminForm = document.getElementById('adminForm');
-        const adminClose = document.getElementById('adminClose');
         const adminAccountsWrap = document.getElementById('adminAccounts');
         const adminAccountsList = document.getElementById('adminAccountsList');
         const adminMode = document.getElementById('adminMode');
         const adminAccount = document.getElementById('adminAccount');
         const adminAmount = document.getElementById('adminAmount');
         const adminNote = document.getElementById('adminNote');
-        const adminPin = document.getElementById('adminPin');
         const adminBtn = document.getElementById('adminBtn');
-        const adminLoad = document.getElementById('adminLoad');
         const adminStatus = document.getElementById('adminStatus');
         const recentEl = document.getElementById('recent');
         const recentStatusEl = document.getElementById('recentStatus');
@@ -550,20 +538,26 @@
         adminMode.addEventListener('change', syncAdminMode);
         syncAdminMode();
 
-        adminLoad.addEventListener('click', async () => {
+        // Parent login: the PIN both proves it's the parent and loads the
+        // overview. On success the login form is swapped for the full panel.
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
             if (!configured()) { showConfigNotice(); return; }
-            const pin = adminPin.value.trim();
-            if (!pin) { setStatus(adminStatus, 'Enter the parent PIN.', 'err'); return; }
-            adminLoad.disabled = true;
-            setStatus(adminStatus, 'Loading…', 'info');
+            const pin = loginPin.value.trim();
+            if (!pin) { setStatus(loginStatus, 'Enter the parent PIN.', 'err'); return; }
+            loginBtn.disabled = true;
+            setStatus(loginStatus, 'Checking…', 'info');
             try {
                 const parsed = await postOp({ op: 'overview', sheet: SHEET_NAME, pin });
+                adminPinValue = pin;
                 applyAdminState(parsed);
-                setStatus(adminStatus, 'Balances loaded.', 'ok');
+                loginForm.classList.add('hidden');
+                adminPanel.classList.remove('hidden');
+                subtitle.textContent = 'Parent';
             } catch (err) {
-                setStatus(adminStatus, 'Error: ' + err.message, 'err');
+                setStatus(loginStatus, /pin/i.test(err.message) ? 'Wrong PIN.' : ('Error: ' + err.message), 'err');
             } finally {
-                adminLoad.disabled = false;
+                loginBtn.disabled = false;
             }
         });
 
@@ -571,14 +565,14 @@
             e.preventDefault();
             if (!configured()) { showConfigNotice(); return; }
             const account = adminAccount.value;
-            if (!account) { setStatus(adminStatus, 'Load balances and pick an account first.', 'err'); return; }
+            if (!account) { setStatus(adminStatus, 'Pick an account first.', 'err'); return; }
             const amount = roundMoney(parseFloat(adminAmount.value));
             if (!Number.isFinite(amount) || amount <= 0) {
                 setStatus(adminStatus, 'Enter an amount greater than 0.', 'err');
                 return;
             }
-            const pin = adminPin.value.trim();
-            if (!pin) { setStatus(adminStatus, 'Enter the parent PIN.', 'err'); return; }
+            const pin = adminPinValue;
+            if (!pin) { setStatus(adminStatus, 'Session expired — reload and enter the PIN again.', 'err'); return; }
             const charge = adminMode.value === 'charge';
 
             adminBtn.disabled = true;
@@ -607,30 +601,21 @@
             }
         });
 
-        parentToggle.addEventListener('click', () => {
-            const hidden = adminForm.classList.toggle('hidden');
-            if (!hidden) adminForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        });
-        adminClose.addEventListener('click', () => adminForm.classList.add('hidden'));
-
         // ─── Boot ─────────────────────────────────────────────────────────────
         refreshBtn.addEventListener('click', loadKid);
 
         if (kidKey) {
-            // Locked kid mode: only this account is ever shown or spendable, and
-            // the parent controls stay out of the way on the kid's own device.
-            landing.classList.add('hidden');
+            // Locked kid mode: only this account is ever shown or spendable.
             kidView.classList.remove('hidden');
-            parentToggle.classList.add('hidden');
             if (!configured()) showConfigNotice();
             loadKid();
         } else {
-            // Neutral landing: no balances shown until a personal link is used;
-            // the parent uses the PIN-protected panel.
-            subtitle.textContent = 'Parent & family';
-            landing.classList.remove('hidden');
-            kidView.classList.add('hidden');
+            // Base URL = the parent's login. The PIN prompt is shown straight
+            // away; entering the correct PIN reveals the full panel.
+            subtitle.textContent = 'Parent';
+            loginForm.classList.remove('hidden');
             if (!configured()) showConfigNotice();
+            loginPin.focus();
         }
     })();
     </script>
