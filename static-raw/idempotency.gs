@@ -11,27 +11,14 @@
  * keyed by that id and returns the cached result instead of writing again.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * USE IN THE EXPENSES doPost (same Apps Script project)
+ * WIRED IN expenses.gs (same Apps Script project)
  *
- * At the top of your existing expenses doPost, after parsing `data`:
+ * expenses.gs doPost delegates to idemRun_ when the client sends requestId
+ * (expenses.html does this on every save). Pocket money uses its own RequestId
+ * column on the PocketMoney sheet via pocketmoney.gs.
  *
- *   function doPost(e) {
- *     var data = JSON.parse(e.postData.contents);
- *     if (data && data.op) return pmDoPost(e);          // pocket money (already idempotent)
- *     if (data && data.requestId) {
- *       return idemJson_(idemRun_(String(data.requestId), function () {
- *         return yourExistingExpenseWrite_(data);       // must return { ok: true, ... }
- *       }));
- *     }
- *     return yourExistingExpenseWriteResponse_(data);  // legacy clients without requestId
- *   }
- *
- * `yourExistingExpenseWrite_` should be whatever you already do to append the
- * row and return `{ ok: true, version: '...', ... }`. Do not change the payload
- * shape the expenses.html page expects.
- *
- * Also add this file to the project (Extensions → Apps Script → + → paste).
- * Redeploy a new web-app version after adding it.
+ * Paste this file into the project alongside expenses.gs and pocketmoney.gs,
+ * then redeploy a new web-app version.
  *
  * STORAGE
  * A hidden sheet tab `_Idempotency` stores RequestId | ResponseJson | CreatedAt.

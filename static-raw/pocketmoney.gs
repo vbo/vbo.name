@@ -86,8 +86,8 @@
  *    link …/pocketmoney.html?k=<their key> for their Home Screen; you, the
  *    parent, open the plain …/pocketmoney.html and use the PIN panel.
  *
- * Also add idempotency.gs to the project for safe retries on the expenses
- * form (see that file's header for the doPost wrapper).
+ * Also add idempotency.gs to the project. See static-raw/expenses.gs for the
+ * full doGet/doPost that wires pocket money + expenses + idempotency together.
  */
 
 var PM_SHEET_NAME = 'PocketMoney';
