@@ -145,7 +145,7 @@
         const SHEET_NAME = 'PocketMoney';
 
         const CURRENCY = 'CHF';
-        const VERSION = '1.9';
+        const VERSION = '2.1';
 
         // ─── Pure, DOM-free logic (also exercised by the ?test self-test) ─────
 
@@ -186,6 +186,23 @@
             return { ok: true };
         }
 
+        // One id per user action; reused across automatic retries so a slow
+        // server can't create duplicate rows if the response is lost.
+        function newRequestId() {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+            return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+        }
+
+        function isRetryableError(err) {
+            const msg = String(err && err.message || err || '');
+            if (/wrong pin|not enough|invalid amount|missing account|unknown link|unknown account|session expired|enter an amount|pick an account/i.test(msg)) {
+                return false;
+            }
+            return /failed to fetch|network|timeout|unexpected response|HTTP 5\d\d|502|503|504|429/i.test(msg);
+        }
+
+        function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
         function runTests() {
             const results = [];
             const ok = (name, cond) => results.push({ name, pass: !!cond });
@@ -214,6 +231,9 @@
             ok('spend part of balance allowed', validateSpend(2, 1).ok === true);
             ok('spend zero rejected', validateSpend(5, 0).ok === false);
             ok('spend negative rejected', validateSpend(5, -1).ok === false);
+
+            ok('isRetryable detects network', isRetryableError(new Error('Failed to fetch')));
+            ok('isRetryable rejects business', !isRetryableError(new Error('Not enough balance')));
 
             const passed = results.filter((r) => r.pass).length;
             const failed = results.length - passed;
@@ -356,8 +376,30 @@
             let parsed;
             try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
             if (!parsed) throw new Error('Unexpected response from server.');
+            if (!res.ok) throw new Error(parsed.error || ('HTTP ' + res.status));
             if (parsed.ok !== true) throw new Error(parsed.error || 'Server error');
             return parsed;
+        }
+
+        // Mutations only: attach a stable requestId and retry transient failures
+        // with exponential backoff (1s, 2s, 4s by default).
+        async function postWithRetry(payload, opts) {
+            opts = opts || {};
+            const attempts = opts.attempts || 4;
+            const baseMs = opts.baseMs || 1000;
+            if (!payload.requestId) payload.requestId = newRequestId();
+            let lastErr;
+            for (let i = 0; i < attempts; i++) {
+                try {
+                    return await postOp(payload);
+                } catch (err) {
+                    lastErr = err;
+                    if (!isRetryableError(err) || i === attempts - 1) throw err;
+                    if (opts.onRetry) opts.onRetry(i + 1, attempts);
+                    await sleep(baseMs * Math.pow(2, i));
+                }
+            }
+            throw lastErr;
         }
 
         function applyKidState(data) {
@@ -453,12 +495,14 @@
             spendBtn.disabled = true;
             setStatus(spendStatus, 'Saving…', 'info');
             try {
-                const parsed = await postOp({
+                const parsed = await postWithRetry({
                     op: 'expense',
                     sheet: SHEET_NAME,
                     key: kidKey,
                     amount,
                     note: spendNote.value.trim(),
+                }, {
+                    onRetry: (n, max) => setStatus(spendStatus, 'Retrying… (' + n + '/' + max + ')', 'info'),
                 });
                 applyKidState(parsed);
                 hasKidData = true;
@@ -646,13 +690,16 @@
             adminBtn.disabled = true;
             setStatus(adminStatus, charge ? 'Charging…' : 'Adding…', 'info');
             try {
-                const parsed = await postOp({
+                const parsed = await postWithRetry({
                     op: charge ? 'charge' : 'credit',
                     sheet: SHEET_NAME,
                     account,
                     amount,
                     note: adminNote.value.trim(),
                     pin,
+                }, {
+                    onRetry: (n, max) => setStatus(adminStatus,
+                        (charge ? 'Charging' : 'Adding') + '… retry ' + n + '/' + max, 'info'),
                 });
                 applyAdminState(parsed);
                 setStatus(adminStatus,
