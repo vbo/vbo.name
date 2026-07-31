@@ -29,10 +29,12 @@
  * DATA MODEL
  * One tab (default "PocketMoney") in the spreadsheet, one row per transaction:
  *
- *   Timestamp | Date | Account | Type | Amount | Note | By
+ *   Timestamp | Date | Account | Type | Amount | Note | By | RequestId
  *
  *   - Type is "credit" (parent adds) or "expense" (kid spends).
  *   - Amount is always a positive number (CHF).
+ *   - RequestId is a client-generated id used to prevent duplicate rows when
+ *     a save succeeds on the server but the phone retries after a timeout.
  *   - Balance for an account = sum(credit) - sum(expense).
  *
  * The tab (with this header row) is created automatically on first use.
@@ -84,12 +86,14 @@
  *    link …/pocketmoney.html?k=<their key> for their Home Screen; you, the
  *    parent, open the plain …/pocketmoney.html and use the PIN panel.
  *
- * NOTE: the page sends requests as text/plain to avoid a CORS preflight.
+ * Also add idempotency.gs to the project. See static-raw/expenses.gs for the
+ * full doGet/doPost that wires pocket money + expenses + idempotency together.
  */
 
 var PM_SHEET_NAME = 'PocketMoney';
-var PM_HEADERS = ['Timestamp', 'Date', 'Account', 'Type', 'Amount', 'Note', 'By'];
-var PM_VERSION = '1.6';
+var PM_HEADERS = ['Timestamp', 'Date', 'Account', 'Type', 'Amount', 'Note', 'By', 'RequestId'];
+var PM_COL_REQUEST_ID = 7;
+var PM_VERSION = '1.8';
 
 // ── HTTP entry points (called from the project's doGet/doPost) ───────────────
 
@@ -151,6 +155,10 @@ function pmJson_(obj) {
 // ── Ledger operations ─────────────────────────────────────────────────────────
 
 function pmAddExpense_(sheet, account, data) {
+  var requestId = String(data.requestId || '').trim();
+  if (requestId && pmRowExistsForRequestId_(sheet, requestId)) {
+    return pmKidState_(sheet, account);
+  }
   var amount = pmRoundMoney_(Number(data.amount));
   if (!isFinite(amount) || amount <= 0) return { ok: false, error: 'Invalid amount' };
   var note = String(data.note || '').trim();
@@ -158,11 +166,14 @@ function pmAddExpense_(sheet, account, data) {
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
+    if (requestId && pmRowExistsForRequestId_(sheet, requestId)) {
+      return pmKidState_(sheet, account);
+    }
     // A kid may only spend what they actually have. Checked under the lock so
     // two quick taps can't both pass against a stale balance.
     var bal = pmBalanceOf_(sheet, account);
     if (amount > bal + 1e-9) return { ok: false, error: 'Not enough balance' };
-    pmAppendRow_(sheet, account, 'expense', amount, note, 'kid');
+    pmAppendRow_(sheet, account, 'expense', amount, note, 'kid', requestId);
     return pmKidState_(sheet, account);
   } finally {
     lock.releaseLock();
@@ -170,10 +181,14 @@ function pmAddExpense_(sheet, account, data) {
 }
 
 function pmAddCredit_(sheet, data) {
+  var requestId = String(data.requestId || '').trim();
   var account = String(data.account || '').trim();
   if (!account) return { ok: false, error: 'Missing account' };
   // Only known accounts can be credited.
   if (!pmAccounts_()[account]) return { ok: false, error: 'Unknown account' };
+  if (requestId && pmRowExistsForRequestId_(sheet, requestId)) {
+    return pmAdminState_(sheet);
+  }
   var amount = pmRoundMoney_(Number(data.amount));
   if (!isFinite(amount) || amount <= 0) return { ok: false, error: 'Invalid amount' };
   var note = String(data.note || '').trim();
@@ -181,7 +196,10 @@ function pmAddCredit_(sheet, data) {
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
-    pmAppendRow_(sheet, account, 'credit', amount, note, 'admin');
+    if (requestId && pmRowExistsForRequestId_(sheet, requestId)) {
+      return pmAdminState_(sheet);
+    }
+    pmAppendRow_(sheet, account, 'credit', amount, note, 'admin', requestId);
     return pmAdminState_(sheet);
   } finally {
     lock.releaseLock();
@@ -190,9 +208,13 @@ function pmAddCredit_(sheet, data) {
 
 // Parent-authorised debit that is allowed to push the balance negative (loan).
 function pmAddCharge_(sheet, data) {
+  var requestId = String(data.requestId || '').trim();
   var account = String(data.account || '').trim();
   if (!account) return { ok: false, error: 'Missing account' };
   if (!pmAccounts_()[account]) return { ok: false, error: 'Unknown account' };
+  if (requestId && pmRowExistsForRequestId_(sheet, requestId)) {
+    return pmAdminState_(sheet);
+  }
   var amount = pmRoundMoney_(Number(data.amount));
   if (!isFinite(amount) || amount <= 0) return { ok: false, error: 'Invalid amount' };
   var note = String(data.note || '').trim();
@@ -200,18 +222,31 @@ function pmAddCharge_(sheet, data) {
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
+    if (requestId && pmRowExistsForRequestId_(sheet, requestId)) {
+      return pmAdminState_(sheet);
+    }
     // No balance check on purpose: this is the parent loaning money.
-    pmAppendRow_(sheet, account, 'expense', amount, note, 'admin');
+    pmAppendRow_(sheet, account, 'expense', amount, note, 'admin', requestId);
     return pmAdminState_(sheet);
   } finally {
     lock.releaseLock();
   }
 }
 
-function pmAppendRow_(sheet, account, type, amount, note, by) {
+function pmAppendRow_(sheet, account, type, amount, note, by, requestId) {
   var now = new Date();
   var date = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-  sheet.appendRow([now, date, account, type, amount, note, by]);
+  sheet.appendRow([now, date, account, type, amount, note, by, requestId || '']);
+  SpreadsheetApp.flush();
+}
+
+function pmRowExistsForRequestId_(sheet, requestId) {
+  if (!requestId) return false;
+  var values = sheet.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][PM_COL_REQUEST_ID] || '') === requestId) return true;
+  }
+  return false;
 }
 
 // ── State readers ─────────────────────────────────────────────────────────────

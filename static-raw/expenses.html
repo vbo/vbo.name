@@ -339,10 +339,60 @@
             statusEl.className = `text-sm min-h-[1.25rem] text-center ${colors[kind] || colors.info}`;
         }
 
+        function newRequestId() {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+            return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+        }
+
+        function isRetryableError(err) {
+            const msg = String(err && err.message || err || '');
+            if (/server hat nicht|ungültig|invalid/i.test(msg)) return false;
+            return /failed to fetch|network|timeout|unexpected|HTTP 5\d\d|502|503|504|429/i.test(msg);
+        }
+
+        function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+        async function postExpense(payload) {
+            const res = await fetch(WEB_APP_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify(payload),
+            });
+            const text = await res.text();
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            let parsed;
+            try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
+            if (!parsed) throw new Error('Unexpected response from server.');
+            if (parsed.ok !== true) {
+                throw new Error(parsed.error ? parsed.error : 'Server hat nicht ok zurückgegeben');
+            }
+            return { parsed, text, status: res.status };
+        }
+
+        async function postExpenseWithRetry(payload, opts) {
+            opts = opts || {};
+            const attempts = opts.attempts || 4;
+            const baseMs = opts.baseMs || 1000;
+            if (!payload.requestId) payload.requestId = newRequestId();
+            let lastErr;
+            for (let i = 0; i < attempts; i++) {
+                try {
+                    return await postExpense(payload);
+                } catch (err) {
+                    lastErr = err;
+                    if (!isRetryableError(err) || i === attempts - 1) throw err;
+                    if (opts.onRetry) opts.onRetry(i + 1, attempts);
+                    await sleep(baseMs * Math.pow(2, i));
+                }
+            }
+            throw lastErr;
+        }
+
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             const sheet = selectedSheet();
             const payload = {
+                requestId: newRequestId(),
                 sheet,
                 date: dateEl.value,
                 amount: parseFloat(amountEl.value),
@@ -375,28 +425,16 @@
                         .filter(Boolean).join(' ');
                 }
 
-                const res = await fetch(WEB_APP_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify(payload),
+                const { parsed, text, status } = await postExpenseWithRetry(payload, {
+                    onRetry: (n, max) => setStatus('Erneut versuchen… (' + n + '/' + max + ')', 'info'),
                 });
-                const text = await res.text();
-                if (!res.ok) {
-                    showDebug(`HTTP ${res.status}`, text);
-                    throw new Error('HTTP ' + res.status);
-                }
-                let parsed;
-                try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
-                if (!parsed || parsed.ok !== true) {
-                    showDebug(`HTTP ${res.status}`, text);
-                    throw new Error(parsed && parsed.error ? parsed.error : 'Server hat nicht ok zurückgegeben');
-                }
                 setStatus(`Gespeichert ✓ (v${parsed.version || '?'})`, 'ok');
-                showDebug(`HTTP ${res.status}`, text);
+                showDebug(`HTTP ${status}`, text);
                 resetToDefaults();
                 amountEl.focus();
                 loadRecent(); // fire-and-forget; form stays usable
             } catch (err) {
+                showDebug('error', String(err.message || err));
                 setStatus('Fehler: ' + err.message, 'err');
             } finally {
                 submitBtn.disabled = false;
