@@ -11,8 +11,9 @@
  *
  * IDEMPOTENCY
  * expenses.html sends a stable requestId per save and retries on transient
- * failures. idempotency.gs caches successful responses so a retry after a
- * timeout does not append a second row.
+ * failures. idempotency.gs caches successful responses in a hidden _Idempotency
+ * tab (not in the Common/Personal columns). Pocket money stores RequestId in
+ * column H of the PocketMoney sheet instead.
  */
 
 const VERSION = 'v4.1-idempotent';

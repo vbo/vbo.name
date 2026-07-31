@@ -22,6 +22,7 @@
  *
  * STORAGE
  * A hidden sheet tab `_Idempotency` stores RequestId | ResponseJson | CreatedAt.
+ * Expense rows on Common/Personal do NOT get a RequestId column — look on this tab.
  * Old rows can be deleted manually once in a while; they are tiny.
  */
 
@@ -73,9 +74,14 @@ function idemRun_(requestId, fn) {
   lock.waitLock(10000);
   try {
     var cached = idemLookup_(requestId);
-    if (cached) return cached;
+    if (cached) {
+      var replay = JSON.parse(JSON.stringify(cached));
+      replay.deduped = true;
+      return replay;
+    }
     var result = fn();
     if (result && result.ok === true) {
+      result.deduped = false;
       idemStore_(requestId, result);
       SpreadsheetApp.flush();
     }
