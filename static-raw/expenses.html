@@ -352,6 +352,36 @@
 
         function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+        function retryDelayMs(attemptIndex, baseMs) {
+            return baseMs * Math.pow(2, attemptIndex);
+        }
+
+        function shortError(err) {
+            const msg = String(err && err.message || err || 'Unbekannter Fehler').trim();
+            return msg.length > 72 ? msg.slice(0, 69) + '…' : msg;
+        }
+
+        function retryStatusMessage(err, failedAttemptIndex, maxAttempts, delaySec) {
+            const next = failedAttemptIndex + 2;
+            const secs = delaySec === 1 ? '1 Sekunde' : delaySec + ' Sekunden';
+            return 'Anfrage fehlgeschlagen (' + shortError(err) + '). Versuch ' + next + '/' +
+                maxAttempts + ' in ' + secs + '…';
+        }
+
+        async function sleepWithCountdown(ms, onTick) {
+            if (!onTick || ms <= 0) {
+                await sleep(ms);
+                return;
+            }
+            const ticks = Math.ceil(ms / 1000);
+            for (let t = 0; t < ticks; t++) {
+                onTick(ticks - t);
+                const slice = t === ticks - 1 ? ms - t * 1000 : 1000;
+                if (slice > 0) await sleep(slice);
+            }
+        }
+
+
         async function postExpense(payload) {
             const res = await fetch(WEB_APP_URL, {
                 method: 'POST',
@@ -381,8 +411,12 @@
                 } catch (err) {
                     lastErr = err;
                     if (!isRetryableError(err) || i === attempts - 1) throw err;
-                    if (opts.onRetry) opts.onRetry(i + 1, attempts);
-                    await sleep(baseMs * Math.pow(2, i));
+                    const delayMs = retryDelayMs(i, baseMs);
+                    const notify = (delaySec) => {
+                        const message = retryStatusMessage(err, i, attempts, delaySec);
+                        if (opts.onRetry) opts.onRetry({ attempt: i + 1, maxAttempts: attempts, delaySec, message });
+                    };
+                    await sleepWithCountdown(delayMs, notify);
                 }
             }
             throw lastErr;
@@ -426,7 +460,7 @@
                 }
 
                 const { parsed, text, status } = await postExpenseWithRetry(payload, {
-                    onRetry: (n, max) => setStatus('Erneut versuchen… (' + n + '/' + max + ')', 'info'),
+                    onRetry: ({ message }) => setStatus(message, 'info'),
                 });
                 setStatus(`Gespeichert ✓ (v${parsed.version || '?'})`, 'ok');
                 showDebug(`HTTP ${status}`, text);
