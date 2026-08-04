@@ -145,7 +145,7 @@
         const SHEET_NAME = 'PocketMoney';
 
         const CURRENCY = 'CHF';
-        const VERSION = '2.2';
+        const VERSION = '2.3';
 
         // ─── Pure, DOM-free logic (also exercised by the ?test self-test) ─────
 
@@ -198,7 +198,34 @@
             if (/wrong pin|not enough|invalid amount|missing account|unknown link|unknown account|session expired|enter an amount|pick an account/i.test(msg)) {
                 return false;
             }
-            return /failed to fetch|network|timeout|unexpected response|HTTP 5\d\d|502|503|504|429/i.test(msg);
+            return /failed to fetch|network|timeout|unexpected response|HTTP 404|HTTP 408|HTTP 429|HTTP 5\d\d/i.test(msg);
+        }
+
+        // One requestId per unsaved action so a manual re-tap after an error cannot
+        // create a second row (pairs with server-side idempotency).
+        let pendingSaveId = null;
+        let pendingSaveKey = null;
+
+        function savePayloadKey(payload) {
+            const copy = Object.assign({}, payload);
+            delete copy.requestId;
+            return JSON.stringify(copy);
+        }
+
+        function assignPendingRequestId(payload) {
+            const key = savePayloadKey(payload);
+            if (pendingSaveId && pendingSaveKey === key) {
+                payload.requestId = pendingSaveId;
+            } else {
+                pendingSaveId = newRequestId();
+                pendingSaveKey = key;
+                payload.requestId = pendingSaveId;
+            }
+        }
+
+        function clearPendingRequestId() {
+            pendingSaveId = null;
+            pendingSaveKey = null;
         }
 
         function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -263,6 +290,24 @@
 
             ok('isRetryable detects network', isRetryableError(new Error('Failed to fetch')));
             ok('isRetryable rejects business', !isRetryableError(new Error('Not enough balance')));
+            ok('isRetryable retries 404', isRetryableError(new Error('HTTP 404')));
+            ok('pending id reused for same payload', (function () {
+                const a = { op: 'expense', amount: 1 };
+                assignPendingRequestId(a);
+                const id = a.requestId;
+                const b = { op: 'expense', amount: 1 };
+                assignPendingRequestId(b);
+                return b.requestId === id;
+            })());
+            ok('pending id fresh after clear', (function () {
+                const a = { op: 'expense', amount: 1 };
+                assignPendingRequestId(a);
+                const id = a.requestId;
+                clearPendingRequestId();
+                const b = { op: 'expense', amount: 1 };
+                assignPendingRequestId(b);
+                return b.requestId !== id;
+            })());
             ok('retry delay grows', retryDelayMs(0, 1000) === 1000 && retryDelayMs(2, 1000) === 4000);
             ok('retry message shows countdown', /Retry 2\/4 in 2 seconds/.test(
                 retryStatusMessage(new Error('Failed to fetch'), 0, 4, 2)));
@@ -531,15 +576,18 @@
             spendBtn.disabled = true;
             setStatus(spendStatus, 'Saving…', 'info');
             try {
-                const parsed = await postWithRetry({
+                const payload = {
                     op: 'expense',
                     sheet: SHEET_NAME,
                     key: kidKey,
                     amount,
                     note: spendNote.value.trim(),
-                }, {
+                };
+                assignPendingRequestId(payload);
+                const parsed = await postWithRetry(payload, {
                     onRetry: ({ message }) => setStatus(spendStatus, message, 'info'),
                 });
+                clearPendingRequestId();
                 applyKidState(parsed);
                 hasKidData = true;
                 writeKidCache();
@@ -726,16 +774,19 @@
             adminBtn.disabled = true;
             setStatus(adminStatus, charge ? 'Charging…' : 'Adding…', 'info');
             try {
-                const parsed = await postWithRetry({
+                const payload = {
                     op: charge ? 'charge' : 'credit',
                     sheet: SHEET_NAME,
                     account,
                     amount,
                     note: adminNote.value.trim(),
                     pin,
-                }, {
+                };
+                assignPendingRequestId(payload);
+                const parsed = await postWithRetry(payload, {
                     onRetry: ({ message }) => setStatus(adminStatus, message, 'info'),
                 });
+                clearPendingRequestId();
                 applyAdminState(parsed);
                 setStatus(adminStatus,
                     (charge ? 'Charged ' : 'Added ') + formatMoney(amount) +
