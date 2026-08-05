@@ -346,8 +346,37 @@
 
         function isRetryableError(err) {
             const msg = String(err && err.message || err || '');
-            if (/server hat nicht|ungültig|invalid/i.test(msg)) return false;
-            return /failed to fetch|network|timeout|unexpected|HTTP 5\d\d|502|503|504|429/i.test(msg);
+            if (/server hat nicht|ungültig|invalid|unknown category/i.test(msg)) return false;
+            // 404 happens on some Apps Script redirect/wake glitches — retry; manual
+            // re-save must reuse the same requestId (see pending save id below).
+            return /failed to fetch|network|timeout|unexpected|HTTP 404|HTTP 408|HTTP 429|HTTP 5\d\d/i.test(msg);
+        }
+
+        // One requestId per unsaved form snapshot so a manual re-tap after an error
+        // (or our automatic retry) cannot create a second row.
+        let pendingSaveId = null;
+        let pendingSaveKey = null;
+
+        function savePayloadKey(payload) {
+            const copy = Object.assign({}, payload);
+            delete copy.requestId;
+            return JSON.stringify(copy);
+        }
+
+        function assignPendingRequestId(payload) {
+            const key = savePayloadKey(payload);
+            if (pendingSaveId && pendingSaveKey === key) {
+                payload.requestId = pendingSaveId;
+            } else {
+                pendingSaveId = newRequestId();
+                pendingSaveKey = key;
+                payload.requestId = pendingSaveId;
+            }
+        }
+
+        function clearPendingRequestId() {
+            pendingSaveId = null;
+            pendingSaveKey = null;
         }
 
         function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -426,7 +455,6 @@
             e.preventDefault();
             const sheet = selectedSheet();
             const payload = {
-                requestId: newRequestId(),
                 sheet,
                 date: dateEl.value,
                 amount: parseFloat(amountEl.value),
@@ -459,9 +487,11 @@
                         .filter(Boolean).join(' ');
                 }
 
+                assignPendingRequestId(payload);
                 const { parsed, text, status } = await postExpenseWithRetry(payload, {
                     onRetry: ({ message }) => setStatus(message, 'info'),
                 });
+                clearPendingRequestId();
                 setStatus(`Gespeichert ✓ (v${parsed.version || '?'})`, 'ok');
                 showDebug(`HTTP ${status}`, text);
                 resetToDefaults();
